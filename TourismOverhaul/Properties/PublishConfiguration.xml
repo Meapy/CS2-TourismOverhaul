@@ -1,0 +1,59 @@
+<Publish>
+  <!--
+    NOT READY TO PUBLISH.
+
+    Before the first NewVersion upload the following must be filled in and verified:
+      - ModId stays empty for the first publish; the publisher assigns it.
+      - GameVersion must match the installed build (Paradox rejects mismatches).
+      - Thumbnail and Screenshot paths must exist; the publisher resolves media paths
+        relative to its working directory, so run it from the project directory.
+      - Tags must be validated against the live service, not copied from examples.
+  -->
+  <ModId Value="" />
+  <DisplayName Value="Tourism Overhaul" />
+  <ShortDescription Value="Fixes the tourism simulation: arrivals by plane and ferry, demand that scales with city size, real length of stay, and honest numbers." />
+  <LongDescription># Tourism Overhaul
+
+Cities: Skylines II ships tourism with several defects that make the feature feel inert.
+This mod fixes them at the simulation level. Every change was derived by tracing the
+game's own assemblies; nothing here is guesswork.
+
+## What it fixes
+
+**Arrivals are no longer thrown away.** The base game assigns each tourist a single
+transport mode by one random roll — 10% road, 10% train, 50% air, 30% sea — then looks for
+an outside connection of exactly that type. If none exists it gives up with no fallback,
+but still creates the tourist household without a location. That household can never be
+given citizens, so it is quietly deleted. On a city with no airport and no harbour, 80% of
+all tourist arrivals are destroyed this way. This mod redistributes the share across the
+connection types your city actually has, and keeps the intended preference for planes and
+ferries once you build an airport or harbour.
+
+**Tourism scales with your city.** The base game targets `attractiveness x 15` tourists,
+and attractiveness is itself capped at 100 — a flat 1,500 tourists no matter how large or
+attractive the city becomes. This mod scales the target with population.
+
+**Tourists have a real length of stay.** The game declares and saves a tourist departure
+timer, and a function that returns a stay length, but never calls either. This mod
+implements the mechanic using the field the game already has.
+
+**The numbers mean something.** The tourism panel computes a figure roughly eight times
+larger than the game can ever produce, and undercounts tourists who are travelling between
+destinations. This mod reports the real values.
+
+## Compatibility
+
+No Harmony patches, no reflection, no disabled native systems. Arrivals use real outside
+connections, real vehicles, real pathfinding, real hotels and the real economy. Safe to
+add to and remove from an existing save.
+
+Everything is toggleable and tunable in the settings panel.</LongDescription>
+  <Thumbnail Value="Properties/Thumbnail.png" />
+  <Screenshot Value="Properties/Screenshot.png" />
+  <Tag Value="Code Mod" />
+  <ForumLink Value="" />
+  <ModVersion Value="0.1.0" />
+  <GameVersion Value="" />
+  <ChangeLog>Initial release.</ChangeLog>
+  <ExternalLink Type="github" Url="" />
+</Publish>

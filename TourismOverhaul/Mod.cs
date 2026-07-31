@@ -1,0 +1,59 @@
+using Colossal.IO.AssetDatabase;
+using Colossal.Logging;
+using Game;
+using Game.Modding;
+using Game.SceneFlow;
+using TourismOverhaul.Systems;
+
+namespace TourismOverhaul
+{
+    /// <summary>
+    /// Entry point. See docs/TOURISM-DIAGNOSIS.md for the traced defects each system addresses.
+    /// </summary>
+    public sealed class Mod : IMod
+    {
+        public const string ModName = "TourismOverhaul";
+
+        public static readonly ILog Log = LogManager.GetLogger(ModName);
+
+        public static TourismOverhaulSetting Settings { get; private set; }
+
+        public void OnLoad(UpdateSystem updateSystem)
+        {
+            Log.Info($"{ModName}: OnLoad");
+
+            Settings = new TourismOverhaulSetting(this);
+            Settings.RegisterInOptionsUI();
+            GameManager.instance.localizationManager.AddSource("en-US", new LocaleEN(Settings));
+            AssetDatabase.global.LoadSettings(ModName, Settings, new TourismOverhaulSetting(this));
+
+            // Fix A: rewrite the tourist outside-connection split to match what the city has.
+            updateSystem.UpdateAt<TouristRoutingSystem>(SystemUpdatePhase.GameSimulation);
+
+            // Fix B: top up arrivals toward a population-scaled target.
+            updateSystem.UpdateAt<TouristDemandSystem>(SystemUpdatePhase.GameSimulation);
+
+            // Fix C: give hotel guests a real, finite length of stay.
+            updateSystem.UpdateAt<TouristStaySystem>(SystemUpdatePhase.GameSimulation);
+
+            // Fix D: report the numbers the simulation actually produces.
+            updateSystem.UpdateAt<TourismReportingSystem>(SystemUpdatePhase.GameSimulation);
+
+            // Optional view feature: outline tourists in the world.
+            updateSystem.UpdateAt<TouristHighlightSystem>(SystemUpdatePhase.GameSimulation);
+
+            Log.Info($"{ModName}: systems registered");
+        }
+
+        public void OnDispose()
+        {
+            Log.Info($"{ModName}: OnDispose");
+
+            if (Settings != null)
+            {
+                Settings.UnregisterInOptionsUI();
+                Settings = null;
+            }
+        }
+    }
+}
