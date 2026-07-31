@@ -10,18 +10,10 @@ using Unity.Entities;
 namespace TourismOverhaul.Systems
 {
     /// <summary>
-    /// Optional view feature — outline tourists in the world so they can be told apart from
-    /// residents at a glance.
-    ///
-    /// This reuses the game's own outline path rather than inventing a rendering mechanism.
-    /// Game.Rendering.BatchInstanceSystem.UpdateObjectInstances checks
-    ///     m_ErrorData || m_WarningData || m_OverrideData || m_HighlightedData
-    /// and, when any is present, ORs MeshLayer.Outline and SubMeshFlags.OutlineOnly into the mesh
-    /// batch (BatchInstanceSystem.cs:425-430). Pedestrians and vehicles are both dispatched
-    /// through that same object path (BatchInstanceSystem.cs:344-347, PreCullingFlags.Object), so
-    /// adding Game.Tools.Highlighted gives either the standard selection outline. Every add and
-    /// remove is paired with Game.Common.BatchesUpdated to force a re-batch, matching what the
-    /// game does in ToolClearSystem.cs:111-112 and TransportationOverviewUISystem.ToggleHighlight.
+    /// Tracking half of the tourist marker feature: maintains the <see cref="TouristOutline"/>
+    /// marker on every entity that currently represents a tourist, so
+    /// <see cref="TouristMarkerRenderSystem"/> can draw them with a single cheap query each frame
+    /// instead of walking households at render rate.
     ///
     /// Entity chain, traced from the game:
     ///     TouristHousehold -> HouseholdCitizen -> Citizen
@@ -29,19 +21,23 @@ namespace TourismOverhaul.Systems
     ///         (ObjectEmergeSystem.cs:341, TripNeededSystem.cs:1615)
     ///     Resident.CurrentVehicle.m_Vehicle -> the vehicle it is riding, when aboard one
     ///
-    /// Cost is driven by the number of tourist households, not the number of pedestrians in the
-    /// city: the desired set is built by walking tourist households only, and the removal pass
-    /// walks only what this mod has already marked.
+    /// Note this deliberately does NOT use Game.Tools.Highlighted. That component does produce
+    /// the native outline, but its colour is not per-entity: BatchDataSystem.cs:768 picks from
+    /// the five global colours in RenderingSettingsData, and a plain Highlighted always resolves
+    /// to m_HoveredColor. Recolouring it would change hover for the whole game, so the marker is
+    /// drawn through OverlayRenderSystem instead, which takes an arbitrary colour per call.
+    ///
+    /// Cost is driven by the number of tourist households, not the number of pedestrians.
     /// </summary>
     public partial class TouristHighlightSystem : GameSystemBase
     {
         private EntityQuery m_TouristHouseholdQuery;
-        private EntityQuery m_OutlinedQuery;
+        private EntityQuery m_MarkedQuery;
 
         private EndFrameBarrier m_EndFrameBarrier;
 
-        /// <summary>Number of entities currently outlined. Exposed for diagnostics.</summary>
-        public int OutlinedCount { get; private set; }
+        /// <summary>Number of entities currently marked. Exposed for diagnostics.</summary>
+        public int MarkedCount { get; private set; }
 
         // 262144 frames per day; 128 gives 2048 updates/day, responsive enough for tourists
         // boarding and leaving vehicles without scanning anything large.
@@ -59,8 +55,7 @@ namespace TourismOverhaul.Systems
                 ComponentType.Exclude<Deleted>(),
                 ComponentType.Exclude<Temp>());
 
-            // Only entities this mod outlined, so tool and selection highlights are never touched.
-            m_OutlinedQuery = GetEntityQuery(
+            m_MarkedQuery = GetEntityQuery(
                 ComponentType.ReadOnly<TouristOutline>(),
                 ComponentType.Exclude<Deleted>(),
                 ComponentType.Exclude<Temp>());
@@ -78,8 +73,7 @@ namespace TourismOverhaul.Systems
 
             if (!settings.HighlightTourists)
             {
-                // Setting was turned off: clear everything we added, then stay idle.
-                if (!m_OutlinedQuery.IsEmptyIgnoreFilter)
+                if (!m_MarkedQuery.IsEmptyIgnoreFilter)
                 {
                     ClearAll(commandBuffer);
                 }
@@ -90,8 +84,8 @@ namespace TourismOverhaul.Systems
             try
             {
                 CollectTouristEntities(desired, settings.HighlightTouristVehicles);
-                RemoveStaleOutlines(commandBuffer, desired);
-                AddMissingOutlines(commandBuffer, desired);
+                RemoveStaleMarkers(commandBuffer, desired);
+                AddMissingMarkers(commandBuffer, desired);
             }
             finally
             {
@@ -100,7 +94,7 @@ namespace TourismOverhaul.Systems
         }
 
         /// <summary>
-        /// Every entity that should currently be outlined: each tourist's creature, plus the
+        /// Every entity that should currently be marked: each tourist's creature, plus the
         /// vehicle it is riding when that is enabled.
         /// </summary>
         private void CollectTouristEntities(NativeParallelHashSet<Entity> desired, bool includeVehicles)
@@ -160,32 +154,26 @@ namespace TourismOverhaul.Systems
             }
         }
 
-        /// <summary>
-        /// Drop outlines from anything no longer in the desired set — the tourist left, the
-        /// household was deleted, or they got out of a vehicle.
-        /// </summary>
-        private void RemoveStaleOutlines(EntityCommandBuffer commandBuffer, NativeParallelHashSet<Entity> desired)
+        private void RemoveStaleMarkers(EntityCommandBuffer commandBuffer, NativeParallelHashSet<Entity> desired)
         {
-            NativeArray<Entity> outlined = m_OutlinedQuery.ToEntityArray(Allocator.Temp);
+            NativeArray<Entity> marked = m_MarkedQuery.ToEntityArray(Allocator.Temp);
             try
             {
-                for (int i = 0; i < outlined.Length; i++)
+                for (int i = 0; i < marked.Length; i++)
                 {
-                    if (desired.Contains(outlined[i]))
+                    if (!desired.Contains(marked[i]))
                     {
-                        continue;
+                        commandBuffer.RemoveComponent<TouristOutline>(marked[i]);
                     }
-
-                    RemoveOutline(commandBuffer, outlined[i]);
                 }
             }
             finally
             {
-                outlined.Dispose();
+                marked.Dispose();
             }
         }
 
-        private void AddMissingOutlines(EntityCommandBuffer commandBuffer, NativeParallelHashSet<Entity> desired)
+        private void AddMissingMarkers(EntityCommandBuffer commandBuffer, NativeParallelHashSet<Entity> desired)
         {
             int count = 0;
 
@@ -196,14 +184,10 @@ namespace TourismOverhaul.Systems
                 {
                     count++;
 
-                    if (EntityManager.HasComponent<TouristOutline>(entities[i]))
+                    if (!EntityManager.HasComponent<TouristOutline>(entities[i]))
                     {
-                        continue;
+                        commandBuffer.AddComponent<TouristOutline>(entities[i]);
                     }
-
-                    commandBuffer.AddComponent<Highlighted>(entities[i]);
-                    commandBuffer.AddComponent<TouristOutline>(entities[i]);
-                    commandBuffer.AddComponent<BatchesUpdated>(entities[i]);
                 }
             }
             finally
@@ -211,32 +195,13 @@ namespace TourismOverhaul.Systems
                 entities.Dispose();
             }
 
-            OutlinedCount = count;
+            MarkedCount = count;
         }
 
         private void ClearAll(EntityCommandBuffer commandBuffer)
         {
-            NativeArray<Entity> outlined = m_OutlinedQuery.ToEntityArray(Allocator.Temp);
-            try
-            {
-                for (int i = 0; i < outlined.Length; i++)
-                {
-                    RemoveOutline(commandBuffer, outlined[i]);
-                }
-            }
-            finally
-            {
-                outlined.Dispose();
-            }
-
-            OutlinedCount = 0;
-        }
-
-        private static void RemoveOutline(EntityCommandBuffer commandBuffer, Entity entity)
-        {
-            commandBuffer.RemoveComponent<Highlighted>(entity);
-            commandBuffer.RemoveComponent<TouristOutline>(entity);
-            commandBuffer.AddComponent<BatchesUpdated>(entity);
+            commandBuffer.RemoveComponent<TouristOutline>(m_MarkedQuery, EntityQueryCaptureMode.AtPlayback);
+            MarkedCount = 0;
         }
     }
 }

@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tourism Overhaul — thumbnail exporter</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #14181c; color: #e6edf3; margin: 0; padding: 32px; }
+  h1 { font-size: 18px; font-weight: 600; margin: 0 0 4px; }
+  p  { color: #9aa7b2; font-size: 13px; margin: 0 0 20px; }
+  .row { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
+  canvas { background: #0a1a24; border-radius: 12px; width: 256px; height: 256px; image-rendering: auto; }
+  .controls { display: flex; flex-direction: column; gap: 10px; }
+  button { background: #1d9fc4; color: #04202a; border: 0; border-radius: 6px; padding: 9px 16px;
+           font-size: 13px; font-weight: 600; cursor: pointer; }
+  button:hover { background: #4fd6e8; }
+  label { font-size: 13px; color: #9aa7b2; }
+  select { background: #1c2229; color: #e6edf3; border: 1px solid #2d353d; border-radius: 6px; padding: 6px 8px; }
+</style>
+</head>
+<body>
+
+<h1>Tourism Overhaul — thumbnail exporter</h1>
+<p>Renders Thumbnail.svg to PNG. Pick a size, click Download, and save the file next to this page as
+   <code>Thumbnail.png</code>.</p>
+
+<div class="row">
+  <canvas id="c" width="512" height="512"></canvas>
+  <div class="controls">
+    <label for="size">Output size</label>
+    <select id="size">
+      <option value="512">512 × 512</option>
+      <option value="1024">1024 × 1024</option>
+      <option value="256">256 × 256</option>
+    </select>
+    <button id="dl">Download PNG</button>
+  </div>
+</div>
+
+<script>
+// SVG inlined rather than fetched: file:// pages cannot fetch sibling files in most browsers.
+// Keep in sync with Thumbnail.svg.
+const SVG = `
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#12313f"/><stop offset="1" stop-color="#0a1a24"/>
+    </linearGradient>
+    <linearGradient id="case" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4fd6e8"/><stop offset="1" stop-color="#1d9fc4"/>
+    </linearGradient>
+    <linearGradient id="water" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1d6f8f"/><stop offset="1" stop-color="#0d3b52"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="96" fill="url(#bg)"/>
+  <ellipse cx="256" cy="330" rx="190" ry="90" fill="#3ddc84" opacity="0.16"/>
+  <path d="M0 372 Q128 352 256 372 T512 372 L512 512 L0 512 Z" fill="url(#water)" opacity="0.85"/>
+  <g fill="#0e2836" opacity="0.95">
+    <rect x="120" y="268" width="34" height="106" rx="4"/>
+    <rect x="162" y="238" width="30" height="136" rx="4"/>
+    <rect x="200" y="288" width="28" height="86" rx="4"/>
+    <rect x="284" y="256" width="32" height="118" rx="4"/>
+    <rect x="324" y="298" width="26" height="76" rx="4"/>
+    <rect x="358" y="272" width="34" height="102" rx="4"/>
+  </g>
+  <g transform="translate(256 232)">
+    <rect x="-26" y="-96" width="52" height="26" rx="10" fill="none" stroke="#8fe9f5" stroke-width="13"/>
+    <rect x="-92" y="-74" width="184" height="132" rx="22" fill="url(#case)"/>
+    <rect x="-92" y="-74" width="184" height="132" rx="22" fill="none" stroke="#bff3fb" stroke-width="7" opacity="0.85"/>
+    <rect x="-12" y="-74" width="24" height="132" fill="#0e2836" opacity="0.32"/>
+  </g>
+  <g fill="none" stroke="#8fe9f5" stroke-width="9" stroke-linecap="round" opacity="0.9">
+    <path d="M56 150 Q150 96 236 150" stroke-dasharray="26 20"/>
+    <path d="M456 150 Q362 96 276 150" stroke-dasharray="26 20"/>
+  </g>
+  <g transform="translate(70 156) rotate(28)" fill="#ffffff">
+    <path d="M0 0 L46 -12 L58 -4 L22 12 L10 34 L2 32 L6 12 L-14 18 L-18 10 Z"/>
+  </g>
+  <g transform="translate(414 152)" fill="#ffffff">
+    <rect x="-6" y="-30" width="9" height="26" rx="3"/>
+    <path d="M-34 -4 L34 -4 L22 20 L-22 20 Z"/>
+  </g>
+</svg>`;
+
+const canvas = document.getElementById("c");
+const ctx = canvas.getContext("2d");
+const sizeSelect = document.getElementById("size");
+
+function render(size) {
+  return new Promise((resolve, reject) => {
+    canvas.width = size;
+    canvas.height = size;
+
+    const blob = new Blob([SVG], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+
+    img.onload = () => {
+      ctx.clearRect(0, 0, size, size);
+      ctx.drawImage(img, 0, 0, size, size);
+      URL.revokeObjectURL(url);
+      resolve();
+    };
+    img.onerror = (e) => { URL.revokeObjectURL(url); reject(e); };
+    img.src = url;
+  });
+}
+
+render(512);
+sizeSelect.addEventListener("change", () => render(Number(sizeSelect.value)));
+
+document.getElementById("dl").addEventListener("click", async () => {
+  const size = Number(sizeSelect.value);
+  await render(size);
+  const a = document.createElement("a");
+  a.download = "Thumbnail.png";
+  a.href = canvas.toDataURL("image/png");
+  a.click();
+});
+</script>
+
+</body>
+</html>

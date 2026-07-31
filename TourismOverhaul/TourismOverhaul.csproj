@@ -32,6 +32,9 @@
     <Reference Include="Colossal.Mathematics">
       <Private>false</Private>
     </Reference>
+    <Reference Include="Colossal.UI.Binding">
+      <Private>false</Private>
+    </Reference>
     <Reference Include="Colossal.Collections">
       <Private>false</Private>
     </Reference>
@@ -53,5 +56,31 @@
   </ItemGroup>
 
   <Import Project="$([System.Environment]::GetEnvironmentVariable('CSII_TOOLPATH', 'EnvironmentVariableTarget.User'))\Mod.targets" />
+
+  <!--
+    Overrides Mod.targets' DeployWIP, which does:
+
+        <RemoveDir Directories="$(DeployDir)" />
+        <Copy SourceFiles="@(FilesToDeploy)" ... />
+
+    Webpack writes this mod's UI bundle ($CSII_USERDATAPATH\Mods\TourismOverhaul\*.mjs and
+    *.css) into that same folder, so the RemoveDir silently deletes the frontend every time the
+    managed project is built — the UI module then never registers and the panel rows vanish with
+    no error anywhere.
+
+    This copy is identical minus the RemoveDir, so managed and UI artifacts coexist. Stale
+    managed files are not cleaned up as a result; delete the deploy folder by hand if the
+    assembly is ever renamed.
+
+    Mod.targets documents this override mechanism: declare a target with the same name after the
+    import.
+  -->
+  <Target Name="DeployWIP" AfterTargets="AfterBuild" Condition="'$(NeedBuild)'">
+    <ItemGroup>
+      <FilesToDeploy Include="$(OutDir)\**\*.*" />
+    </ItemGroup>
+    <Message Text="Copy output to deploy directory $(DeployDir) (preserving UI artifacts)" Importance="high" />
+    <Copy SourceFiles="@(FilesToDeploy)" DestinationFiles="@(FilesToDeploy->'$(DeployDir)\%(RecursiveDir)%(Filename)%(Extension)')" />
+  </Target>
 
 </Project>

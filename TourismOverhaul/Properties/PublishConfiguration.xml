@@ -1,59 +1,121 @@
 <Publish>
   <!--
-    NOT READY TO PUBLISH.
-
-    Before the first NewVersion upload the following must be filled in and verified:
-      - ModId stays empty for the first publish; the publisher assigns it.
-      - GameVersion must match the installed build (Paradox rejects mismatches).
-      - Thumbnail and Screenshot paths must exist; the publisher resolves media paths
-        relative to its working directory, so run it from the project directory.
-      - Tags must be validated against the live service, not copied from examples.
+    BEFORE THE FIRST UPLOAD:
+      - GameVersion below must match your installed build, or Paradox rejects the package.
+        Read it from the bottom of the game's main menu screen.
+      - Screenshot entries are commented out until the images exist.
+      - Tags must be validated against the live service rather than trusted from an example.
+    ModId stays empty for the first publish; the publisher assigns it and writes it back.
   -->
   <ModId Value="" />
   <DisplayName Value="Tourism Overhaul" />
-  <ShortDescription Value="Fixes the tourism simulation: arrivals by plane and ferry, demand that scales with city size, real length of stay, and honest numbers." />
+  <ShortDescription Value="Fixes the tourism simulation: tourists actually arrive by plane and ferry, demand scales with your city, hotels fill up, and the numbers finally mean something." />
+
   <LongDescription># Tourism Overhaul
 
-Cities: Skylines II ships tourism with several defects that make the feature feel inert.
-This mod fixes them at the simulation level. Every change was derived by tracing the
-game's own assemblies; nothing here is guesswork.
+Cities: Skylines II ships tourism with several defects that make the whole feature feel inert.
+You can max out city attractiveness and still see almost no visitors. This mod fixes the causes.
 
-## What it fixes
+Every change was derived by decompiling and tracing the game's own assemblies, not by guesswork.
+The full trace, with the file and line behind each finding, is on the GitHub page.
 
-**Arrivals are no longer thrown away.** The base game assigns each tourist a single
-transport mode by one random roll — 10% road, 10% train, 50% air, 30% sea — then looks for
-an outside connection of exactly that type. If none exists it gives up with no fallback,
-but still creates the tourist household without a location. That household can never be
-given citizens, so it is quietly deleted. On a city with no airport and no harbour, 80% of
-all tourist arrivals are destroyed this way. This mod redistributes the share across the
-connection types your city actually has, and keeps the intended preference for planes and
-ferries once you build an airport or harbour.
+## Tourists actually arrive
 
-**Tourism scales with your city.** The base game targets `attractiveness x 15` tourists,
-and attractiveness is itself capped at 100 — a flat 1,500 tourists no matter how large or
-attractive the city becomes. This mod scales the target with population.
+The base game picks each tourist's transport mode with one random roll — 10% road, 10% train,
+50% air, 30% sea — then looks for an outside connection of exactly that type. If your city
+doesn't have one, it gives up. No fallback, no retry. But the tourist household is still
+created, just without a location, and a household with no location can never be given any
+people. It's silently deleted moments later.
 
-**Tourists have a real length of stay.** The game declares and saves a tourist departure
-timer, and a function that returns a stay length, but never calls either. This mod
-implements the mechanic using the field the game already has.
+On a city with no airport and no harbour, that destroys 80% of all tourist arrivals.
 
-**The numbers mean something.** The tourism panel computes a figure roughly eight times
-larger than the game can ever produce, and undercounts tourists who are travelling between
-destinations. This mod reports the real values.
+This mod redistributes the share across the connection types your city actually has, and keeps
+the intended preference for planes and ferries once you build an airport or harbour.
+
+## Arrivals route around congestion
+
+The base game has no capacity concept for outside connections at all. A saturated airport keeps
+receiving its full share, and any tourist who can't travel onward from it is deleted rather than
+rerouted.
+
+This mod watches how many tourists are still waiting at each entrance and shifts arrivals toward
+routes that are moving. Build a harbour and it starts carrying real traffic.
+
+## Tourism scales with your city
+
+The base game targets attractiveness x 15 tourists, and attractiveness itself is capped at 100 —
+a flat 1,500 visitors whether you're a town or a metropolis. Past that ceiling, every extra park
+and landmark does nothing at all.
+
+This mod scales the target with population, so a large attractive city supports a proportionate
+number of visitors. Fully tunable, with a safety ceiling.
+
+## Tourists have a real length of stay
+
+The game declares a tourist departure timer, saves it, and never reads it. It also has a
+function returning a random stay length that nothing ever calls. Both are unfinished.
+
+This mod implements the mechanic using the field the game already has, so visits have a
+believable duration and turnover instead of guests lingering until their money runs out.
+
+## The numbers finally mean something
+
+The tourism panel computes a figure around eight times larger than the simulation can ever
+produce, and its tourist count ignores everyone travelling between destinations.
+
+This mod reports the real values and adds three rows to the Tourism info view:
+
+- Tourists in city — current against the number your city can sustain
+- Hotel rooms free — free against total, across every hotel
+- Local cims away — your own residents currently on holiday elsewhere
+
+## Optional extras
+
+- Hotel room multiplier, 1x to 10x, for zoned commercial hotels. Signature buildings keep their
+  authored capacity.
+- Residents take holidays. The base game suppresses out-of-town travel to roughly 1-3% of
+  leisure trips and blocks it entirely for households with no spare money. Turn this up and your
+  citizens will use your airport too.
+- A coloured ring marker under tourists so you can pick them out of a crowd, with adjustable
+  colour and size.
+
+Everything is individually toggleable, and everything is off or at vanilla values by default
+except the arrival fixes.
 
 ## Compatibility
 
-No Harmony patches, no reflection, no disabled native systems. Arrivals use real outside
-connections, real vehicles, real pathfinding, real hotels and the real economy. Safe to
-add to and remove from an existing save.
+No Harmony patches and no reflection. Arrivals use real outside connections, real vehicles, real
+pathfinding, real hotels and the real economy. Safe to add to an existing save, and safe to
+remove.
 
-Everything is toggleable and tunable in the settings panel.</LongDescription>
+The optional hotel room multiplier replaces the game's lodging system with a copy that applies
+the multiplier — this is unavoidable, because room count is computed inside a compiled job from
+values that also control rent and workplaces. Turning the setting off restores the original
+system immediately. Leave it off if you'd rather nothing native is replaced.
+
+Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-TourismOverhaul</LongDescription>
+
   <Thumbnail Value="Properties/Thumbnail.png" />
-  <Screenshot Value="Properties/Screenshot.png" />
+  <!-- <Screenshot Value="Properties/Screenshots/01-tourism-panel.png" /> -->
+  <!-- <Screenshot Value="Properties/Screenshots/02-settings.png" /> -->
+  <!-- <Screenshot Value="Properties/Screenshots/03-arrivals.png" /> -->
+
   <Tag Value="Code Mod" />
+
   <ForumLink Value="" />
-  <ModVersion Value="0.1.0" />
-  <GameVersion Value="" />
-  <ChangeLog>Initial release.</ChangeLog>
-  <ExternalLink Type="github" Url="" />
+  <ModVersion Value="1.0.0" />
+  <GameVersion Value="TODO" />
+
+  <ChangeLog>Initial release.
+
+- Fixes tourist arrivals being discarded when the city has no airport or harbour.
+- Reroutes arrivals away from congested outside connections.
+- Scales tourist demand with city size instead of capping at 1500.
+- Implements the unused length-of-stay timer.
+- Optional hotel room multiplier.
+- Optional resident holidays out of the city.
+- Adds tourists in city, hotel rooms free and local cims away to the Tourism info view.
+- Optional coloured ring marker on tourists.</ChangeLog>
+
+  <ExternalLink Type="github" Url="https://github.com/Meapy/CS2-TourismOverhaul" />
 </Publish>

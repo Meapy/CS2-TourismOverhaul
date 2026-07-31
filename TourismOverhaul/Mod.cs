@@ -33,14 +33,28 @@ namespace TourismOverhaul
             // Fix B: top up arrivals toward a population-scaled target.
             updateSystem.UpdateAt<TouristDemandSystem>(SystemUpdatePhase.GameSimulation);
 
+            // Fix E: size tourist wallets against hotel prices, and get hotels built sooner.
+            updateSystem.UpdateAt<TouristEconomySystem>(SystemUpdatePhase.GameSimulation);
+
             // Fix C: give hotel guests a real, finite length of stay.
             updateSystem.UpdateAt<TouristStaySystem>(SystemUpdatePhase.GameSimulation);
 
             // Fix D: report the numbers the simulation actually produces.
             updateSystem.UpdateAt<TourismReportingSystem>(SystemUpdatePhase.GameSimulation);
 
-            // Optional view feature: outline tourists in the world.
+            // Hotel room capacity multiplier. Replaces LodgingProviderSystem when enabled.
+            updateSystem.UpdateAt<HotelCapacitySystem>(SystemUpdatePhase.GameSimulation);
+
+            // Sends resident households out of the city on holiday, and counts who is away.
+            updateSystem.UpdateAt<ResidentTravelSystem>(SystemUpdatePhase.GameSimulation);
+
+            // Publishes our tourism figures to the UI layer for the frontend module.
+            updateSystem.UpdateAt<TourismPanelUISystem>(SystemUpdatePhase.UIUpdate);
+
+            // Optional view feature: mark tourists, then draw a coloured ring for each.
             updateSystem.UpdateAt<TouristHighlightSystem>(SystemUpdatePhase.GameSimulation);
+            updateSystem.UpdateBefore<TouristMarkerRenderSystem, Game.Rendering.OverlayRenderSystem>(
+                SystemUpdatePhase.Rendering);
 
             Log.Info($"{ModName}: systems registered");
         }
