@@ -5,6 +5,13 @@ All notable changes to CS2 Tourism Overhaul.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [semantic](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] — 2026-08-01
+
+### Fixed
+
+- The UI bundle failed to build after the retired hotel district module was deleted, because
+  `index.tsx` still imported and registered it. 1.3.0 therefore shipped with a stale `.mjs`.
+
 ## [1.3.0] — 2026-08-01
 
 ### Fixed
