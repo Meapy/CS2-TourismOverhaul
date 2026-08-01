@@ -54,6 +54,17 @@ namespace TourismOverhaul
         [SettingsUISection(SectionMain, GroupDemand)]
         public int PreferLargerTouristGroups { get; set; } = 50;
 
+        /// <summary>
+        /// How strongly visitors are pushed toward shops rather than parks.
+        ///
+        /// Tourists never shop in the base game: the behaviour system picks shopping over leisure,
+        /// but only for a household that has a need, and needs are generated from household stock
+        /// running down — which a tourist household never has. Zero restores that behaviour.
+        /// </summary>
+        [SettingsUISlider(min = 0f, max = 100f, step = 5f, unit = "percentage")]
+        [SettingsUISection(SectionMain, GroupDemand)]
+        public int TouristShoppingChance { get; set; } = 25;
+
         /// <summary>Money per day each visitor spends on shopping, leisure and fares.</summary>
         [SettingsUISlider(min = 0f, max = 20000f, step = 250f, unit = "money")]
         [SettingsUISection(SectionMain, GroupDemand)]
@@ -155,6 +166,27 @@ namespace TourismOverhaul
         /// <summary>Core arrival fix. Off means 80% of arrivals are discarded, as in the base game.</summary>
         [SettingsUIHidden]
         public bool FixArrivalRouting { get; set; } = true;
+
+        /// <summary>
+        /// Gives the tourist target search a usable origin radius.
+        ///
+        /// The base game searches with a radius of zero, so any arrival not standing directly on a
+        /// pedestrian lane finds nothing and is evicted on its first attempt. That is why air and
+        /// sea arrivals fail at 94-98% while road arrivals fail at 34%. Off restores the base game
+        /// behaviour, including the single-shot eviction.
+        /// </summary>
+        [SettingsUIHidden]
+        public bool FixTouristTargetSearch { get; set; } = true;
+
+        /// <summary>
+        /// Frees hotel rooms still held by households that have no one left in them.
+        ///
+        /// Availability is computed as rooms minus the length of the hotel's renter list, so a
+        /// household that empties without leaving that list holds its room forever. Off leaves the
+        /// rooms permanently occupied.
+        /// </summary>
+        [SettingsUIHidden]
+        public bool ReclaimAbandonedHotelRooms { get; set; } = true;
 
         /// <summary>Use the arrival mix weights rather than spreading evenly.</summary>
         [SettingsUIHidden]
@@ -317,12 +349,15 @@ namespace TourismOverhaul
 
             // Hidden
             FixArrivalRouting = true;
+            FixTouristTargetSearch = true;
+            ReclaimAbandonedHotelRooms = true;
             PreferAirAndSea = true;
             LoadAwareArrivals = true;
             ArrivalBacklogSensitivity = 25;
 
             FixTouristDemand = true;
             MaxArrivalsPerUpdate = 128;
+            TouristShoppingChance = 25;
             HotelRoomDemandOccupancy = 80;
             ReplaceNativeSpawner = true;
 
