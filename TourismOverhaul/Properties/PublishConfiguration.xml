@@ -143,10 +143,42 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
   <Tag Value="Code Mod" />
 
   <ForumLink Value="https://forum.paradoxplaza.com/forum/threads/mod-tourism-overhaul-fix-tourism.1937099/" />
-  <ModVersion Value="1.1.0" />
+  <ModVersion Value="1.2.0" />
   <GameVersion Value="1.6.*" />
 
-  <ChangeLog>1.1.0
+  <ChangeLog>1.2.0
+
+This is the big one. Tourists who arrived by plane, ferry or train were leaving again within
+minutes of arriving, and it turned out to be a single unset value in the base game.
+
+When a visitor arrives, the game looks for somewhere for them to go — a hotel, an attraction —
+and searches outward from wherever they are standing. Except the search distance is zero. So
+unless the visitor happens to be standing directly on a footpath, nothing is found, and they are
+sent home immediately. They get one attempt.
+
+Road connections sit on a footpath, so those visitors were fine. Airports, harbours and rail
+connections at the edge of the map do not, so almost everyone arriving that way was turned away
+before they could board a bus, hail a taxi or walk anywhere. Measured in a real city: 94-98% of
+air and sea arrivals evicted, against 34% by road, and it made no difference how many hotel rooms
+were free or how many visitors were sent.
+
+Fixed by searching a sensible distance, and by allowing a few attempts instead of one. Visitors
+now arrive, find their way into the city using the transport you built, and stay.
+
+Also fixed:
+- Hotel rooms were never released when guests left, so availability decayed permanently.
+- Hotels in signature buildings opened with no food, because they were skipped entirely.
+- The hotel opening boost could reduce arrivals instead of increasing them.
+
+New:
+- Tourists actually go shopping. In the base game a visitor never once enters a shop, because
+  shopping trips come from supplies running low at home and a visitor has no home. Their money
+  reached your hotels and nothing else.
+- Arrivals by mode in the Tourism info view: road, train, plane and sea, with each one's share.
+
+---
+
+1.1.0
 
 New:
 - Hotel and motel zones. Two new commercial zones with their own icons. The game's 80 hotel and
