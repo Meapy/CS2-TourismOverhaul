@@ -17,6 +17,8 @@ against the defects.
 | B | Tourist target is a flat ~1,500 regardless of city size | `TouristDemandSystem` |
 | C | Length of stay declared, serialized, and never implemented | `TouristStaySystem` |
 | D | Panel reports ~8x the achievable figure; count omits tourists in transit | `TourismReportingSystem` |
+| E | Hotels cannot be zoned for — they appear at random inside mixed commercial groups | `HotelZoneSystem` |
+| F | Lodging demand is measured against raw room capacity, so adding rooms suppresses hotel construction | `TouristEconomySystem` |
 
 Plus optional extras: a hotel room multiplier (`HotelCapacitySystem`), resident holidays
 (`ResidentTravelSystem`), three new Tourism info view rows (`TourismPanelUISystem` + the `ui`
@@ -73,6 +75,48 @@ the native `TouristLeaveSystem`.
 `CountHouseholdDataSystem` only counts tourist households holding a `Target`, hiding every tourist
 in transit.
 
+### E — Hotel and motel zones
+
+The game ships 80 lodging-only building prefabs (`EU_`/`NA_CommercialHotel01` and `Motel01`, every
+level and lot size), each overriding `m_AllowedSold` to `Lodging` alone. They are real hotel assets,
+but they sit inside the ordinary commercial spawn groups — 20 among 55-120 general buildings in each
+of zone types 4, 7, 35 and 36 — so zoning commercial produces a hotel roughly one time in four,
+wherever the game feels like putting it. There is no vanilla way to ask for one.
+
+`HotelZoneSystem` adds two commercial zones, **Hotels** and **Motels**, and moves those prefabs into
+them. Both theme variants go into one zone each. Hotels stop appearing in ordinary commercial zones,
+which is the point: they appear where you zone for them.
+
+Getting this right meant satisfying three constraints that are easy to miss (findings 9, 10 and 12
+in the diagnosis):
+
+- Zone membership lives in **two** fields. `BuildingSpawnGroupData` controls what may be built where;
+  `SpawnableBuildingData.m_ZonePrefab` controls where a building may stand. Setting only the first
+  makes hotels spawn and then condemn instantly, because `ZoneCheckSystem` judges them against the
+  zone they still claim.
+- The repoint must finish **before the simulation's first tick**. `CondemnedBuildingSystem` deletes a
+  quarter of all condemned buildings every 64 frames, so a late repoint isn't a race — it's a
+  guaranteed demolition.
+- A new zone starts with an empty height range and an unassigned index. Index 0 means
+  `ZoneType.None`, not "zone zero", and reading it early silently assigns every building to no zone.
+
+**Save compatibility:** zone cells store a bare `ushort` index, so hotel zoning painted into a save
+resolves to nothing if the mod is later removed, and can shift if your mod list changes. That's
+inherent to any custom zone, not specific to this mod.
+
+### F — Lodging demand versus room capacity
+
+`CommercialDemandSystem` raises lodging demand only when
+`currentTourists * m_HotelRoomPercentRequirement > m_Lodging.y` (`:187`), and `m_Lodging.y` is raw
+`LodgingProvider` capacity. The shipped requirement is 0.5, so the city only ever wants rooms for
+half its tourists.
+
+This also makes the hotel room multiplier self-defeating: tripling capacity triples apparent supply,
+demand falls to zero, and `ZoneSpawnSystem:319` then rejects every hotel prefab because
+`EvaluateDemandAndAvailability` returns 0 against a `m_MinDemand` of 1. `TouristEconomySystem` scales
+the requirement by the same multiplier, so the setting changes how many guests a hotel holds without
+also claiming the city is oversupplied.
+
 ## Design constraints
 
 - No Harmony patches, no reflection.
@@ -117,5 +161,13 @@ TourismOverhaul/          managed mod (net48)
   Components/             TouristOutline marker
   Properties/             publish configuration, thumbnail
 ui/                       frontend module (.mjs) for the Tourism info view rows
+  src/images/             zone toolbar icons, emitted to coui://ui-mods/images/
 docs/TOURISM-DIAGNOSIS.md full technical trace of every defect
+CHANGELOG.md              release history
 ```
+
+The two zone icons are authored to the game's own conventions — 32x32, a 2:1 isometric plate, and
+the stock zone palette read out of `ZoneCommercialLow.svg`. They reach the game through webpack's
+`asset/resource` rule, which emits them under `publicPath: coui://ui-mods/`; `HotelZoneSystem` puts
+that URL on the zone prefab's `UIObject` and falls back to the template zone's stock icon if the
+file is missing, so a skipped UI build degrades to a plain tile rather than a blank one.

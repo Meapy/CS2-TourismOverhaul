@@ -87,16 +87,38 @@ export const TourismOverhaulRows = () => {
   const hotelRoomsFree = useValue(hotelRoomsFree$);
   const hotelRoomsTotal = useValue(hotelRoomsTotal$);
 
+  const occupancy =
+    hotelRoomsTotal > 0
+      ? Math.round(((hotelRoomsTotal - hotelRoomsFree) / hotelRoomsTotal) * 100)
+      : 0;
+
   return (
     <>
-      <Row left="Local cims away" right={citizensAway.toLocaleString()} />
       <Row
         left="Tourists in city"
         right={`${currentTourists.toLocaleString()} / ${targetTourists.toLocaleString()}`}
+        tooltip="Tourists currently in the city, against the number it can sustain at this
+                 attractiveness and population."
       />
       <Row
         left="Hotel rooms free"
         right={`${hotelRoomsFree.toLocaleString()} / ${hotelRoomsTotal.toLocaleString()}`}
+        subRow
+        tooltip="Free rooms against total rooms. When this reaches zero, arrivals with no room
+                 leave the same evening."
+      />
+      <Row
+        left="Occupancy"
+        right={`${occupancy}%`}
+        subRow
+        subRowDimmed
+        tooltip="How full your hotels are. Sustained high occupancy means lodging is the limit on
+                 tourist numbers."
+      />
+      <Row
+        left="Local cims away"
+        right={citizensAway.toLocaleString()}
+        tooltip="Your own residents currently out of town on holiday."
       />
     </>
   );

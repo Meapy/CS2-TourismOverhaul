@@ -5,11 +5,13 @@
         Read it from the bottom of the game's main menu screen.
       - Screenshot entries are commented out until the images exist.
       - Tags must be validated against the live service rather than trusted from an example.
-    ModId stays empty for the first publish; the publisher assigns it and writes it back.
+    ModId is empty for the very first publish only. The publisher prints the assigned id but does
+    NOT write it back into this file, so it has to be set by hand — and must be, because NewVersion
+    fails with "ModId must be set in configuration" without it.
   -->
-  <ModId Value="" />
+  <ModId Value="153543" />
   <DisplayName Value="Tourism Overhaul" />
-  <ShortDescription Value="Fixes the tourism simulation: tourists actually arrive by plane and ferry, demand scales with your city, hotels fill up, and the numbers finally mean something." />
+  <ShortDescription Value="Fixes the tourism simulation: tourists actually arrive by plane and ferry, demand scales with your city, hotels and motels get their own zones, and the numbers finally mean something." />
 
   <LongDescription># Tourism Overhaul
 
@@ -58,6 +60,24 @@ function returning a random stay length that nothing ever calls. Both are unfini
 This mod implements the mechanic using the field the game already has, so visits have a
 believable duration and turnover instead of guests lingering until their money runs out.
 
+## Hotels and motels get their own zones
+
+The game already ships proper hotel and motel buildings — 80 of them, in both European and North
+American styles, at every level and lot size. You just can't ask for one. They sit mixed in with
+ordinary shops in the commercial zones, so zoning commercial gives you a hotel maybe one lot in
+four, wherever the game feels like putting it.
+
+This mod adds two new zones to the zoning toolbar, Hotels and Motels, and moves those buildings
+into them. Hotels stop turning up in ordinary commercial zones, so your tourist district goes
+where you want it — by the beach, near the airport, around the old town — instead of scattered
+across the map.
+
+Both come with their own icons, drawn to match the game's existing zone art.
+
+A note on removal: zone painting is stored as a plain number in your save, so hotel zoning won't
+mean anything if you later uninstall the mod. That's true of any mod that adds a zone. Everything
+else here is safe to add and remove freely.
+
 ## The numbers finally mean something
 
 The tourism panel computes a figure around eight times larger than the simulation can ever
@@ -72,7 +92,8 @@ This mod reports the real values and adds three rows to the Tourism info view:
 ## Optional extras
 
 - Hotel room multiplier, 1x to 10x, for zoned commercial hotels. Signature buildings keep their
-  authored capacity.
+  authored capacity. The city's sense of how many rooms it needs scales with this, so raising it
+  makes hotels bigger without making the city think it has enough of them.
 - Residents take holidays. The base game suppresses out-of-town travel to roughly 1-3% of
   leisure trips and blocks it entirely for households with no spare money. Turn this up and your
   citizens will use your airport too.
@@ -96,17 +117,60 @@ system immediately. Leave it off if you'd rather nothing native is replaced.
 Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-TourismOverhaul</LongDescription>
 
   <Thumbnail Value="Properties/Thumbnail.png" />
-  <!-- <Screenshot Value="Properties/Screenshots/01-tourism-panel.png" /> -->
-  <!-- <Screenshot Value="Properties/Screenshots/02-settings.png" /> -->
-  <!-- <Screenshot Value="Properties/Screenshots/03-arrivals.png" /> -->
+
+  <!--
+    Ordered deliberately: the two zones lead because they are what is new in 1.1.0 and they read
+    instantly as a screenshot. The panel and markers show the simulation working, and the settings
+    go last because nobody installs a mod for its options screen.
+
+    Source images live in mod-page-images/ at the repository root; see PUBLISHING.md for the copy
+    command that renames them into place.
+
+    JPEG, not PNG: Paradox rejects anything over 2.1 MB and full-resolution game captures exceed
+    that even downscaled. Optimize-Screenshots.ps1 does the conversion. The thumbnail stays PNG —
+    it is flat colour, where PNG is both smaller and sharper.
+  -->
+  <Screenshot Value="Properties/Screenshots/01-hotel-zone.jpg" />
+  <Screenshot Value="Properties/Screenshots/02-motel-zone.jpg" />
+  <Screenshot Value="Properties/Screenshots/03-tourism-panel.jpg" />
+  <Screenshot Value="Properties/Screenshots/04-tourist-markers.jpg" />
+  <Screenshot Value="Properties/Screenshots/05-transport-usage.jpg" />
+  <Screenshot Value="Properties/Screenshots/06-tourism-overlay.jpg" />
+  <Screenshot Value="Properties/Screenshots/07-settings-arrivals.jpg" />
+  <Screenshot Value="Properties/Screenshots/08-settings-hotels.jpg" />
+  <Screenshot Value="Properties/Screenshots/09-hotel-detail.jpg" />
 
   <Tag Value="Code Mod" />
 
-  <ForumLink Value="" />
-  <ModVersion Value="1.0.0" />
-  <GameVersion Value="TODO" />
+  <ForumLink Value="https://forum.paradoxplaza.com/forum/threads/mod-tourism-overhaul-fix-tourism.1937099/" />
+  <ModVersion Value="1.1.0" />
+  <GameVersion Value="1.6.0.*" />
 
-  <ChangeLog>Initial release.
+  <ChangeLog>1.1.0
+
+New:
+- Hotel and motel zones. Two new commercial zones with their own icons. The game's 80 hotel and
+  motel buildings, in both European and North American styles, now only appear where you zone for
+  them instead of at random inside ordinary commercial zones.
+- Arrival speed can now be raised much higher, for large cities that were filling too slowly.
+- Diagnostic logging reports why hotels are or aren't being built.
+
+Fixed:
+- Raising the hotel room multiplier used to stop hotels being built at all. The city measured
+  demand against total rooms, so bigger hotels read as oversupply.
+- Hotels built in the new zones were condemned immediately, and hotels already standing in them
+  were condemned on load and then demolished.
+- Condemned markers that could only be cleared by bulldozing and repainting the zone.
+- Freshly zoned hotel and motel land staying empty.
+- Zone tiles showing no name or description.
+- The hotel opening boost reducing arrivals instead of increasing them.
+
+Note on removal: zone painting is stored as a plain number in your save, so hotel and motel zoning
+won't survive uninstalling the mod. Everything else remains safe to add and remove freely.
+
+---
+
+1.0.0 — Initial release.
 
 - Fixes tourist arrivals being discarded when the city has no airport or harbour.
 - Reroutes arrivals away from congested outside connections.

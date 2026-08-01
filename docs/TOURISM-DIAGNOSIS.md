@@ -216,16 +216,176 @@ the feature reads as broken even in the cases where it is working as designed.
 
 ---
 
+---
+
+## Finding 7 — Two thirds of tourist arrivals are rolled onto prefabs that can never be initialised
+
+A second, independent arrival loss, found by instrumenting a live city rather than by reading.
+
+The resident spawner and the tourist spawner query household prefabs differently:
+
+```csharp
+// HouseholdSpawnSystem.cs:218 — residents
+GetEntityQuery(ReadOnly<ArchetypeData>(), ReadOnly<HouseholdData>(),
+               ComponentType.Exclude<DynamicHousehold>());
+
+// TouristSpawnSystem.cs:177 — tourists
+GetEntityQuery(ComponentType.ReadOnly<ArchetypeData>(), ComponentType.ReadOnly<HouseholdData>());
+```
+
+The tourist spawner is missing `Exclude<DynamicHousehold>()`. That matters because
+`HouseholdInitializeSystem` refuses to initialise those prefabs:
+
+```csharp
+if (m_DynamicHouseholds.HasComponent(prefab))
+{
+    continue;                       // :156
+}
+```
+
+and the `continue` skips the `m_CommandBuffer.RemoveComponent<CurrentBuilding>(...)` at `:250`
+that would normally retire the household from the query. So the household:
+
+- never receives citizens,
+- never stops matching `m_Additions`,
+- counts as nothing in any tourist statistic,
+- and is eventually destroyed as `TouristNoTarget` when `TouristFindTargetSystem` tries to path
+  from its empty citizen buffer.
+
+**Measured in a live city:** 1,166 of 1,805 tourist households — about **65%** — were empty. That is
+the proportion of household prefabs carrying `DynamicHousehold`.
+
+This compounds with Finding 3. On a city with no airport or harbour, vanilla loses 80% of arrivals
+to the transfer-type roll, then roughly 65% of the survivors here — destroying well over 90% of all
+tourist arrivals before a single visitor exists.
+
+---
+
+## Finding 8 — Hotels are scattered across mixed commercial zones
+
+The game ships 80 lodging-only zoned building prefabs: `EU_CommercialHotel01`,
+`NA_CommercialHotel01`, `EU_CommercialMotel01` and `NA_CommercialMotel01`, in every level and lot
+size. Each carries a `BuildingProperties` override setting `m_AllowedSold` to `Lodging` alone, so
+they are genuine hotel assets rather than ordinary shops that happen to host a lodging company.
+
+They are not, however, separable. All 80 sit inside the ordinary commercial spawn groups — 20 among
+55-120 general commercial buildings in each of zone types 4, 7, 35 and 36 (the EU and NA theme
+variants). `ZoneSpawnSystem` chooses a building from whichever group matches the cell's zone
+(`ZoneSpawnSystem.cs:288`, comparing `BuildingSpawnGroupData.m_ZoneType`), so zoning commercial
+yields a hotel roughly one time in four, at a location the game picks rather than the player.
+
+There is no vanilla way to ask for a hotel. Attractions and hotels are the only tourism levers the
+player has, and one of them cannot be placed deliberately.
+
+---
+
+## Finding 9 — Zone membership lives in two fields, and they are checked by different systems
+
+A spawnable building's relationship to its zone is stored twice, and the two are consulted for
+different purposes:
+
+- `BuildingSpawnGroupData` — a shared component holding one `ZoneType`. Decides what may be
+  **built** where. Read by `ZoneSpawnSystem.cs:288`.
+- `SpawnableBuildingData.m_ZonePrefab` — an entity reference. Decides where a building may
+  **stand**. Resolved to a `ZoneType` by `ZoneCheckSystem.ValidateZoneBlocks` (`:337`), which
+  requires the cells underneath to carry that type and attaches `Condemned` when they do not
+  (`:309`).
+
+`BuildingInitializeSystem` derives the first from the second (`:1024`), and in the same pass uses
+`m_ZonePrefab` to widen the zone's height range (`:1045-1061`) and accumulate its corner and narrow
+lot flags (`:1028-1042`). `m_ZonePrefab` is therefore the real source of truth; the spawn group is
+downstream of it.
+
+Moving a building between zones by setting only the spawn group produces a convincing failure:
+the building spawns in the new zone, is then judged against the zone it still claims, and is
+condemned immediately.
+
+---
+
+## Finding 10 — Condemnation is a demolition order, and it is only ever re-evaluated locally
+
+`Condemned` is not a warning state. `CondemnedBuildingSystem` runs every 64 frames and deletes each
+condemned building with probability 1/4 per pass (`:36-40`, `GetUpdateInterval => 64`), so half are
+gone within about 170 frames.
+
+The check that clears it is far less eager. `ZoneCheckSystem` only runs when zoning has changed, and
+only inspects buildings inside the changed bounds (`:475-484`, gated on
+`m_ZoneUpdateCollectSystem.isUpdated` and iterating `GetUpdatedBounds`). It never sweeps the city. A
+building condemned by a transient mismatch is therefore never revisited on its own — bulldozing and
+repainting the zone is the only thing that clears it, because that is what marks the bounds dirty.
+
+Two consequences for any mod that repoints buildings between zones:
+
+1. The repoint must complete before the simulation's first tick. Anything later is not a race, it is
+   a guaranteed demolition of every affected building.
+2. Clearing `Condemned` by hand strands the notification icon. `ZoneCheckSystem` removes that icon
+   only on the branch where it still finds the component attached (`:301-305`), so removing the
+   component alone leaves a permanent marker on a building that is otherwise fine.
+
+---
+
+## Finding 11 — Lodging demand is measured against raw room count, so adding capacity suppresses it
+
+`CommercialDemandSystem` raises `Lodging` demand only when
+
+```
+currentTourists * m_HotelRoomPercentRequirement > m_Lodging.y        (:187)
+```
+
+`m_Lodging.y` is filled by `TourismSystem` from `LodgingProvider` capacity (`:90`). When demand is
+zero, `EvaluateDemandAndAvailability` returns 0 for every hotel prefab, which fails the
+`num >= m_MinDemand` test in `ZoneSpawnSystem:319` — `m_MinDemand` is 1 outside debug — and no hotel
+is built anywhere, regardless of how much land is zoned for it.
+
+The shipped `m_HotelRoomPercentRequirement` is 0.5, so the city only ever wants rooms for half its
+tourists and lodging runs permanently behind. More subtly, any change that raises room capacity per
+building also raises `m_Lodging.y`, which the city reads as oversupply. Multiplying hotel capacity
+therefore switches hotel construction off — the intervention defeats itself unless the requirement
+is scaled by the same factor.
+
+---
+
+## Finding 12 — New zones start with an empty height range and an unassigned index
+
+Two initialisation details matter to any mod that adds a zone.
+
+`ZoneSystem.InitializeZonePrefabs` creates a zone with a deliberately empty height range
+(`:180-182`): `m_MinOddHeight` and `m_MinEvenHeight` at `ushort.MaxValue`, `m_MaxHeight` at 0. The
+range is widened afterwards by `BuildingInitializeSystem` as buildings register against the zone. A
+zone whose buildings are attached later than that pass keeps min-above-max, and no lot can host
+anything.
+
+The zone's index is assigned by `GetNextIndex` (`:212-226`) as "first freed slot, otherwise append",
+and only when `InitializeZonePrefabs` runs — before that, `ZoneData.m_ZoneType` reads 0, which is
+`ZoneType.None`. Since `GetNextIndex` never returns 0, index zero is an unambiguous "not ready yet"
+signal. Code that reads the index earlier will silently receive `None` and assign every building to
+no zone at all.
+
+The index also has save implications: zone cells store the bare `ushort`, so painted zoning only
+survives a reload if the zone is handed back the same number. That depends on how many zone prefabs
+exist when it registers, which is a property of the player's whole mod list rather than of any one
+mod.
+
+---
+
 ## Summary of root causes
 
 | # | Root cause | Severity | Fixable without Harmony? |
 |---|---|---|---|
+| 7 | ~65% of arrivals rolled onto `DynamicHousehold` prefabs that are never initialised | **Critical** | **Yes** — exclude them when spawning |
 | 3 | 80% of arrivals discarded when Air/Ship OCs are absent | **Critical** | **Yes** — `m_TouristOCSpawnParameters` is a writable singleton component |
 | 2 | Target population capped at ~1,500 regardless of city size | **Critical** | Partly — requires replacing the spawn decision |
 | 1 | Attractiveness saturates at 100, further building is inert | High | Partly — same path as #2 |
 | 4 | No length-of-stay; nightly eviction without hotels | High | Yes — new system using the existing unused field |
+| 11 | Lodging demand measured against raw capacity, so adding rooms suppresses hotel construction | High | Yes — scale `m_HotelRoomPercentRequirement` to match |
+| 8 | Hotels cannot be zoned for; they appear at random inside mixed commercial groups | High | Yes — new zones plus repointed `m_ZonePrefab` |
 | 6 | UI reports ~8x the achievable number | Medium | Yes — write `Tourism.m_AverageTourists` after the native system |
 | 5 | Tourist count under-reports while seeking lodging | Low | Yes — recompute in our own system |
+
+Findings 9, 10 and 12 are not defects in their own right — they are the constraints any fix for
+finding 8 has to satisfy, and each one produced a distinct, misleading symptom during development:
+buildings that spawned and instantly condemned (9), condemnation that survived the fix and could
+only be cleared by repainting (10), and zones that painted but never built (12).
 
 ---
 

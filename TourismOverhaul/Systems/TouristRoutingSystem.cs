@@ -119,9 +119,23 @@ namespace TourismOverhaul.Systems
 
             if (!m_BaseSplitCaptured)
             {
-                // First look after a load: whatever is there is the unmodified value.
+                // First look after a load: whatever is there is the unmodified value. Kept as the
+                // fallback for when every configured weight is zero.
                 m_BaseSplit = parameters.m_TouristOCSpawnParameters;
                 m_BaseSplitCaptured = true;
+            }
+
+            // Preferred mix of arrival modes. The shipped values are road .1, train .1, air .5,
+            // ship .3; these sliders replace them so the balance is the player's to set.
+            float4 preferred = new float4(
+                math.max(0, settings.ArrivalWeightRoad),
+                math.max(0, settings.ArrivalWeightTrain),
+                math.max(0, settings.ArrivalWeightAir),
+                math.max(0, settings.ArrivalWeightShip));
+
+            if (preferred.x + preferred.y + preferred.z + preferred.w <= 0f)
+            {
+                preferred = m_BaseSplit;
             }
 
             CollectConnections(out OutsideConnectionTransferType available, out int4 connectionCounts,
@@ -147,7 +161,7 @@ namespace TourismOverhaul.Systems
                 BacklogPerConnection = backlog;
 
                 float4 split = BuildSplit(
-                    m_BaseSplit, available, settings.PreferAirAndSea,
+                    preferred, available, settings.PreferAirAndSea,
                     backlog, math.max(1, settings.ArrivalBacklogSensitivity));
 
                 if (m_HasWritten && math.all(math.abs(m_LastWritten - split) < kWriteThreshold))
