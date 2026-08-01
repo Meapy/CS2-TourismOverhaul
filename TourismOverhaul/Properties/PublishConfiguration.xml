@@ -143,10 +143,34 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
   <Tag Value="Code Mod" />
 
   <ForumLink Value="https://forum.paradoxplaza.com/forum/threads/mod-tourism-overhaul-fix-tourism.1937099/" />
-  <ModVersion Value="1.2.0" />
+  <ModVersion Value="1.3.0" />
   <GameVersion Value="1.6.*" />
 
-  <ChangeLog>1.2.0
+  <ChangeLog>1.3.0
+
+Tourist numbers now find their own level.
+
+Arrivals used to be sent at a flat-out rate no matter how full the city already was, which meant
+the game was creating, housing and cleaning up far more visitors than it could ever keep — a
+quarter of a million a month to sustain eighteen thousand. Cutting that by six made no difference
+to the tourist population at all, which is how we knew the rest was waste. It was costing
+simulation speed for nothing.
+
+Arrivals are now paced against how far the city is from its potential. Numbers still climb
+whenever you have rooms free and attractiveness to draw people in, and ease off as the city fills
+rather than hammering away and pushing visitors back out. Build more hotels and the flow picks up
+again on its own.
+
+Also in this release:
+- Faster. Several systems were doing far more work per tick than they needed to.
+- Removed a retired experiment and a one-shot survey that was re-running on every load.
+
+Arrival speed is now a ceiling for pacing rather than the thing setting the rate, so you can leave
+it high without flooding the city.
+
+---
+
+1.2.0
 
 This is the big one. Tourists who arrived by plane, ferry or train were leaving again within
 minutes of arriving, and it turned out to be a single unset value in the base game.

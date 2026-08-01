@@ -5,6 +5,36 @@ All notable changes to CS2 Tourism Overhaul.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [semantic](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] — 2026-08-01
+
+### Fixed
+
+- **Arrivals now settle by themselves.** The fill rate was `deficit / 16`, which had a unit error —
+  the deficit counts citizens while arrivals counts households, and a household is a party of two or
+  three — and took no account of running 1,024 times per in-game month. A shortfall of 20,000 asked
+  for 1,250 parties per update, so the spawner pinned at its ceiling and stayed there, dispatching a
+  quarter of a million visitors a month to sustain eighteen thousand. Cutting the rate sixfold left
+  the tourist population unchanged, which showed the surplus was pure waste: entities created,
+  initialised, emptied and cleaned up, costing simulation time across the whole game for no
+  visitors. The rate is now proportional to the gap, so numbers still climb whenever rooms and
+  attractiveness allow, and fade to a trickle as the city fills.
+- **Performance.** The replacement target search rebuilt a citywide lookup once per household rather
+  than once per update, and ran on the native system's cadence despite being single-threaded rather
+  than a Burst job. Room reclamation now runs four times less often, which costs a few idle seconds
+  per vacated room and nothing else.
+
+### Changed
+
+- Arrival speed is a ceiling for pacing rather than the thing driving the rate, which is what the
+  name always implied.
+- Room reclamation only logs when it hits its per-update ceiling, which is the case worth knowing
+  about — at steady state it was reporting every pass and burying everything else.
+
+### Removed
+
+- The retired hotel district experiment and the one-shot hotel asset survey, which had served its
+  purpose and re-ran the same scan on every load.
+
 ## [1.2.0] — 2026-08-01
 
 ### Fixed

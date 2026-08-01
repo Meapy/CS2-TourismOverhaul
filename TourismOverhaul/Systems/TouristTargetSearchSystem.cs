@@ -97,14 +97,23 @@ namespace TourismOverhaul.Systems
 
         private bool m_NativeDisabled;
 
+        /// <summary>Rebuilt once per update, not once per household.</summary>
+        private BufferLookup<Game.Vehicles.OwnedVehicle> m_OwnedVehicles;
+
         /// <summary>Targets found since load. For diagnostics.</summary>
         public int TargetsFound { get; private set; }
 
         /// <summary>Households evicted after exhausting their retries. For diagnostics.</summary>
         public int Evictions { get; private set; }
 
-        // Matches the native system's cadence.
-        public override int GetUpdateInterval(SystemUpdatePhase phase) => 16;
+        // The native system runs every 16 frames as a Burst-compiled parallel job. This one is
+        // managed and single-threaded, so the same cadence costs far more: a full ToEntityArray
+        // over every seeker in the city, sixteen times per 256 frames, to process at most 512.
+        //
+        // 64 still clears 2,048 households per 256 frames, which is well above the arrival rate any
+        // city sustains, and cuts the scan cost to a quarter. A tourist waits a few frames longer
+        // for a destination and nothing else changes.
+        public override int GetUpdateInterval(SystemUpdatePhase phase) => 64;
 
         protected override void OnCreate()
         {
@@ -185,6 +194,12 @@ namespace TourismOverhaul.Systems
 
             EntityCommandBuffer commandBuffer = m_EndFrameBarrier.CreateCommandBuffer();
             NativeQueue<SetupQueueItem> pathfindQueue = m_PathfindSetupSystem.GetQueue(this, 64);
+
+            // Built once per update rather than once per household. This was inside RequestPath,
+            // which meant constructing a lookup over every owned-vehicle buffer in the city for
+            // every single tourist processed — up to 512 times an update, for a value that does
+            // not change within the update.
+            m_OwnedVehicles = GetBufferLookup<Game.Vehicles.OwnedVehicle>(isReadOnly: true);
 
             NativeArray<Entity> seekers = m_SeekerQuery.ToEntityArray(Allocator.Temp);
 
@@ -307,10 +322,8 @@ namespace TourismOverhaul.Systems
                 m_Entity = household
             };
 
-            BufferLookup<Game.Vehicles.OwnedVehicle> ownedVehicles =
-                GetBufferLookup<Game.Vehicles.OwnedVehicle>(isReadOnly: true);
-
-            PathUtils.UpdateOwnedVehicleMethods(household, ref ownedVehicles, ref parameters, ref origin, ref destination);
+            PathUtils.UpdateOwnedVehicleMethods(
+                household, ref m_OwnedVehicles, ref parameters, ref origin, ref destination);
 
             queue.Enqueue(new SetupQueueItem(household, parameters, origin, destination));
         }

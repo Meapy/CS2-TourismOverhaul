@@ -41,8 +41,21 @@ namespace TourismOverhaul.Systems
         private EntityQuery m_TouristHouseholdQuery;
 
         private EntityQuery m_LeakedHouseholdQuery;
+        /// <summary>
+        /// Citizens per travel party, used to turn a shortfall in people into a number of
+        /// households to create. Measured at roughly 2.3 across a session with the group-size
+        /// preference at its default; the exact value only affects how briskly the gap closes.
+        /// </summary>
+        private const float kAveragePartySize = 2.3f;
+
+        /// <summary>
+        /// Updates over which to close the shortfall. This system runs 1,024 times per in-game
+        /// month, so 256 fills a gap over roughly a quarter of a month — brisk enough to feel
+        /// responsive after building hotels, gentle enough not to overshoot and evict.
+        /// </summary>
+        private const int kFillUpdates = 256;
+
         private EntityQuery m_HotelQuery;
-        private EntityQuery m_TransportStationQuery;
 
         private CitySystem m_CitySystem;
         private SimulationSystem m_SimulationSystem;
@@ -125,12 +138,6 @@ namespace TourismOverhaul.Systems
             m_CitySystem = World.GetOrCreateSystemManaged<CitySystem>();
             m_SimulationSystem = World.GetOrCreateSystemManaged<SimulationSystem>();
             m_TimeSystem = World.GetOrCreateSystemManaged<TimeSystem>();
-
-            m_TransportStationQuery = GetEntityQuery(
-                ComponentType.ReadOnly<Game.Buildings.TransportStation>(),
-                ComponentType.ReadOnly<PrefabRef>(),
-                ComponentType.Exclude<Deleted>(),
-                ComponentType.Exclude<Temp>());
             m_EndFrameBarrier = World.GetOrCreateSystemManaged<EndFrameBarrier>();
             m_NativeSpawnSystem = World.GetOrCreateSystemManaged<TouristSpawnSystem>();
             m_WelcomeSystem = World.GetOrCreateSystemManaged<HotelWelcomeSystem>();
@@ -279,11 +286,28 @@ namespace TourismOverhaul.Systems
                 cap = math.min(1024, cap * math.max(1, settings.HotelWelcomeArrivalMultiplier));
             }
 
-            // Approach the target asymptotically so arrivals ease off as the city fills instead of
-            // overshooting and then evicting. The divisor only binds near the target: at a large
-            // shortfall this exceeds the cap, leaving MaxArrivalsPerUpdate as the real control,
-            // which is what makes that slider behave the way its name implies.
-            int arrivals = math.clamp(deficit / 16, 1, cap);
+            // Convert the shortfall into a number of travel parties, then spread it over a fill
+            // horizon so the city approaches its target instead of overshooting.
+            //
+            // The old form was deficit / 16, which had a unit error: deficit counts citizens while
+            // arrivals counts households, and a household is a party of two or three. It also took
+            // no account of how often this runs — 1,024 times per in-game month — so a shortfall of
+            // 20,000 asked for 1,250 parties per update, over a thousand times a month. The spawner
+            // simply pinned at its ceiling and stayed there, dispatching a quarter of a million
+            // visitors a month to sustain eighteen thousand. Measured: cutting the rate sixfold left
+            // the tourist population unchanged, so the surplus was pure waste — entities created,
+            // initialised, emptied and cleaned up, costing simulation time for no visitors.
+            //
+            // Dividing by the party size and the horizon makes the rate proportional to the gap, so
+            // it settles by itself: wide gap, brisk arrivals; nearly full, a trickle. Numbers still
+            // climb whenever the target exceeds the population, and the target already rises with
+            // attractiveness, population and hotel rooms — so building rooms while attractiveness is
+            // high reopens the gap and arrivals pick up again on their own.
+            //
+            // MaxArrivalsPerUpdate is now a ceiling for pacing rather than the thing driving the
+            // rate, which is what it was always meant to be.
+            int parties = (int)math.ceil(deficit / (kAveragePartySize * kFillUpdates));
+            int arrivals = math.clamp(parties, 1, cap);
 
             SpawnTouristHouseholds(arrivals, settings);
         }
@@ -597,104 +621,6 @@ namespace TourismOverhaul.Systems
             m_ArrivalRate = math.all(m_ArrivalRate == 0f)
                 ? sample
                 : math.lerp(m_ArrivalRate, sample, 0.05f);
-        }
-
-        /// <summary>
-        /// Collects the city's airports and harbours, so air and sea arrivals can start there.
-        ///
-        /// Classified by what a station refuels. TransportStationData carries no transport type,
-        /// but a building that refuels aircraft is an airport and one that refuels watercraft is a
-        /// harbour, which is accurate enough for choosing where to put an arriving visitor. Both
-        /// lists may come back empty, in which case arrivals fall back to the outside connection
-        /// exactly as before.
-        /// </summary>
-        private void CollectArrivalBuildings(NativeList<Entity> airports, NativeList<Entity> harbours)
-        {
-            if (m_TransportStationQuery.IsEmptyIgnoreFilter)
-            {
-                return;
-            }
-
-            NativeArray<Entity> stations = m_TransportStationQuery.ToEntityArray(Allocator.Temp);
-            try
-            {
-                for (int i = 0; i < stations.Length; i++)
-                {
-                    Entity prefab = EntityManager.GetComponentData<PrefabRef>(stations[i]).m_Prefab;
-
-                    if (!EntityManager.HasComponent<TransportStationData>(prefab))
-                    {
-                        continue;
-                    }
-
-                    TransportStationData data = EntityManager.GetComponentData<TransportStationData>(prefab);
-
-                    if (data.m_AircraftRefuelTypes != 0)
-                    {
-                        airports.Add(stations[i]);
-                    }
-                    else if (data.m_WatercraftRefuelTypes != 0)
-                    {
-                        harbours.Add(stations[i]);
-                    }
-                }
-            }
-            finally
-            {
-                stations.Dispose();
-            }
-
-            // The heuristic below is the weak point of this fix: if it matches nothing, arrivals
-            // fall back to the outside connection and the behaviour is silently unchanged. Logging
-            // it once turns that into an observable fact instead of an assumption.
-            if (!m_LoggedArrivalBuildings)
-            {
-                m_LoggedArrivalBuildings = true;
-                Mod.Log.Info(
-                    $"Arrival buildings found: {airports.Length} airport(s), {harbours.Length} " +
-                    $"harbour(s), from {m_TransportStationQuery.CalculateEntityCount()} transport " +
-                    $"station(s). Air and sea arrivals fall back to the outside connection when 0.");
-            }
-        }
-
-        private bool m_LoggedArrivalBuildings;
-
-        /// <summary>
-        /// Where a visitor should physically appear, given the connection they came through.
-        ///
-        /// Air and sea outside connections sit at the map edge with no pavement, and
-        /// TouristFindTargetSystem searches for a hotel or attraction from wherever the arrival is
-        /// standing — once, with no retry, evicting the household as TouristNoTarget the moment the
-        /// search comes back empty (:116-144). From a map-edge node that search has to solve
-        /// map edge, then ship or aeroplane line, then station, then bus, then hotel, in a single
-        /// simplified query, and it nearly always fails. Measured at 98% eviction for air and sea
-        /// against 34% for road, which arrives on the walkable network and mostly succeeds.
-        ///
-        /// The spare capacity on those lines never helps, because boarding happens after a Target
-        /// is set, not before: nobody survives long enough to queue for the boat.
-        ///
-        /// Starting them at the terminal instead is both the fix and the more truthful model — a
-        /// visitor who flew in is at your airport, not hovering over the map edge — and it puts
-        /// them on the network your buses already serve.
-        /// </summary>
-        private static Entity SelectArrivalBuilding(
-            OutsideConnectionTransferType type,
-            Entity connection,
-            NativeList<Entity> airports,
-            NativeList<Entity> harbours,
-            ref Random random)
-        {
-            if ((type & OutsideConnectionTransferType.Air) != 0 && airports.Length > 0)
-            {
-                return airports[random.NextInt(airports.Length)];
-            }
-
-            if ((type & OutsideConnectionTransferType.Ship) != 0 && harbours.Length > 0)
-            {
-                return harbours[random.NextInt(harbours.Length)];
-            }
-
-            return connection;
         }
 
         /// <summary>

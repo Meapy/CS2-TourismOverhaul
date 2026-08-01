@@ -67,9 +67,14 @@ namespace TourismOverhaul.Systems
         /// <summary>Husk households deleted since load. For diagnostics.</summary>
         public int HusksRemoved { get; private set; }
 
-        // 262144 frames per in-game day. Frequent enough to keep pace with departures without
-        // rescanning every hotel each tick.
-        public override int GetUpdateInterval(SystemUpdatePhase phase) => 512;
+        // 262144 frames per in-game day, so this runs 128 times a day.
+        //
+        // Every pass walks each hotel's full renter buffer with per-entity lookups, which is the
+        // expensive part and scales with the number of guests rather than the number of departures.
+        // Running it four times less often costs nothing that matters: a room sits idle for a few
+        // seconds longer before it is offered again, and the caps below still clear far more per
+        // day than any city generates. The initial backlog drains a little slower, once.
+        public override int GetUpdateInterval(SystemUpdatePhase phase) => 2048;
 
         protected override void OnCreate()
         {
@@ -144,9 +149,13 @@ namespace TourismOverhaul.Systems
 
             RoomsReclaimed += released;
 
-            if (released > 0 && Mod.Settings != null && Mod.Settings.DiagnosticLogging)
+            // Only worth reporting when it is doing unusual work. At steady state this fires every
+            // pass and says nothing, which buries everything else in the log.
+            if (released >= kMaxRoomsPerUpdate && Mod.Settings != null && Mod.Settings.DiagnosticLogging)
             {
-                Mod.Log.Info($"Released {released} hotel room(s) held by empty households.");
+                Mod.Log.Info(
+                    $"Released {released} hotel room(s) held by empty households — at the per-update " +
+                    $"ceiling, so a backlog is still draining.");
             }
         }
 
