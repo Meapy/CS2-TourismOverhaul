@@ -42,9 +42,11 @@ namespace TourismOverhaul.Systems
 
         private EntityQuery m_LeakedHouseholdQuery;
         private EntityQuery m_HotelQuery;
+        private EntityQuery m_TransportStationQuery;
 
         private CitySystem m_CitySystem;
         private SimulationSystem m_SimulationSystem;
+        private TimeSystem m_TimeSystem;
         private EndFrameBarrier m_EndFrameBarrier;
         private TouristSpawnSystem m_NativeSpawnSystem;
         private HotelWelcomeSystem m_WelcomeSystem;
@@ -75,6 +77,40 @@ namespace TourismOverhaul.Systems
         /// <summary>Households this system tried to create since load.</summary>
         public int SpawnAttempts { get; private set; }
 
+        /// <summary>
+        /// Tourists dispatched through each connection type, as (road, train, air, ship).
+        ///
+        /// Counted in citizens rather than households, because a household is one to four people
+        /// and the interesting question is how many visitors each mode delivers.
+        ///
+        /// This is a flow, not a population: it counts everyone who came through the door over a
+        /// month, where CurrentTourists counts who is standing in the city right now. The two
+        /// differ by the average length of stay and are not expected to be close.
+        ///
+        /// Counted at dispatch, immediately after the outside connection is resolved. Anything the
+        /// game later discards — a household that never gets initialised — is still counted here,
+        /// so treat this as arrivals sent rather than visitors confirmed.
+        ///
+        /// Reported as a smoothed rate per calendar month, not a running total. See
+        /// UpdateArrivalRate for why a calendar bucket was the wrong shape here.
+        /// </summary>
+        public int4 MonthlyArrivalsByMode => (int4)math.round(m_ArrivalRate);
+
+        // Smoothed arrivals per month, and the accumulator feeding it.
+        private float4 m_ArrivalRate;
+        private int4 m_ArrivalsSinceSample;
+        private float m_LastNormalizedDate;
+        private bool m_HasLastDate;
+
+        /// <summary>Arrivals so far in the current month, for diagnostics that need a live figure.</summary>
+        public int4 ThisMonthArrivals => m_ThisMonthArrivals;
+
+        /// <summary>Calendar month index, 0-11. Lets other systems reset on the same boundary.</summary>
+        public int MonthIndex => m_CurrentMonth;
+
+        private int4 m_ThisMonthArrivals;
+        private int m_CurrentMonth = -1;
+
         /// <summary>Households actually created — attempts minus failed connection lookups.</summary>
         public int SpawnSuccesses { get; private set; }
 
@@ -88,6 +124,13 @@ namespace TourismOverhaul.Systems
 
             m_CitySystem = World.GetOrCreateSystemManaged<CitySystem>();
             m_SimulationSystem = World.GetOrCreateSystemManaged<SimulationSystem>();
+            m_TimeSystem = World.GetOrCreateSystemManaged<TimeSystem>();
+
+            m_TransportStationQuery = GetEntityQuery(
+                ComponentType.ReadOnly<Game.Buildings.TransportStation>(),
+                ComponentType.ReadOnly<PrefabRef>(),
+                ComponentType.Exclude<Deleted>(),
+                ComponentType.Exclude<Temp>());
             m_EndFrameBarrier = World.GetOrCreateSystemManaged<EndFrameBarrier>();
             m_NativeSpawnSystem = World.GetOrCreateSystemManaged<TouristSpawnSystem>();
             m_WelcomeSystem = World.GetOrCreateSystemManaged<HotelWelcomeSystem>();
@@ -182,6 +225,9 @@ namespace TourismOverhaul.Systems
             {
                 population = EntityManager.GetComponentData<Population>(city).m_Population;
             }
+
+            RollOverMonthIfNeeded();
+            UpdateArrivalRate();
 
             CurrentTourists = CountTouristCitizens();
 
@@ -458,6 +504,250 @@ namespace TourismOverhaul.Systems
             return best;
         }
 
+        /// <summary>
+        /// Banks the month's arrival counts when the in-game calendar turns over.
+        ///
+        /// Derived from normalizedDate, the position through the year, rather than from
+        /// GetCurrentDateTime().Month. That property cannot be used: the date is built as
+        ///
+        ///     day = 1 + floor(daysPerYear * normalizedDate) % daysPerYear     (TimeSystem:183)
+        ///     CreateDateTime(year, day, ...) => DateTime(0).AddDays(day - 1)  (TimeSystem:165)
+        ///
+        /// and TimeSettingsPrefab ships m_DaysPerYear = 12, so day never exceeds 12 and the
+        /// resulting DateTime never leaves January. Month is permanently 1, so a rollover keyed on
+        /// it never fires and the counters accumulate for the whole session.
+        ///
+        /// Twelve months to a year is a calendar fact rather than a game setting, so scaling
+        /// normalizedDate by 12 gives the displayed month whatever daysPerYear is set to. With the
+        /// shipped value of 12 that also means one in-game day is one displayed month.
+        /// </summary>
+        private void RollOverMonthIfNeeded()
+        {
+            if (m_TimeSystem == null)
+            {
+                return;
+            }
+
+            int month = (int)math.floor(math.saturate(m_TimeSystem.normalizedDate) * 12f) % 12;
+
+            if (month == m_CurrentMonth)
+            {
+                return;
+            }
+
+            m_ThisMonthArrivals = default;
+            m_CurrentMonth = month;
+        }
+
+        /// <summary>
+        /// Maintains arrivals as a smoothed per-month rate rather than a running total.
+        ///
+        /// A calendar bucket was the wrong shape for this row. With m_DaysPerYear = 12 a displayed
+        /// month is one in-game day, which is over an hour of real play at normal speed, so the
+        /// figure climbed for that whole hour before it meant anything — and reset to zero on
+        /// reload, because counters are not saved. A visibly climbing number invites the reading
+        /// that arrivals are running away, when it is simply a total that has not finished.
+        ///
+        /// Measuring elapsed months from normalizedDate rather than from a frame count keeps this
+        /// correct at any speed and for any m_DaysPerYear, since twelve months to a year is a
+        /// calendar fact rather than a game setting.
+        /// </summary>
+        private void UpdateArrivalRate()
+        {
+            if (m_TimeSystem == null)
+            {
+                return;
+            }
+
+            float date = math.saturate(m_TimeSystem.normalizedDate);
+
+            if (!m_HasLastDate)
+            {
+                m_LastNormalizedDate = date;
+                m_HasLastDate = true;
+                return;
+            }
+
+            float elapsed = date - m_LastNormalizedDate;
+
+            // Year wrap, or the clock moved backwards after a load.
+            if (elapsed < 0f)
+            {
+                elapsed += 1f;
+            }
+
+            float months = elapsed * 12f;
+
+            // Too small an interval makes the division explode; wait for the next sample.
+            if (months < 0.0001f)
+            {
+                return;
+            }
+
+            m_LastNormalizedDate = date;
+
+            float4 sample = new float4(
+                m_ArrivalsSinceSample.x, m_ArrivalsSinceSample.y,
+                m_ArrivalsSinceSample.z, m_ArrivalsSinceSample.w) / months;
+
+            m_ArrivalsSinceSample = default;
+
+            // Seed on the first real sample so the row is meaningful immediately rather than
+            // easing up from zero.
+            m_ArrivalRate = math.all(m_ArrivalRate == 0f)
+                ? sample
+                : math.lerp(m_ArrivalRate, sample, 0.05f);
+        }
+
+        /// <summary>
+        /// Collects the city's airports and harbours, so air and sea arrivals can start there.
+        ///
+        /// Classified by what a station refuels. TransportStationData carries no transport type,
+        /// but a building that refuels aircraft is an airport and one that refuels watercraft is a
+        /// harbour, which is accurate enough for choosing where to put an arriving visitor. Both
+        /// lists may come back empty, in which case arrivals fall back to the outside connection
+        /// exactly as before.
+        /// </summary>
+        private void CollectArrivalBuildings(NativeList<Entity> airports, NativeList<Entity> harbours)
+        {
+            if (m_TransportStationQuery.IsEmptyIgnoreFilter)
+            {
+                return;
+            }
+
+            NativeArray<Entity> stations = m_TransportStationQuery.ToEntityArray(Allocator.Temp);
+            try
+            {
+                for (int i = 0; i < stations.Length; i++)
+                {
+                    Entity prefab = EntityManager.GetComponentData<PrefabRef>(stations[i]).m_Prefab;
+
+                    if (!EntityManager.HasComponent<TransportStationData>(prefab))
+                    {
+                        continue;
+                    }
+
+                    TransportStationData data = EntityManager.GetComponentData<TransportStationData>(prefab);
+
+                    if (data.m_AircraftRefuelTypes != 0)
+                    {
+                        airports.Add(stations[i]);
+                    }
+                    else if (data.m_WatercraftRefuelTypes != 0)
+                    {
+                        harbours.Add(stations[i]);
+                    }
+                }
+            }
+            finally
+            {
+                stations.Dispose();
+            }
+
+            // The heuristic below is the weak point of this fix: if it matches nothing, arrivals
+            // fall back to the outside connection and the behaviour is silently unchanged. Logging
+            // it once turns that into an observable fact instead of an assumption.
+            if (!m_LoggedArrivalBuildings)
+            {
+                m_LoggedArrivalBuildings = true;
+                Mod.Log.Info(
+                    $"Arrival buildings found: {airports.Length} airport(s), {harbours.Length} " +
+                    $"harbour(s), from {m_TransportStationQuery.CalculateEntityCount()} transport " +
+                    $"station(s). Air and sea arrivals fall back to the outside connection when 0.");
+            }
+        }
+
+        private bool m_LoggedArrivalBuildings;
+
+        /// <summary>
+        /// Where a visitor should physically appear, given the connection they came through.
+        ///
+        /// Air and sea outside connections sit at the map edge with no pavement, and
+        /// TouristFindTargetSystem searches for a hotel or attraction from wherever the arrival is
+        /// standing — once, with no retry, evicting the household as TouristNoTarget the moment the
+        /// search comes back empty (:116-144). From a map-edge node that search has to solve
+        /// map edge, then ship or aeroplane line, then station, then bus, then hotel, in a single
+        /// simplified query, and it nearly always fails. Measured at 98% eviction for air and sea
+        /// against 34% for road, which arrives on the walkable network and mostly succeeds.
+        ///
+        /// The spare capacity on those lines never helps, because boarding happens after a Target
+        /// is set, not before: nobody survives long enough to queue for the boat.
+        ///
+        /// Starting them at the terminal instead is both the fix and the more truthful model — a
+        /// visitor who flew in is at your airport, not hovering over the map edge — and it puts
+        /// them on the network your buses already serve.
+        /// </summary>
+        private static Entity SelectArrivalBuilding(
+            OutsideConnectionTransferType type,
+            Entity connection,
+            NativeList<Entity> airports,
+            NativeList<Entity> harbours,
+            ref Random random)
+        {
+            if ((type & OutsideConnectionTransferType.Air) != 0 && airports.Length > 0)
+            {
+                return airports[random.NextInt(airports.Length)];
+            }
+
+            if ((type & OutsideConnectionTransferType.Ship) != 0 && harbours.Length > 0)
+            {
+                return harbours[random.NextInt(harbours.Length)];
+            }
+
+            return connection;
+        }
+
+        /// <summary>
+        /// Attributes an arrival to the connection type it came through.
+        ///
+        /// OutsideConnectionTransferType is a flags enum and a connection may carry more than one,
+        /// so the most specific mode wins: a combined road and rail terminal counts as rail.
+        /// </summary>
+        private void RecordArrival(OutsideConnectionTransferType type, int citizens)
+        {
+            if ((type & OutsideConnectionTransferType.Air) != 0)
+            {
+                m_ThisMonthArrivals.z += citizens;
+                m_ArrivalsSinceSample.z += citizens;
+            }
+            else if ((type & OutsideConnectionTransferType.Ship) != 0)
+            {
+                m_ThisMonthArrivals.w += citizens;
+                m_ArrivalsSinceSample.w += citizens;
+            }
+            else if ((type & OutsideConnectionTransferType.Train) != 0)
+            {
+                m_ThisMonthArrivals.y += citizens;
+                m_ArrivalsSinceSample.y += citizens;
+            }
+            else if ((type & OutsideConnectionTransferType.Road) != 0)
+            {
+                m_ThisMonthArrivals.x += citizens;
+                m_ArrivalsSinceSample.x += citizens;
+            }
+        }
+
+        /// <summary>
+        /// How many people a household template will actually produce, on average.
+        ///
+        /// Not the same as CountOccupants, which sums the template's fields and is fine for
+        /// comparing one template against another. HouseholdInitializeSystem does not spawn the
+        /// child count — it spawns a random number below it (:173):
+        ///
+        ///     int num2 = random.NextInt(householdData.m_ChildCount);
+        ///     for (int l = 0; l &lt; num2; l++) SpawnCitizen(...);
+        ///
+        /// while students, adults and elders are spawned exactly. Counting arrivals with the full
+        /// child figure therefore over-reports every group, which is a large part of why arrivals
+        /// looked so far out of step with the tourist population.
+        /// </summary>
+        private static int ExpectedOccupants(HouseholdData data)
+        {
+            int expectedChildren = math.max(0, data.m_ChildCount - 1) / 2;
+
+            return data.m_StudentCount + data.m_AdultCount + data.m_ElderCount + expectedChildren;
+        }
+
         private static int CountOccupants(HouseholdData data)
         {
             return data.m_ChildCount + data.m_AdultCount + data.m_ElderCount + data.m_StudentCount;
@@ -594,6 +884,30 @@ namespace TourismOverhaul.Systems
                     SpawnSuccesses++;
 
                     int index = SelectHouseholdPrefab(householdDatas, ref random, settings);
+
+                    // Attribute the arrival here: the connection is already resolved and the
+                    // household template fixes the head count, so nothing later has to be traced
+                    // back to the door it came through.
+                    OutsideConnectionTransferType arrivalType = OutsideConnectionTransferType.None;
+
+                    if (prefabRefs.HasComponent(connection))
+                    {
+                        Entity connectionPrefab = prefabRefs[connection].m_Prefab;
+
+                        if (outsideConnectionDatas.HasComponent(connectionPrefab))
+                        {
+                            arrivalType = outsideConnectionDatas[connectionPrefab].m_Type;
+                            RecordArrival(arrivalType, ExpectedOccupants(householdDatas[index]));
+                        }
+                    }
+
+                    // Arrivals stand at the outside connection, as the base game intends. Placing
+                    // them at a terminal instead was tried and reverted: it did not reduce
+                    // TouristNoTarget evictions, because the origin search uses a zero radius and
+                    // so fails wherever the household is unless it lands exactly on a lane. It also
+                    // meant no inbound plane or ship was ever generated — departures used the
+                    // airport while arrivals appeared out of thin air — and the churn it left
+                    // behind cost simulation performance.
 
                     Entity household = commandBuffer.CreateEntity(archetypes[index].m_Archetype);
 

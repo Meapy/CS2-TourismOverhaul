@@ -72,6 +72,19 @@ namespace TourismOverhaul
             updateSystem.UpdateAt<TourismPanelUISystem>(SystemUpdatePhase.UIUpdate);
 
 
+            // Frees rooms held by emptied households, and deletes the households. Without it,
+            // availability decays permanently as guests come and go.
+            updateSystem.UpdateAt<HotelRoomReclaimSystem>(SystemUpdatePhase.GameSimulation);
+
+            // Replaces the native tourist target search, whose origin radius of zero strands every
+            // arrival that is not standing on a lane. Must run in the simulation phase, in place of
+            // TouristFindTargetSystem which it disables.
+            updateSystem.UpdateAt<TouristTargetSearchSystem>(SystemUpdatePhase.GameSimulation);
+
+            // Gives visitors a shopping need, so they choose shops over parks. Must run in the
+            // simulation phase, before CitizenBehaviorSystem reads the need on its next tick.
+            updateSystem.UpdateAt<TouristShoppingSystem>(SystemUpdatePhase.GameSimulation);
+
             // Opt-in daily breakdown for when tourist numbers misbehave.
             updateSystem.UpdateAt<TourismDiagnosticsSystem>(SystemUpdatePhase.GameSimulation);
 

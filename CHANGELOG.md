@@ -5,6 +5,51 @@ All notable changes to CS2 Tourism Overhaul.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [semantic](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] — 2026-08-01
+
+### Fixed
+
+- **Tourists arriving by plane, ferry or train left again within minutes.** The base game asks the
+  pathfinder for a destination using an origin search radius of zero
+  (`TouristFindTargetSystem:99-104`), and `CommonPathfindSetup.SetupCurrentLocationJob:83` returns
+  early when that radius is zero, skipping the road fallback, the airway lookups and the radius
+  search. The only thing left that can supply a starting point is a lane lying directly under the
+  visitor. Road connections sit on one; air and sea connections at the map edge do not, so no origin
+  was found, no destination came back, and the household was evicted as `TouristNoTarget` on its
+  first and only attempt. Measured at 94-98% failure for air and sea against 34% for road, unchanged
+  by free rooms, arrival rate or arrival building. `TouristTargetSearchSystem` replaces the native
+  system with a 150m origin radius and three attempts before giving up. Hotel reservation is copied
+  from the native `HotelReserveJob:170-199`, so booking behaviour is unchanged.
+- **Hotel rooms were never released.** Availability is computed as rooms minus the length of the
+  hotel's renter list, so a household that emptied without leaving that list held its room forever.
+  Occupancy climbed while guests left, free rooms fell to 475 of 35,163, and 32,000 dead households
+  accumulated. `HotelRoomReclaimSystem` releases those rooms and deletes the husks.
+- **Hotels in signature buildings never received opening stock.** Both welcome queries required
+  `PropertyRenter`, which signature buildings do not carry, so the game's flagship hotels opened with
+  an empty larder while every zoned hotel opened stocked. Opening stock now also scales to the
+  hotel's storage capacity, since a flat 200 units is a rounding error in a building renting
+  thousands of rooms.
+- The hotel welcome boost no longer clamps arrivals below the player's own setting.
+
+### Added
+
+- **Tourists go shopping.** `CitizenBehaviorSystem` picks shopping over leisure whenever a household
+  wants something, but those wants come from household supplies running down — which a visitor with
+  no home never has. Tourists sightsee for their entire stay and their money never reaches
+  commercial companies. New "Shopping over sightseeing" setting, default 25%.
+- **Arrivals by mode** in the Tourism info view: road, train, plane and sea, in cims per month with
+  each mode's share.
+- Diagnostics report arrivals against departures over the same window, departures by reason, and
+  whether a departing household ever held anyone — which is what separates "arrivals are failing"
+  from "visitors are leaving too soon".
+
+### Changed
+
+- Arrivals are reported as a smoothed rate rather than a running total. As a calendar bucket the
+  figure climbed for an hour of real play before it meant anything, and reset on load.
+- Departures are counted on transition rather than sampled. The old instantaneous count showed
+  around 30 while thousands passed through the leaving state between snapshots.
+
 ## [1.1.0] — 2026-08-01
 
 ### Added

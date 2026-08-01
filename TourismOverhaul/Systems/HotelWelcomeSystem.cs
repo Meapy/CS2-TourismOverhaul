@@ -60,17 +60,23 @@ namespace TourismOverhaul.Systems
             m_SimulationSystem = World.GetOrCreateSystemManaged<SimulationSystem>();
             m_EndFrameBarrier = World.GetOrCreateSystemManaged<EndFrameBarrier>();
 
+            // LodgingProvider alone identifies a hotel company. PropertyRenter and Renter used to
+            // be required as well, which quietly excluded hotels in signature buildings: those are
+            // placed by the player rather than zoned, so the company does not occupy the building
+            // on the same terms and need not carry PropertyRenter. The effect was that a signature
+            // hotel opened with an empty larder while every zoned hotel opened stocked.
+            //
+            // Nothing downstream needs either component — stocking reads PrefabRef and the
+            // Resources buffer, both of which any company has — so the narrower query bought
+            // nothing and cost the assets most likely to be a city's flagship hotel.
             m_HotelQuery = GetEntityQuery(
                 ComponentType.ReadOnly<LodgingProvider>(),
-                ComponentType.ReadOnly<PropertyRenter>(),
-                ComponentType.ReadOnly<Renter>(),
                 ComponentType.ReadOnly<HotelWelcome>(),
                 ComponentType.Exclude<Deleted>(),
                 ComponentType.Exclude<Temp>());
 
             m_UnseenHotelQuery = GetEntityQuery(
                 ComponentType.ReadOnly<LodgingProvider>(),
-                ComponentType.ReadOnly<PropertyRenter>(),
                 ComponentType.Exclude<HotelWelcome>(),
                 ComponentType.Exclude<Deleted>(),
                 ComponentType.Exclude<Temp>());
@@ -176,11 +182,23 @@ namespace TourismOverhaul.Systems
                     DynamicBuffer<Game.Economy.Resources> resources =
                         EntityManager.GetBuffer<Game.Economy.Resources>(hotel);
 
+                    // Scale the opening stock to the hotel's own larder. A flat 200 is a sensible
+                    // start for a zoned hotel and a rounding error for a signature building with
+                    // thousands of rooms, which burns through it long before its first delivery.
+                    // Half a tank is enough to trade on without simply gifting a full one.
+                    int limit = GetStorageLimit(hotel, prefab);
+                    int target = math.max(stock, limit / 2);
+
+                    if (limit > 0)
+                    {
+                        target = math.min(target, limit);
+                    }
+
                     int held = EconomyUtils.GetResources(input, resources);
 
-                    if (held < stock)
+                    if (held < target)
                     {
-                        EconomyUtils.AddResources(input, stock - held, resources);
+                        EconomyUtils.AddResources(input, target - held, resources);
                     }
                 }
             }
@@ -188,6 +206,28 @@ namespace TourismOverhaul.Systems
             {
                 hotels.Dispose();
             }
+        }
+
+        /// <summary>
+        /// The hotel's storage capacity, or 0 when it cannot be determined.
+        ///
+        /// StorageLimitData lives on the company, but is authored on the company prefab, so it may
+        /// sit on either entity depending on how the company was created. Checking both is cheaper
+        /// than assuming, and returning 0 simply falls back to the flat opening stock.
+        /// </summary>
+        private int GetStorageLimit(Entity company, Entity prefab)
+        {
+            if (EntityManager.HasComponent<StorageLimitData>(company))
+            {
+                return EntityManager.GetComponentData<StorageLimitData>(company).m_Limit;
+            }
+
+            if (EntityManager.HasComponent<StorageLimitData>(prefab))
+            {
+                return EntityManager.GetComponentData<StorageLimitData>(prefab).m_Limit;
+            }
+
+            return 0;
         }
 
         /// <summary>

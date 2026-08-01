@@ -31,6 +31,11 @@ namespace TourismOverhaul.Systems
         private ValueBinding<int> m_HotelRoomsFree;
         private ValueBinding<int> m_HotelRoomsTotal;
 
+        private ValueBinding<int> m_ArrivalsRoad;
+        private ValueBinding<int> m_ArrivalsTrain;
+        private ValueBinding<int> m_ArrivalsAir;
+        private ValueBinding<int> m_ArrivalsShip;
+
         private EntityQuery m_HotelQuery;
 
         private ResidentTravelSystem m_ResidentTravelSystem;
@@ -61,6 +66,11 @@ namespace TourismOverhaul.Systems
             AddBinding(m_TargetTourists = new ValueBinding<int>(kGroup, "targetTourists", 0));
             AddBinding(m_HotelRoomsFree = new ValueBinding<int>(kGroup, "hotelRoomsFree", 0));
             AddBinding(m_HotelRoomsTotal = new ValueBinding<int>(kGroup, "hotelRoomsTotal", 0));
+
+            AddBinding(m_ArrivalsRoad = new ValueBinding<int>(kGroup, "arrivalsRoad", 0));
+            AddBinding(m_ArrivalsTrain = new ValueBinding<int>(kGroup, "arrivalsTrain", 0));
+            AddBinding(m_ArrivalsAir = new ValueBinding<int>(kGroup, "arrivalsAir", 0));
+            AddBinding(m_ArrivalsShip = new ValueBinding<int>(kGroup, "arrivalsShip", 0));
         }
 
         protected override void OnUpdate()
@@ -74,6 +84,16 @@ namespace TourismOverhaul.Systems
             CountRooms(out int free, out int total);
             m_HotelRoomsFree.Update(free);
             m_HotelRoomsTotal.Update(total);
+
+            // (road, train, air, ship), in citizens, over the last full calendar month.
+            Unity.Mathematics.int4 arrivals = m_DemandSystem != null
+                ? m_DemandSystem.MonthlyArrivalsByMode
+                : default;
+
+            m_ArrivalsRoad.Update(arrivals.x);
+            m_ArrivalsTrain.Update(arrivals.y);
+            m_ArrivalsAir.Update(arrivals.z);
+            m_ArrivalsShip.Update(arrivals.w);
         }
 
         /// <summary>
