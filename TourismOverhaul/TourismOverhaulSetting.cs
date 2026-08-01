@@ -4,9 +4,20 @@ using Game.Settings;
 
 namespace TourismOverhaul
 {
+    /// <summary>
+    /// Mod settings.
+    ///
+    /// Only choices a player would reasonably want to make are shown. Everything else — the bug
+    /// fixes, and the pacing and throttling values that were tuned during development — is marked
+    /// [SettingsUIHidden] and left at a fixed value. Hidden entries still live in the settings file,
+    /// so they can be edited by hand if someone really needs to, but they do not clutter the panel.
+    ///
+    /// The bug fixes in particular are hidden deliberately: turning off "discard 80% of arrivals"
+    /// is not a preference, it is just a broken game.
+    /// </summary>
     [FileLocation("ModsSettings/TourismOverhaul/TourismOverhaul")]
-    [SettingsUIGroupOrder(GroupRouting, GroupDemand, GroupStay, GroupReporting, GroupDisplay)]
-    [SettingsUIShowGroupName(GroupRouting, GroupDemand, GroupStay, GroupReporting, GroupDisplay)]
+    [SettingsUIGroupOrder(GroupDemand, GroupRouting, GroupHotels, GroupStay, GroupOutbound, GroupDisplay, GroupReporting)]
+    [SettingsUIShowGroupName(GroupDemand, GroupRouting, GroupHotels, GroupStay, GroupOutbound, GroupDisplay, GroupReporting)]
     public sealed class TourismOverhaulSetting : ModSetting
     {
         public const string SectionMain = "Main";
@@ -16,116 +27,329 @@ namespace TourismOverhaul
         public const string GroupStay = "LengthOfStay";
         public const string GroupReporting = "Reporting";
         public const string GroupDisplay = "Display";
+        public const string GroupHotels = "Hotels";
+        public const string GroupOutbound = "Outbound";
+        public const string GroupBudget = "Budget";
 
         public TourismOverhaulSetting(IMod mod) : base(mod)
         {
         }
 
-        // ---------------------------------------------------------------- A
+        // ================================================================ shown
 
-        [SettingsUISection(SectionMain, GroupRouting)]
-        public bool FixArrivalRouting { get; set; } = true;
+        // ---- How much tourism ----
 
-        /// <summary>
-        /// When true the air/ship share is redistributed to whatever the city actually has.
-        /// When false the vanilla 10/10/50/30 split is left alone (arrivals will still be lost).
-        /// </summary>
-        [SettingsUISection(SectionMain, GroupRouting)]
-        [SettingsUIDisableByCondition(typeof(TourismOverhaulSetting), nameof(RoutingDisabled))]
-        public bool PreferAirAndSea { get; set; } = true;
-
-        // ---------------------------------------------------------------- B
-
-        [SettingsUISection(SectionMain, GroupDemand)]
-        public bool FixTouristDemand { get; set; } = true;
-
-        /// <summary>
-        /// Tourists supported per 1000 citizens at 100 attractiveness.
-        /// Vanilla behaves like a flat 1500 regardless of city size.
-        /// </summary>
+        /// <summary>Tourists supported per 1000 citizens at full attractiveness.</summary>
         [SettingsUISlider(min = 0f, max = 200f, step = 5f, unit = "integer")]
         [SettingsUISection(SectionMain, GroupDemand)]
-        [SettingsUIDisableByCondition(typeof(TourismOverhaulSetting), nameof(DemandDisabled))]
         public int TouristsPerThousandCitizens { get; set; } = 60;
 
-        /// <summary>
-        /// Upper bound on tourist citizens, as a safety valve for very large cities.
-        /// </summary>
+        /// <summary>Upper bound on tourist citizens.</summary>
         [SettingsUISlider(min = 1500f, max = 100000f, step = 500f, unit = "integer")]
         [SettingsUISection(SectionMain, GroupDemand)]
-        [SettingsUIDisableByCondition(typeof(TourismOverhaulSetting), nameof(DemandDisabled))]
-        public int MaximumTourists { get; set; } = 25000;
+        public int MaximumTourists { get; set; } = 60000;
 
-        /// <summary>
-        /// Maximum tourist households created per update. Higher fills a deficit faster
-        /// but produces burstier arrivals and more pathfinding work per tick.
-        /// </summary>
-        [SettingsUISlider(min = 1f, max = 32f, step = 1f, unit = "integer")]
+        /// <summary>Bias toward families and groups rather than lone travellers.</summary>
+        [SettingsUISlider(min = 0f, max = 100f, step = 25f, unit = "percentage")]
         [SettingsUISection(SectionMain, GroupDemand)]
-        [SettingsUIDisableByCondition(typeof(TourismOverhaulSetting), nameof(DemandDisabled))]
-        public int MaxArrivalsPerUpdate { get; set; } = 8;
+        public int PreferLargerTouristGroups { get; set; } = 50;
 
-        // ---------------------------------------------------------------- C
+        /// <summary>Money per day each visitor spends on shopping, leisure and fares.</summary>
+        [SettingsUISlider(min = 0f, max = 20000f, step = 250f, unit = "money")]
+        [SettingsUISection(SectionMain, GroupDemand)]
+        public int TouristDailySpending { get; set; } = 2000;
 
-        [SettingsUISection(SectionMain, GroupStay)]
-        public bool FixLengthOfStay { get; set; } = true;
+        // ---- How they get here ----
+
+        [SettingsUISlider(min = 0f, max = 100f, step = 5f, unit = "integer")]
+        [SettingsUISection(SectionMain, GroupRouting)]
+        public int ArrivalWeightRoad { get; set; } = 5;
+
+        [SettingsUISlider(min = 0f, max = 100f, step = 5f, unit = "integer")]
+        [SettingsUISection(SectionMain, GroupRouting)]
+        public int ArrivalWeightTrain { get; set; } = 20;
+
+        [SettingsUISlider(min = 0f, max = 100f, step = 5f, unit = "integer")]
+        [SettingsUISection(SectionMain, GroupRouting)]
+        public int ArrivalWeightAir { get; set; } = 35;
+
+        [SettingsUISlider(min = 0f, max = 100f, step = 5f, unit = "integer")]
+        [SettingsUISection(SectionMain, GroupRouting)]
+        public int ArrivalWeightShip { get; set; } = 35;
+
+        /// <summary>Share of tourist groups that bring a car.</summary>
+        [SettingsUISlider(min = 0f, max = 100f, step = 5f, unit = "percentage")]
+        [SettingsUISection(SectionMain, GroupRouting)]
+        public int TouristCarChance { get; set; } = 50;
+
+        // ---- Hotels ----
+
+        /// <summary>Multiplies rooms per hotel. 1 leaves hotels at their normal size.</summary>
+        [SettingsUISlider(min = 1f, max = 10f, step = 1f, unit = "integer")]
+        [SettingsUISection(SectionMain, GroupHotels)]
+        public int HotelRoomMultiplier { get; set; } = 1;
 
         /// <summary>
-        /// Average stay for a tourist who has secured a hotel room, in in-game days.
+        /// Adds dedicated hotel and motel zones and moves the game's lodging buildings into them.
         /// </summary>
+        [SettingsUISection(SectionMain, GroupHotels)]
+        public bool EnableHotelZones { get; set; } = true;
+
+        /// <summary>Surge of extra visitors when a hotel opens, so it can fill before folding.</summary>
+        [SettingsUISection(SectionMain, GroupHotels)]
+        public bool EnableHotelWelcome { get; set; } = true;
+
+        // ---- Length of stay ----
+
+        /// <summary>Average nights a tourist with a room stays.</summary>
         [SettingsUISlider(min = 1f, max = 14f, step = 1f, unit = "integer")]
         [SettingsUISection(SectionMain, GroupStay)]
-        [SettingsUIDisableByCondition(typeof(TourismOverhaulSetting), nameof(StayDisabled))]
-        public int AverageStayDays { get; set; } = 3;
+        public int AverageStayDays { get; set; } = 5;
 
-        // ---------------------------------------------------------------- D
+        // ---- Residents travelling ----
 
-        [SettingsUISection(SectionMain, GroupReporting)]
-        public bool FixReporting { get; set; } = true;
+        [SettingsUISection(SectionMain, GroupOutbound)]
+        public bool EnableResidentHolidays { get; set; } = true;
 
-        // ---------------------------------------------------------------- display
+        /// <summary>Extra holiday departures per 1,000 households per day.</summary>
+        [SettingsUISlider(min = 0f, max = 250f, step = 5f, unit = "integer")]
+        [SettingsUISection(SectionMain, GroupOutbound)]
+        [SettingsUIDisableByCondition(typeof(TourismOverhaulSetting), nameof(HolidaysDisabled))]
+        public int HolidayTripsPerThousandHouseholds { get; set; } = 100;
 
-        /// <summary>
-        /// Draws the game's standard selection outline around tourists walking in the city.
-        /// </summary>
+        // ---- Display ----
+
         [SettingsUISection(SectionMain, GroupDisplay)]
         public bool HighlightTourists { get; set; } = false;
 
-        /// <summary>
-        /// Also outline the vehicle a tourist is riding. Note that a bus or train carrying one
-        /// tourist is outlined as a whole, since the outline applies to the vehicle entity.
-        /// </summary>
         [SettingsUISection(SectionMain, GroupDisplay)]
         [SettingsUIDisableByCondition(typeof(TourismOverhaulSetting), nameof(HighlightDisabled))]
         public bool HighlightTouristVehicles { get; set; } = true;
 
-        // ---------------------------------------------------------------- misc
+        [SettingsUISlider(min = 0f, max = 255f, step = 5f, unit = "integer")]
+        [SettingsUISection(SectionMain, GroupDisplay)]
+        [SettingsUIDisableByCondition(typeof(TourismOverhaulSetting), nameof(HighlightDisabled))]
+        public int MarkerRed { get; set; } = 0;
+
+        [SettingsUISlider(min = 0f, max = 255f, step = 5f, unit = "integer")]
+        [SettingsUISection(SectionMain, GroupDisplay)]
+        [SettingsUIDisableByCondition(typeof(TourismOverhaulSetting), nameof(HighlightDisabled))]
+        public int MarkerGreen { get; set; } = 220;
+
+        [SettingsUISlider(min = 0f, max = 255f, step = 5f, unit = "integer")]
+        [SettingsUISection(SectionMain, GroupDisplay)]
+        [SettingsUIDisableByCondition(typeof(TourismOverhaulSetting), nameof(HighlightDisabled))]
+        public int MarkerBlue { get; set; } = 255;
+
+        // ---- Troubleshooting ----
+
+        /// <summary>Writes a periodic tourism breakdown to the mod log.</summary>
+        [SettingsUISection(SectionMain, GroupReporting)]
+        public bool DiagnosticLogging { get; set; } = false;
+
+        // ================================================================ hidden
+        //
+        // Fixed values. These were sliders during development; none of them is a choice a player
+        // benefits from making, and several are simply "should the mod work".
+
+        /// <summary>Core arrival fix. Off means 80% of arrivals are discarded, as in the base game.</summary>
+        [SettingsUIHidden]
+        public bool FixArrivalRouting { get; set; } = true;
+
+        /// <summary>Use the arrival mix weights rather than spreading evenly.</summary>
+        [SettingsUIHidden]
+        public bool PreferAirAndSea { get; set; } = true;
+
+        /// <summary>Shift arrivals away from congested connections.</summary>
+        [SettingsUIHidden]
+        public bool LoadAwareArrivals { get; set; } = true;
+
+        /// <summary>Waiting tourists per connection at which a route's share halves.</summary>
+        [SettingsUIHidden]
+        public int ArrivalBacklogSensitivity { get; set; } = 25;
+
+        /// <summary>Core demand fix.</summary>
+        [SettingsUIHidden]
+        public bool FixTouristDemand { get; set; } = true;
+
+        /// <summary>
+        /// How many tourist households may arrive per update. Caps how quickly a shortfall against
+        /// the target is filled.
+        /// </summary>
+        [SettingsUISlider(min = 1f, max = 256f, step = 1f, unit = "integer")]
+        [SettingsUISection(SectionMain, GroupDemand)]
+        public int MaxArrivalsPerUpdate { get; set; } = 24;
+
+        /// <summary>Occupancy the city sizes demand against.</summary>
+        [SettingsUIHidden]
+        public int HotelRoomDemandOccupancy { get; set; } = 80;
+
+        /// <summary>Stands down the native spawner, which leaks dead households.</summary>
+        [SettingsUIHidden]
+        public bool ReplaceNativeSpawner { get; set; } = true;
+
+        [SettingsUIHidden]
+        public int HotelWelcomeDays { get; set; } = 7;
+
+        [SettingsUIHidden]
+        public int HotelWelcomeBoost { get; set; } = 100;
+
+        [SettingsUIHidden]
+        public int HotelWelcomeArrivalMultiplier { get; set; } = 3;
+
+        [SettingsUIHidden]
+        public int HotelWelcomeStock { get; set; } = 200;
+
+        /// <summary>Stops an out-of-stock hotel dropping to 0% efficiency, which is unrecoverable.</summary>
+        [SettingsUIHidden]
+        public bool EnableHotelEfficiencyFloor { get; set; } = true;
+
+        [SettingsUIHidden]
+        public int HotelEfficiencyFloor { get; set; } = 50;
+
+        /// <summary>Rehouses guests of a closed hotel rather than evicting them from the city.</summary>
+        [SettingsUIHidden]
+        public bool RebookDisplacedTourists { get; set; } = true;
+
+        [SettingsUIHidden]
+        public int MaxRebookingsPerUpdate { get; set; } = 128;
+
+
+        /// <summary>Sizes arrival wallets against the live hotel rate.</summary>
+        [SettingsUIHidden]
+        public bool FixTouristBudget { get; set; } = true;
+
+        /// <summary>Nights of lodging a tourist arrives able to pay for.</summary>
+        [SettingsUIHidden]
+        public int TouristBudgetDays { get; set; } = 5;
+
+        /// <summary>Raises lodging building demand so hotels get zoned sooner.</summary>
+        [SettingsUIHidden]
+        public bool FixHotelDemand { get; set; } = true;
+
+        [SettingsUIHidden]
+        public float HotelRoomsPerTourist { get; set; } = 1.2f;
+
+        /// <summary>Implements the game's unused length-of-stay timer.</summary>
+        [SettingsUIHidden]
+        public bool FixLengthOfStay { get; set; } = true;
+
+        /// <summary>Reports real tourist figures rather than the base game's inflated ones.</summary>
+        [SettingsUIHidden]
+        public bool FixReporting { get; set; } = true;
+
+        [SettingsUIHidden]
+        public int HolidayMinimumSavings { get; set; } = 2000;
+
+        [SettingsUIHidden]
+        public float MarkerSize { get; set; } = 3f;
+
+        [SettingsUIHidden]
+        public int MarkerOpacity { get; set; } = 85;
+
+        // ================================================================ misc
+
+        /// <summary>Marker colour assembled from the channel sliders.</summary>
+        public UnityEngine.Color GetMarkerColor()
+        {
+            return new UnityEngine.Color(
+                UnityEngine.Mathf.Clamp01(MarkerRed / 255f),
+                UnityEngine.Mathf.Clamp01(MarkerGreen / 255f),
+                UnityEngine.Mathf.Clamp01(MarkerBlue / 255f),
+                UnityEngine.Mathf.Clamp01(MarkerOpacity / 100f));
+        }
 
         public bool RoutingDisabled() => !FixArrivalRouting;
+
+        public bool LoadAwarenessDisabled() => !FixArrivalRouting || !LoadAwareArrivals;
+
+        public bool ArrivalMixDisabled() => !FixArrivalRouting || !PreferAirAndSea;
 
         public bool DemandDisabled() => !FixTouristDemand;
 
         public bool StayDisabled() => !FixLengthOfStay;
 
+        public bool BudgetDisabled() => !FixTouristBudget;
+
+        public bool HotelDemandDisabled() => !FixHotelDemand;
+
         public bool HighlightDisabled() => !HighlightTourists;
+
+
+        public bool WelcomeDisabled() => !FixTouristDemand || !EnableHotelWelcome;
+
+        public bool RebookingDisabled() => !RebookDisplacedTourists;
+
+        public bool EfficiencyFloorDisabled() => !EnableHotelEfficiencyFloor;
+
+        public bool HolidaysDisabled() => !EnableResidentHolidays;
 
         public override void SetDefaults()
         {
-            FixArrivalRouting = true;
-            PreferAirAndSea = true;
-
-            FixTouristDemand = true;
+            // Shown
             TouristsPerThousandCitizens = 60;
-            MaximumTourists = 25000;
-            MaxArrivalsPerUpdate = 8;
+            MaximumTourists = 60000;
+            PreferLargerTouristGroups = 50;
+            TouristDailySpending = 2000;
 
-            FixLengthOfStay = true;
-            AverageStayDays = 3;
+            ArrivalWeightRoad = 5;
+            ArrivalWeightTrain = 20;
+            ArrivalWeightAir = 35;
+            ArrivalWeightShip = 35;
+            TouristCarChance = 50;
 
-            FixReporting = true;
+            HotelRoomMultiplier = 1;
+            EnableHotelZones = true;
+            EnableHotelWelcome = true;
+
+            AverageStayDays = 5;
+
+            EnableResidentHolidays = true;
+            HolidayTripsPerThousandHouseholds = 100;
 
             HighlightTourists = false;
             HighlightTouristVehicles = true;
+            MarkerRed = 0;
+            MarkerGreen = 220;
+            MarkerBlue = 255;
+
+            DiagnosticLogging = false;
+
+            // Hidden
+            FixArrivalRouting = true;
+            PreferAirAndSea = true;
+            LoadAwareArrivals = true;
+            ArrivalBacklogSensitivity = 25;
+
+            FixTouristDemand = true;
+            MaxArrivalsPerUpdate = 128;
+            HotelRoomDemandOccupancy = 80;
+            ReplaceNativeSpawner = true;
+
+            HotelWelcomeDays = 7;
+            HotelWelcomeBoost = 100;
+            HotelWelcomeArrivalMultiplier = 3;
+            HotelWelcomeStock = 200;
+
+            EnableHotelEfficiencyFloor = true;
+            HotelEfficiencyFloor = 50;
+
+            RebookDisplacedTourists = true;
+            MaxRebookingsPerUpdate = 128;
+
+
+            FixTouristBudget = true;
+            TouristBudgetDays = 5;
+            FixHotelDemand = true;
+            HotelRoomsPerTourist = 1.2f;
+
+            FixLengthOfStay = true;
+            FixReporting = true;
+
+            HolidayMinimumSavings = 2000;
+
+            MarkerSize = 3f;
+            MarkerOpacity = 85;
         }
     }
 }

@@ -49,6 +49,12 @@ namespace TourismOverhaul.Systems
 
         private EntityQuery m_ProviderQuery;
         private EntityQuery m_LeisureParameterQuery;
+        private EntityQuery m_LodgingPrefabQuery;
+
+        private int m_LastWrittenServiceMultiplier = -1;
+
+        /// <summary>Service capacity per lodging prefab after scaling. For diagnostics.</summary>
+        public int ScaledMaxService { get; private set; }
 
         private SimulationSystem m_SimulationSystem;
         private ResourceSystem m_ResourceSystem;
@@ -85,6 +91,11 @@ namespace TourismOverhaul.Systems
 
             m_LeisureParameterQuery = GetEntityQuery(ComponentType.ReadOnly<LeisureParametersData>());
 
+            // Lodging company templates, for scaling service capacity alongside room count.
+            m_LodgingPrefabQuery = GetEntityQuery(
+                ComponentType.ReadWrite<ServiceCompanyData>(),
+                ComponentType.ReadOnly<IndustrialProcessData>());
+
             RequireForUpdate(m_ProviderQuery);
             RequireForUpdate(m_LeisureParameterQuery);
         }
@@ -95,12 +106,23 @@ namespace TourismOverhaul.Systems
             base.OnDestroy();
         }
 
+        protected override void OnGameLoadingComplete(Colossal.Serialization.Entities.Purpose purpose, GameMode mode)
+        {
+            base.OnGameLoadingComplete(purpose, mode);
+
+            // Prefab data is rebuilt from source on load, so forget the scaling we applied — the
+            // value on disk is the authored one again.
+            m_LastWrittenServiceMultiplier = -1;
+        }
+
         protected override void OnUpdate()
         {
             TourismOverhaulSetting settings = Mod.Settings;
 
             int multiplier = settings != null ? math.clamp(settings.HotelRoomMultiplier, 1, 10) : 1;
-            bool active = settings != null && settings.EnableHotelCapacity && multiplier > 1;
+            // The multiplier being above 1 is the enable condition; a separate toggle would only be
+            // another way to say the same thing.
+            bool active = settings != null && multiplier > 1;
 
             if (!active)
             {
@@ -109,6 +131,7 @@ namespace TourismOverhaul.Systems
             }
 
             DisableNativeSystem();
+            ScaleServiceCapacity(multiplier);
             RunLodgingUpdate(multiplier);
         }
 
@@ -134,6 +157,72 @@ namespace TourismOverhaul.Systems
             m_NativeLodgingProvider.Enabled = true;
             m_NativeDisabled = false;
             Mod.Log.Info("Native LodgingProviderSystem restored.");
+        }
+
+        /// <summary>
+        /// Scales lodging companies' service capacity with the room multiplier.
+        ///
+        /// Multiplying rooms without this leaves a hotel's ServiceCompanyData.m_MaxService at its
+        /// authored value, so a much larger hotel fills its service stock and stops:
+        ///
+        ///     // EconomyUtils.GetCompanyProductionPerDay (:1483-1491)
+        ///     float num5 = serviceAvailable.m_ServiceAvailable / serviceCompanyData.m_MaxService;
+        ///     if (num5 &gt;= 0.8f)
+        ///         num4 = (int)math.ceil(math.lerp(num4, 0f, math.saturate((num5 - 0.8f) / 0.2f)));
+        ///
+        /// At full stock that returns zero production, which both halts the hotel and makes
+        /// CompanyEconomyStatisticSystem report an income of zero (:188-189) — a hotel with
+        /// hundreds of paying guests showing no income at all.
+        ///
+        /// Capacity has to scale with the rooms it serves, so this multiplies m_MaxService to
+        /// match. Written on the prefab, so it applies to every hotel of that type, and restored
+        /// when the multiplier returns to 1.
+        /// </summary>
+        private void ScaleServiceCapacity(int multiplier)
+        {
+            if (multiplier == m_LastWrittenServiceMultiplier)
+            {
+                return;
+            }
+
+            NativeArray<Entity> prefabs = m_LodgingPrefabQuery.ToEntityArray(Allocator.Temp);
+            try
+            {
+                for (int i = 0; i < prefabs.Length; i++)
+                {
+                    if (!EntityManager.HasComponent<IndustrialProcessData>(prefabs[i]))
+                    {
+                        continue;
+                    }
+
+                    if ((EntityManager.GetComponentData<IndustrialProcessData>(prefabs[i]).m_Output.m_Resource
+                         & Resource.Lodging) == Resource.NoResource)
+                    {
+                        continue;
+                    }
+
+                    ServiceCompanyData service = EntityManager.GetComponentData<ServiceCompanyData>(prefabs[i]);
+
+                    // Recover the authored value from whatever we last wrote, so repeated changes
+                    // scale from the original rather than compounding.
+                    int baseMaxService = m_LastWrittenServiceMultiplier > 0
+                        ? service.m_MaxService / m_LastWrittenServiceMultiplier
+                        : service.m_MaxService;
+
+                    service.m_MaxService = math.max(1, baseMaxService * multiplier);
+                    EntityManager.SetComponentData(prefabs[i], service);
+
+                    ScaledMaxService = service.m_MaxService;
+                }
+            }
+            finally
+            {
+                prefabs.Dispose();
+            }
+
+            m_LastWrittenServiceMultiplier = multiplier;
+
+            Mod.Log.Info($"Hotel service capacity scaled x{multiplier} (now {ScaledMaxService} per hotel).");
         }
 
         /// <summary>

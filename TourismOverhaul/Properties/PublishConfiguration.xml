@@ -1,59 +1,185 @@
 <Publish>
   <!--
-    NOT READY TO PUBLISH.
-
-    Before the first NewVersion upload the following must be filled in and verified:
-      - ModId stays empty for the first publish; the publisher assigns it.
-      - GameVersion must match the installed build (Paradox rejects mismatches).
-      - Thumbnail and Screenshot paths must exist; the publisher resolves media paths
-        relative to its working directory, so run it from the project directory.
-      - Tags must be validated against the live service, not copied from examples.
+    BEFORE THE FIRST UPLOAD:
+      - GameVersion below must match your installed build, or Paradox rejects the package.
+        Read it from the bottom of the game's main menu screen.
+      - Screenshot entries are commented out until the images exist.
+      - Tags must be validated against the live service rather than trusted from an example.
+    ModId is empty for the very first publish only. The publisher prints the assigned id but does
+    NOT write it back into this file, so it has to be set by hand — and must be, because NewVersion
+    fails with "ModId must be set in configuration" without it.
   -->
-  <ModId Value="" />
+  <ModId Value="153543" />
   <DisplayName Value="Tourism Overhaul" />
-  <ShortDescription Value="Fixes the tourism simulation: arrivals by plane and ferry, demand that scales with city size, real length of stay, and honest numbers." />
+  <ShortDescription Value="Fixes the tourism simulation: tourists actually arrive by plane and ferry, demand scales with your city, hotels and motels get their own zones, and the numbers finally mean something." />
+
   <LongDescription># Tourism Overhaul
 
-Cities: Skylines II ships tourism with several defects that make the feature feel inert.
-This mod fixes them at the simulation level. Every change was derived by tracing the
-game's own assemblies; nothing here is guesswork.
+Cities: Skylines II ships tourism with several defects that make the whole feature feel inert.
+You can max out city attractiveness and still see almost no visitors. This mod fixes the causes.
 
-## What it fixes
+Every change was derived by decompiling and tracing the game's own assemblies, not by guesswork.
+The full trace, with the file and line behind each finding, is on the GitHub page.
 
-**Arrivals are no longer thrown away.** The base game assigns each tourist a single
-transport mode by one random roll — 10% road, 10% train, 50% air, 30% sea — then looks for
-an outside connection of exactly that type. If none exists it gives up with no fallback,
-but still creates the tourist household without a location. That household can never be
-given citizens, so it is quietly deleted. On a city with no airport and no harbour, 80% of
-all tourist arrivals are destroyed this way. This mod redistributes the share across the
-connection types your city actually has, and keeps the intended preference for planes and
-ferries once you build an airport or harbour.
+## Tourists actually arrive
 
-**Tourism scales with your city.** The base game targets `attractiveness x 15` tourists,
-and attractiveness is itself capped at 100 — a flat 1,500 tourists no matter how large or
-attractive the city becomes. This mod scales the target with population.
+The base game picks each tourist's transport mode with one random roll — 10% road, 10% train,
+50% air, 30% sea — then looks for an outside connection of exactly that type. If your city
+doesn't have one, it gives up. No fallback, no retry. But the tourist household is still
+created, just without a location, and a household with no location can never be given any
+people. It's silently deleted moments later.
 
-**Tourists have a real length of stay.** The game declares and saves a tourist departure
-timer, and a function that returns a stay length, but never calls either. This mod
-implements the mechanic using the field the game already has.
+On a city with no airport and no harbour, that destroys 80% of all tourist arrivals.
 
-**The numbers mean something.** The tourism panel computes a figure roughly eight times
-larger than the game can ever produce, and undercounts tourists who are travelling between
-destinations. This mod reports the real values.
+This mod redistributes the share across the connection types your city actually has, and keeps
+the intended preference for planes and ferries once you build an airport or harbour.
+
+## Arrivals route around congestion
+
+The base game has no capacity concept for outside connections at all. A saturated airport keeps
+receiving its full share, and any tourist who can't travel onward from it is deleted rather than
+rerouted.
+
+This mod watches how many tourists are still waiting at each entrance and shifts arrivals toward
+routes that are moving. Build a harbour and it starts carrying real traffic.
+
+## Tourism scales with your city
+
+The base game targets attractiveness x 15 tourists, and attractiveness itself is capped at 100 —
+a flat 1,500 visitors whether you're a town or a metropolis. Past that ceiling, every extra park
+and landmark does nothing at all.
+
+This mod scales the target with population, so a large attractive city supports a proportionate
+number of visitors. Fully tunable, with a safety ceiling.
+
+## Tourists have a real length of stay
+
+The game declares a tourist departure timer, saves it, and never reads it. It also has a
+function returning a random stay length that nothing ever calls. Both are unfinished.
+
+This mod implements the mechanic using the field the game already has, so visits have a
+believable duration and turnover instead of guests lingering until their money runs out.
+
+## Hotels and motels get their own zones
+
+The game already ships proper hotel and motel buildings — 80 of them, in both European and North
+American styles, at every level and lot size. You just can't ask for one. They sit mixed in with
+ordinary shops in the commercial zones, so zoning commercial gives you a hotel maybe one lot in
+four, wherever the game feels like putting it.
+
+This mod adds two new zones to the zoning toolbar, Hotels and Motels, and moves those buildings
+into them. Hotels stop turning up in ordinary commercial zones, so your tourist district goes
+where you want it — by the beach, near the airport, around the old town — instead of scattered
+across the map.
+
+Both come with their own icons, drawn to match the game's existing zone art.
+
+A note on removal: zone painting is stored as a plain number in your save, so hotel zoning won't
+mean anything if you later uninstall the mod. That's true of any mod that adds a zone. Everything
+else here is safe to add and remove freely.
+
+## The numbers finally mean something
+
+The tourism panel computes a figure around eight times larger than the simulation can ever
+produce, and its tourist count ignores everyone travelling between destinations.
+
+This mod reports the real values and adds three rows to the Tourism info view:
+
+- Tourists in city — current against the number your city can sustain
+- Hotel rooms free — free against total, across every hotel
+- Local cims away — your own residents currently on holiday elsewhere
+
+## Optional extras
+
+- Hotel room multiplier, 1x to 10x, for zoned commercial hotels. Signature buildings keep their
+  authored capacity. The city's sense of how many rooms it needs scales with this, so raising it
+  makes hotels bigger without making the city think it has enough of them.
+- Residents take holidays. The base game suppresses out-of-town travel to roughly 1-3% of
+  leisure trips and blocks it entirely for households with no spare money. Turn this up and your
+  citizens will use your airport too.
+- A coloured ring marker under tourists so you can pick them out of a crowd, with adjustable
+  colour and size.
+
+Everything is individually toggleable, and everything is off or at vanilla values by default
+except the arrival fixes.
 
 ## Compatibility
 
-No Harmony patches, no reflection, no disabled native systems. Arrivals use real outside
-connections, real vehicles, real pathfinding, real hotels and the real economy. Safe to
-add to and remove from an existing save.
+No Harmony patches and no reflection. Arrivals use real outside connections, real vehicles, real
+pathfinding, real hotels and the real economy. Safe to add to an existing save, and safe to
+remove.
 
-Everything is toggleable and tunable in the settings panel.</LongDescription>
+The optional hotel room multiplier replaces the game's lodging system with a copy that applies
+the multiplier — this is unavoidable, because room count is computed inside a compiled job from
+values that also control rent and workplaces. Turning the setting off restores the original
+system immediately. Leave it off if you'd rather nothing native is replaced.
+
+Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-TourismOverhaul</LongDescription>
+
   <Thumbnail Value="Properties/Thumbnail.png" />
-  <Screenshot Value="Properties/Screenshot.png" />
+
+  <!--
+    Ordered deliberately: the two zones lead because they are what is new in 1.1.0 and they read
+    instantly as a screenshot. The panel and markers show the simulation working, and the settings
+    go last because nobody installs a mod for its options screen.
+
+    Source images live in mod-page-images/ at the repository root; see PUBLISHING.md for the copy
+    command that renames them into place.
+
+    JPEG, not PNG: Paradox rejects anything over 2.1 MB and full-resolution game captures exceed
+    that even downscaled. Optimize-Screenshots.ps1 does the conversion. The thumbnail stays PNG —
+    it is flat colour, where PNG is both smaller and sharper.
+  -->
+  <Screenshot Value="Properties/Screenshots/01-hotel-zone.jpg" />
+  <Screenshot Value="Properties/Screenshots/02-motel-zone.jpg" />
+  <Screenshot Value="Properties/Screenshots/03-tourism-panel.jpg" />
+  <Screenshot Value="Properties/Screenshots/04-tourist-markers.jpg" />
+  <Screenshot Value="Properties/Screenshots/05-transport-usage.jpg" />
+  <Screenshot Value="Properties/Screenshots/06-tourism-overlay.jpg" />
+  <Screenshot Value="Properties/Screenshots/07-settings-arrivals.jpg" />
+  <Screenshot Value="Properties/Screenshots/08-settings-hotels.jpg" />
+  <Screenshot Value="Properties/Screenshots/09-hotel-detail.jpg" />
+
   <Tag Value="Code Mod" />
-  <ForumLink Value="" />
-  <ModVersion Value="0.1.0" />
-  <GameVersion Value="" />
-  <ChangeLog>Initial release.</ChangeLog>
-  <ExternalLink Type="github" Url="" />
+
+  <ForumLink Value="https://forum.paradoxplaza.com/forum/threads/mod-tourism-overhaul-fix-tourism.1937099/" />
+  <ModVersion Value="1.1.0" />
+  <GameVersion Value="1.6.0.*" />
+
+  <ChangeLog>1.1.0
+
+New:
+- Hotel and motel zones. Two new commercial zones with their own icons. The game's 80 hotel and
+  motel buildings, in both European and North American styles, now only appear where you zone for
+  them instead of at random inside ordinary commercial zones.
+- Arrival speed can now be raised much higher, for large cities that were filling too slowly.
+- Diagnostic logging reports why hotels are or aren't being built.
+
+Fixed:
+- Raising the hotel room multiplier used to stop hotels being built at all. The city measured
+  demand against total rooms, so bigger hotels read as oversupply.
+- Hotels built in the new zones were condemned immediately, and hotels already standing in them
+  were condemned on load and then demolished.
+- Condemned markers that could only be cleared by bulldozing and repainting the zone.
+- Freshly zoned hotel and motel land staying empty.
+- Zone tiles showing no name or description.
+- The hotel opening boost reducing arrivals instead of increasing them.
+
+Note on removal: zone painting is stored as a plain number in your save, so hotel and motel zoning
+won't survive uninstalling the mod. Everything else remains safe to add and remove freely.
+
+---
+
+1.0.0 — Initial release.
+
+- Fixes tourist arrivals being discarded when the city has no airport or harbour.
+- Reroutes arrivals away from congested outside connections.
+- Scales tourist demand with city size instead of capping at 1500.
+- Implements the unused length-of-stay timer.
+- Optional hotel room multiplier.
+- Optional resident holidays out of the city.
+- Adds tourists in city, hotel rooms free and local cims away to the Tourism info view.
+- Optional coloured ring marker on tourists.</ChangeLog>
+
+  <ExternalLink Type="github" Url="https://github.com/Meapy/CS2-TourismOverhaul" />
 </Publish>
