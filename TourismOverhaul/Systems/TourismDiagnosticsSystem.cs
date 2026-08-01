@@ -43,10 +43,38 @@ namespace TourismOverhaul.Systems
         private int m_LastSpawnSuccesses;
         private bool m_Announced;
 
-        // 262144 frames per in-game day; 8192 gives 32 snapshots per day, which is a few minutes
-        // of real time at normal speed. A full day between snapshots is far too coarse to debug
-        // with — you would play for over an hour before seeing a single line.
-        public override int GetUpdateInterval(SystemUpdatePhase phase) => 8192;
+        /// <summary>
+        /// Households already counted as leaving, so each departure is counted once.
+        ///
+        /// The old instantaneous count of MovingAway households was misleading: it showed roughly
+        /// 30 at any moment, which reads as a trickle, when in fact thousands pass through that
+        /// state between snapshots. Counting the transition instead of the population is the only
+        /// way to compare departures against arrivals honestly.
+        /// </summary>
+        private NativeHashSet<Entity> m_CountedMovers;
+
+        // Departures this month, by reason: households, and the citizens they carried.
+        private int4 m_LeftHouseholds;
+        private int4 m_LeftCitizens;
+
+        /// <summary>
+        /// Households that began leaving while still holding no citizens.
+        ///
+        /// These never became tourists at all. A large number here means arrivals are failing
+        /// before HouseholdInitializeSystem ever reaches them, which is a different fault entirely
+        /// from visitors who arrive and then leave too soon.
+        /// </summary>
+        private int m_LeftNeverInitialised;
+
+        private int m_TrackedMonth = -1;
+        private int m_UpdatesSinceSnapshot;
+
+        // Runs often, logs rarely. Departure tracking has to sample faster than a household passes
+        // through MovingAway or transitions are missed; the expensive census still runs every 32nd
+        // call, preserving the original one-snapshot-per-8192-frames cadence.
+        private const int kUpdatesPerSnapshot = 32;
+
+        public override int GetUpdateInterval(SystemUpdatePhase phase) => 256;
 
         protected override void OnCreate()
         {
@@ -82,6 +110,8 @@ namespace TourismOverhaul.Systems
                 ComponentType.Exclude<Deleted>(),
                 ComponentType.Exclude<Temp>());
 
+            m_CountedMovers = new NativeHashSet<Entity>(4096, Allocator.Persistent);
+
             m_CityQuery = GetEntityQuery(ComponentType.ReadOnly<Tourism>());
             m_DemandParameterQuery = GetEntityQuery(ComponentType.ReadOnly<DemandParameterData>());
         }
@@ -94,6 +124,38 @@ namespace TourismOverhaul.Systems
         /// never spawn, and a hotel zone looks broken when the zone is fine and the city just does
         /// not want any more rooms.
         /// </summary>
+        /// <summary>
+        /// Arrivals against departures for the current month, both counted in citizens.
+        ///
+        /// These are the two halves of the same balance and should be read together. If departures
+        /// roughly match arrivals, visitors are arriving and leaving too quickly and the length of
+        /// stay is the fault. If departures fall far short, arrivals are being lost some other way
+        /// and the stay timer is irrelevant.
+        ///
+        /// "never held anyone" is the tiebreaker: those households reached the leaving state
+        /// without ever being given citizens, so they were never visitors in the first place.
+        /// </summary>
+        private string DescribeCohort()
+        {
+            if (m_DemandSystem == null)
+            {
+                return "  cohort: demand system unavailable";
+            }
+
+            int4 arrivals = m_DemandSystem.ThisMonthArrivals;
+            int arrived = arrivals.x + arrivals.y + arrivals.z + arrivals.w;
+            int left = m_LeftCitizens.x + m_LeftCitizens.y + m_LeftCitizens.z + m_LeftCitizens.w;
+            int leftHouseholds =
+                m_LeftHouseholds.x + m_LeftHouseholds.y + m_LeftHouseholds.z + m_LeftHouseholds.w;
+
+            return
+                $"  this month: {arrived} cims arrived, {left} left " +
+                $"({leftHouseholds} households, {m_LeftNeverInitialised} of them never held anyone)\n" +
+                $"  departures by reason (cims): NoTarget {m_LeftCitizens.x}, " +
+                $"NoHotel {m_LeftCitizens.y}, NoMoney {m_LeftCitizens.z}, other {m_LeftCitizens.w}\n" +
+                $"  unaccounted: {arrived - left} cims arrived but never recorded as leaving";
+        }
+
         private string DescribeLodgingDemand()
         {
             if (m_CityQuery.IsEmptyIgnoreFilter || m_DemandParameterQuery.IsEmptyIgnoreFilter)
@@ -113,6 +175,87 @@ namespace TourismOverhaul.Systems
                 $"({requirement:0.00}/tourist) -> hotels will spawn: {(wantsMore ? "YES" : "NO")}";
         }
 
+        protected override void OnDestroy()
+        {
+            if (m_CountedMovers.IsCreated)
+            {
+                m_CountedMovers.Dispose();
+            }
+
+            base.OnDestroy();
+        }
+
+        /// <summary>
+        /// Counts each household once, on the update it first appears as leaving.
+        ///
+        /// Also records whether it ever held anyone. A household that starts moving away with an
+        /// empty citizen buffer never became a tourist, which separates "arrivals are failing" from
+        /// "visitors are leaving too soon" — the two produce identical symptoms in every other
+        /// figure this system reports.
+        /// </summary>
+        private void TrackDepartures()
+        {
+            EntityTypeHandle entityHandle = GetEntityTypeHandle();
+            ComponentTypeHandle<MovingAway> movingAwayHandle =
+                GetComponentTypeHandle<MovingAway>(isReadOnly: true);
+            BufferTypeHandle<HouseholdCitizen> citizenHandle =
+                GetBufferTypeHandle<HouseholdCitizen>(isReadOnly: true);
+
+            NativeArray<ArchetypeChunk> chunks = m_LeavingQuery.ToArchetypeChunkArray(Allocator.Temp);
+            try
+            {
+                for (int c = 0; c < chunks.Length; c++)
+                {
+                    ArchetypeChunk chunk = chunks[c];
+                    NativeArray<Entity> entities = chunk.GetNativeArray(entityHandle);
+                    NativeArray<MovingAway> leaving = chunk.GetNativeArray(ref movingAwayHandle);
+
+                    bool hasCitizens = chunk.Has(ref citizenHandle);
+                    BufferAccessor<HouseholdCitizen> citizens =
+                        hasCitizens ? chunk.GetBufferAccessor(ref citizenHandle) : default;
+
+                    for (int i = 0; i < entities.Length; i++)
+                    {
+                        if (!m_CountedMovers.Add(entities[i]))
+                        {
+                            continue;
+                        }
+
+                        int occupants = hasCitizens ? citizens[i].Length : 0;
+
+                        if (occupants == 0)
+                        {
+                            m_LeftNeverInitialised++;
+                        }
+
+                        switch (leaving[i].m_Reason)
+                        {
+                            case MoveAwayReason.TouristNoTarget:
+                                m_LeftHouseholds.x++;
+                                m_LeftCitizens.x += occupants;
+                                break;
+                            case MoveAwayReason.TouristNoHotel:
+                                m_LeftHouseholds.y++;
+                                m_LeftCitizens.y += occupants;
+                                break;
+                            case MoveAwayReason.TouristNoMoney:
+                                m_LeftHouseholds.z++;
+                                m_LeftCitizens.z += occupants;
+                                break;
+                            default:
+                                m_LeftHouseholds.w++;
+                                m_LeftCitizens.w += occupants;
+                                break;
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                chunks.Dispose();
+            }
+        }
+
         protected override void OnUpdate()
         {
             TourismOverhaulSetting settings = Mod.Settings;
@@ -121,6 +264,27 @@ namespace TourismOverhaul.Systems
                 m_Announced = false;
                 return;
             }
+
+            TrackDepartures();
+
+            // Reset on the same month boundary the arrival counters use, so the two are directly
+            // comparable rather than covering different windows.
+            int month = m_DemandSystem != null ? m_DemandSystem.MonthIndex : -1;
+            if (month != m_TrackedMonth)
+            {
+                m_TrackedMonth = month;
+                m_LeftHouseholds = default;
+                m_LeftCitizens = default;
+                m_LeftNeverInitialised = 0;
+                m_CountedMovers.Clear();
+            }
+
+            if (++m_UpdatesSinceSnapshot < kUpdatesPerSnapshot)
+            {
+                return;
+            }
+
+            m_UpdatesSinceSnapshot = 0;
 
             if (!m_Announced)
             {
@@ -151,6 +315,7 @@ namespace TourismOverhaul.Systems
                 $"TouristNoMoney {noMoney}, other {other}\n" +
                 $"  waiting at a connection with no destination: {waiting}\n" +
                 $"  free hotel rooms: {freeRooms}\n" +
+                DescribeCohort() + "\n" +
                 DescribeLodgingDemand() + "\n" +
                 $"  hotel zones: {m_HotelZoneSystem.HotelBuildingsMoved} hotel and " +
                 $"{m_HotelZoneSystem.MotelBuildingsMoved} motel building prefabs assigned\n" +

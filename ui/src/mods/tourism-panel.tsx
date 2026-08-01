@@ -21,6 +21,11 @@ const targetTourists$ = bindValue<number>("tourismOverhaul", "targetTourists", 0
 const hotelRoomsFree$ = bindValue<number>("tourismOverhaul", "hotelRoomsFree", 0);
 const hotelRoomsTotal$ = bindValue<number>("tourismOverhaul", "hotelRoomsTotal", 0);
 
+const arrivalsRoad$ = bindValue<number>("tourismOverhaul", "arrivalsRoad", 0);
+const arrivalsTrain$ = bindValue<number>("tourismOverhaul", "arrivalsTrain", 0);
+const arrivalsAir$ = bindValue<number>("tourismOverhaul", "arrivalsAir", 0);
+const arrivalsShip$ = bindValue<number>("tourismOverhaul", "arrivalsShip", 0);
+
 /**
  * cs2/ui is resolved at runtime as window["cs2/ui"], and its surface does not necessarily match
  * the type definitions — ui.d.ts re-exports InfoRow/InfoSection as PanelSectionRow/PanelSection,
@@ -87,10 +92,20 @@ export const TourismOverhaulRows = () => {
   const hotelRoomsFree = useValue(hotelRoomsFree$);
   const hotelRoomsTotal = useValue(hotelRoomsTotal$);
 
+  const byRoad = useValue(arrivalsRoad$);
+  const byTrain = useValue(arrivalsTrain$);
+  const byAir = useValue(arrivalsAir$);
+  const bySea = useValue(arrivalsShip$);
+
   const occupancy =
     hotelRoomsTotal > 0
       ? Math.round(((hotelRoomsTotal - hotelRoomsFree) / hotelRoomsTotal) * 100)
       : 0;
+
+  // Share of the month's arrivals, so the split is readable without dividing four numbers by eye.
+  const arrivalsTotal = byRoad + byTrain + byAir + bySea;
+  const share = (n: number) =>
+    arrivalsTotal > 0 ? ` (${Math.round((n / arrivalsTotal) * 100)}%)` : "";
 
   return (
     <>
@@ -120,6 +135,18 @@ export const TourismOverhaulRows = () => {
         right={citizensAway.toLocaleString()}
         tooltip="Your own residents currently out of town on holiday."
       />
+      <Row
+        left="Arrivals by mode"
+        right={`${arrivalsTotal.toLocaleString()} /mo.`}
+        tooltip="Visitors sent through each outside connection type over the last full month,
+                 counted in cims rather than travel parties. This is a flow, not a population: it
+                 counts everyone who came through the door across a whole month, where Tourists in
+                 city counts who is here right now. The two differ by the average length of stay."
+      />
+      <Row left="Road" right={`${byRoad.toLocaleString()}${share(byRoad)}`} subRow subRowDimmed />
+      <Row left="Train" right={`${byTrain.toLocaleString()}${share(byTrain)}`} subRow subRowDimmed />
+      <Row left="Plane" right={`${byAir.toLocaleString()}${share(byAir)}`} subRow subRowDimmed />
+      <Row left="Sea" right={`${bySea.toLocaleString()}${share(bySea)}`} subRow subRowDimmed />
     </>
   );
 };
