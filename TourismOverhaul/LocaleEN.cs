@@ -211,6 +211,21 @@ namespace TourismOverhaul
                     "Set to 0 to size tourist demand on population alone."
                 },
                 {
+                    m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.TouristShoppingChance)),
+                    "Shopping over sightseeing"
+                },
+                {
+                    m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.TouristShoppingChance)),
+                    "How often visitors head for the shops instead of a park or attraction.\n\n" +
+                    "Tourists never shop in the base game. Citizens choose shopping over leisure " +
+                    "whenever their household wants something, but that want comes from supplies " +
+                    "running low at home — and a visitor has no home and no cupboard, so it never " +
+                    "happens. They sightsee for the whole visit and their money never reaches your " +
+                    "shops.\n\n" +
+                    "Raise this and your commercial districts will start earning from tourism. " +
+                    "Set to 0 for the base game's behaviour."
+                },
+                {
                     m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.MaxArrivalsPerUpdate)),
                     "Arrival speed"
                 },
