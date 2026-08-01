@@ -164,6 +164,22 @@ namespace TourismOverhaul.Systems
         /// <summary>
         /// Raises how many rooms per tourist the city considers necessary, which is the trigger
         /// CommercialDemandSystem uses to push Lodging demand to maximum and get hotels zoned.
+        ///
+        /// The room multiplier has to be compensated for here, or it silently switches hotel
+        /// construction off. The test CommercialDemandSystem applies is
+        ///
+        ///     currentTourists * m_HotelRoomPercentRequirement > m_Lodging.y     (:187)
+        ///
+        /// and TourismSystem fills m_Lodging.y from LodgingProvider capacity (:90), which is the
+        /// figure HotelCapacitySystem multiplies. So a 3x multiplier triples the apparent room
+        /// supply, the inequality stops holding, Lodging demand sits at zero, and ZoneSpawnSystem
+        /// rejects every hotel prefab because EvaluateDemandAndAvailability returns 0 against a
+        /// m_MinDemand of 1. Nothing is built, in the hotel zone or anywhere else, however much
+        /// land the player zones.
+        ///
+        /// Multiplying the requirement by the same factor cancels the inflation exactly: the
+        /// multiplier then changes how many tourists a single hotel holds, which is what it is for,
+        /// without also claiming the city is oversupplied.
         /// </summary>
         private void UpdateHotelRoomRequirement(TourismOverhaulSetting settings)
         {
@@ -172,7 +188,12 @@ namespace TourismOverhaul.Systems
                 return;
             }
 
-            float requirement = math.clamp(settings.HotelRoomsPerTourist, 0.1f, 3f);
+            float perTourist = math.clamp(settings.HotelRoomsPerTourist, 0.1f, 3f);
+            float multiplier = math.max(1, settings.HotelRoomMultiplier);
+
+            // Clamped well above the per-tourist ceiling because this is a compensated figure, not
+            // a player-facing one — at 3 rooms per tourist and a 10x multiplier it reaches 30.
+            float requirement = math.clamp(perTourist * multiplier, 0.1f, 30f);
 
             if (math.abs(requirement - m_LastWrittenRoomRequirement) < 0.001f)
             {
@@ -188,7 +209,9 @@ namespace TourismOverhaul.Systems
 
             m_LastWrittenRoomRequirement = requirement;
 
-            Mod.Log.Info($"Hotel room requirement set to {requirement:0.00} rooms per tourist.");
+            Mod.Log.Info(
+                $"Hotel room requirement set to {requirement:0.00} rooms per tourist " +
+                $"({perTourist:0.00} wanted x {multiplier:0} room multiplier).");
         }
     }
 }
