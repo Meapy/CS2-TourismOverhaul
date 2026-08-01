@@ -18,6 +18,21 @@ namespace TourismOverhaul
         {
             return new Dictionary<string, string>
             {
+                // Zone prefabs are named through the asset keys, not the settings ones. Without
+                // these the zones appear in the zoning menu as unlabelled tiles.
+                { "Assets.NAME[TourismOverhaul Hotels]", "Hotels" },
+                {
+                    "Assets.DESCRIPTION[TourismOverhaul Hotels]",
+                    "A commercial zone for hotels. Only hotels are built here, and hotels are no " +
+                    "longer built in ordinary commercial zones."
+                },
+                { "Assets.NAME[TourismOverhaul Motels]", "Motels" },
+                {
+                    "Assets.DESCRIPTION[TourismOverhaul Motels]",
+                    "A commercial zone for motels. Smaller and cheaper than hotels, and well suited " +
+                    "to roadside plots near your outside connections."
+                },
+
                 { m_Setting.GetSettingsLocaleID(), "Tourism Overhaul" },
                 { m_Setting.GetOptionTabLocaleID(TourismOverhaulSetting.SectionMain), "Main" },
 
@@ -72,8 +87,63 @@ namespace TourismOverhaul
                 },
                 {
                     m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.PreferAirAndSea)),
-                    "Keep the base game's preference for planes and ferries when those connections exist. " +
-                    "Turn off to spread arrivals evenly across every available connection type."
+                    "Use the arrival mix below to decide how tourists reach the city. Turn off to " +
+                    "spread arrivals evenly across every connection type you have."
+                },
+                {
+                    m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.ArrivalWeightRoad)),
+                    "Arrivals by road"
+                },
+                {
+                    m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.ArrivalWeightRoad)),
+                    "Relative weight for road arrivals. The base game uses 10 against 10 rail, " +
+                    "50 air and 30 sea.\n\n" +
+                    "Note that road arrivals are the ones handed a car, so lowering this is the " +
+                    "main way to reduce tourist traffic. It cannot remove it entirely: the game " +
+                    "gives a car to anyone arriving at a connection carrying the road flag, and " +
+                    "many connections serve road alongside rail or sea. Use \"Tourists arriving " +
+                    "with a car\" for direct control."
+                },
+                {
+                    m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.ArrivalWeightTrain)),
+                    "Arrivals by rail"
+                },
+                {
+                    m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.ArrivalWeightTrain)),
+                    "Relative weight for rail arrivals."
+                },
+                {
+                    m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.ArrivalWeightAir)),
+                    "Arrivals by air"
+                },
+                {
+                    m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.ArrivalWeightAir)),
+                    "Relative weight for air arrivals."
+                },
+                {
+                    m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.ArrivalWeightShip)),
+                    "Arrivals by sea"
+                },
+                {
+                    m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.ArrivalWeightShip)),
+                    "Relative weight for sea arrivals.\n\n" +
+                    "These four are relative to each other, not percentages — only the connection " +
+                    "types your city actually has receive a share, and the rest is redistributed."
+                },
+                {
+                    m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.TouristCarChance)),
+                    "Tourists arriving with a car"
+                },
+                {
+                    m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.TouristCarChance)),
+                    "Share of tourist groups that bring a car.\n\n" +
+                    "The base game hands one to every household arriving at a connection carrying " +
+                    "the road flag — no dice roll, and including connections that also serve rail " +
+                    "or sea, so a visitor who came by train still drives. 100% is that behaviour " +
+                    "unchanged.\n\n" +
+                    "Lower it and the rest travel by public transport, taxi and on foot. Each " +
+                    "group's outcome is fixed, so a family keeps or loses its car for the whole " +
+                    "visit rather than flickering."
                 },
                 {
                     m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.LoadAwareArrivals)),
@@ -126,14 +196,126 @@ namespace TourismOverhaul
                     m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.MaximumTourists)),
                     "Hard ceiling on tourist citizens, regardless of population and attractiveness."
                 },
+
+                {
+                    m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.HotelRoomDemandOccupancy)),
+                    "Hotel rooms attract tourists"
+                },
+                {
+                    m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.HotelRoomDemandOccupancy)),
+                    "Occupancy the city aims to fill its hotel rooms to.\n\n" +
+                    "Building rooms raises the tourist target, so opening a hotel draws new " +
+                    "visitors instead of taking them from the hotel down the road — which is what " +
+                    "stops new hotels folding before they fill. Still scaled by attractiveness, " +
+                    "so rooms alone will not fill an unappealing city.\n\n" +
+                    "Set to 0 to size tourist demand on population alone."
+                },
                 {
                     m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.MaxArrivalsPerUpdate)),
-                    "Maximum arrivals per update"
+                    "Arrival speed"
                 },
                 {
                     m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.MaxArrivalsPerUpdate)),
-                    "Caps how fast a shortfall is filled. Lower values give smoother arrivals and less " +
-                    "pathfinding work per tick."
+                    "How many tourist groups can arrive at once. Higher fills a shortfall faster " +
+                    "but means burstier arrivals and more routing work each tick.\n\n" +
+                    "This only sets the pace, not the destination — the tourist target decides how " +
+                    "many end up in your city. Raise it if numbers climb too slowly after building " +
+                    "hotels or attractions."
+                },
+                {
+                    m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.PreferLargerTouristGroups)),
+                    "Prefer larger tourist groups"
+                },
+                {
+                    m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.PreferLargerTouristGroups)),
+                    "Tourists arrive as households, and the base game picks the household template " +
+                    "at random — mostly small ones, averaging under two people.\n\n" +
+                    "Raising this favours families and groups, so more tourists arrive for the " +
+                    "same number of households. That is much cheaper for the simulation: a family " +
+                    "of four needs one hotel room and one route, where four lone travellers need " +
+                    "four of each. Set to 0 for the base game's random pick."
+                },
+                {
+                    m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.EnableHotelWelcome)),
+                    "New hotels get an opening boost"
+                },
+                {
+                    m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.EnableHotelWelcome)),
+                    "A hotel pays a full payroll from the day it opens but only earns per guest, " +
+                    "so a new one often goes bankrupt before word gets around.\n\n" +
+                    "This brings a surge of extra visitors to the city when a hotel opens — " +
+                    "genuinely additional tourists, not the ones already staying elsewhere, so " +
+                    "existing hotels are not emptied to fill the new one."
+                },
+                {
+                    m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.HotelWelcomeDays)),
+                    "Opening boost length (days)"
+                },
+                {
+                    m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.HotelWelcomeDays)),
+                    "How long the surge lasts. After it lapses the hotel has to hold its guests on " +
+                    "the city's ordinary appeal."
+                },
+                {
+                    m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.HotelWelcomeBoost)),
+                    "Opening boost size"
+                },
+                {
+                    m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.HotelWelcomeBoost)),
+                    "Extra visitors during the boost, as a percentage of the new hotel's rooms. " +
+                    "At 100% the city draws enough additional tourists to fill it."
+                },
+                {
+                    m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.HotelWelcomeArrivalMultiplier)),
+                    "Opening arrival speed"
+                },
+                {
+                    m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.HotelWelcomeArrivalMultiplier)),
+                    "How much faster tourists arrive while a hotel is opening. Without this the " +
+                    "extra visitors would trickle in over days and the boost would lapse before " +
+                    "they reached the city."
+                },
+                {
+                    m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.HotelWelcomeStock)),
+                    "Opening stock"
+                },
+                {
+                    m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.HotelWelcomeStock)),
+                    "Food kept in a new hotel's storage while it is opening.\n\n" +
+                    "Hotels turn food into lodging, and a new one opens with an empty larder — it " +
+                    "cannot serve guests until deliveries start arriving, and often folds first. " +
+                    "The building complains about customers when the real problem is an empty " +
+                    "pantry. Once the opening period ends it buys its own supplies like any other " +
+                    "business."
+                },
+                {
+                    m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.ReplaceNativeSpawner)),
+                    "Replace the base game's tourist spawner"
+                },
+                {
+                    m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.ReplaceNativeSpawner)),
+                    "The base game's tourist spawner picks household templates without excluding " +
+                    "the dynamic ones, which cannot be given citizens. Those households are never " +
+                    "cleaned up either, so they pile up for the life of the save — roughly two " +
+                    "out of every three tourists it creates.\n\n" +
+                    "This stands it down, since this mod's own spawner already covers demand, and " +
+                    "clears out the dead households it left behind."
+                },
+
+                {
+                    m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.EnableHotelZones)),
+                    "Hotel and motel zones"
+                },
+                {
+                    m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.EnableHotelZones)),
+                    "Adds two zones to the zoning menu — Hotels and Motels — and moves the game's " +
+                    "lodging buildings into them.\n\n" +
+                    "The game already has 80 hotel and motel buildings, but they sit among the " +
+                    "ordinary shops in commercial zones, so zoning commercial gives you a hotel " +
+                    "only now and then. With these zones, hotels appear where you zone for them, " +
+                    "and stop turning up at random elsewhere.\n\n" +
+                    "Note that zoning is stored per cell, so a save with hotel zoning painted will " +
+                    "have unrecognised cells if this mod is later removed."
                 },
 
                 // ---- E
@@ -213,6 +395,28 @@ namespace TourismOverhaul
                     "Average nights a tourist with a hotel room stays. Actual stays vary around this."
                 },
 
+                {
+                    m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.RebookDisplacedTourists)),
+                    "Rehouse guests of closed hotels"
+                },
+                {
+                    m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.RebookDisplacedTourists)),
+                    "When a hotel goes out of business its guests lose their rooms, and anyone " +
+                    "without a room by the evening is thrown out of the city — so a single " +
+                    "closure can wipe out thousands of tourists at once.\n\n" +
+                    "This moves them into other hotels that still have space first. Guests are " +
+                    "only sent home if the city genuinely has no free rooms left."
+                },
+                {
+                    m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.MaxRebookingsPerUpdate)),
+                    "Rehousing speed"
+                },
+                {
+                    m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.MaxRebookingsPerUpdate)),
+                    "How many displaced households are rehoused per pass. Higher clears a large " +
+                    "closure faster; lower spreads the work out."
+                },
+
                 // ---- D
                 {
                     m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.FixReporting)),
@@ -257,6 +461,17 @@ namespace TourismOverhaul
                     m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.HolidayMinimumSavings)),
                     "Households with less money than this are never sent away, keeping the base " +
                     "game's principle that holidays are for those who can afford them."
+                },
+
+                {
+                    m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.DiagnosticLogging)),
+                    "Diagnostic logging"
+                },
+                {
+                    m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.DiagnosticLogging)),
+                    "Writes a daily tourism breakdown to TourismOverhaul.log — arrivals, empty " +
+                    "households, free rooms, and why tourists are leaving. Useful when tourist " +
+                    "numbers are not behaving as expected."
                 },
 
                 // ---- display
@@ -324,17 +539,27 @@ namespace TourismOverhaul
 
                 // ---- hotels
                 {
-                    m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.EnableHotelCapacity)),
-                    "Increase hotel rooms"
+                    m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.EnableHotelEfficiencyFloor)),
+                    "Hotels keep running when out of stock"
                 },
                 {
-                    m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.EnableHotelCapacity)),
-                    "Multiplies the number of rooms in zoned commercial hotels. Signature buildings " +
-                    "are left at their authored capacity.\n\n" +
-                    "This replaces the game's lodging system with a copy that applies the " +
-                    "multiplier, because room count is computed inside a compiled job from values " +
-                    "that also control rent and workplaces. Turning this off restores the original " +
-                    "system immediately."
+                    m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.EnableHotelEfficiencyFloor)),
+                    "The base game treats an empty larder as all or nothing: a hotel with no food " +
+                    "drops to 0% efficiency, serves nobody and earns nothing, while still paying " +
+                    "its staff. It cannot recover, because it needs income to buy the supplies " +
+                    "that would restore it.\n\n" +
+                    "This softens the penalty so a hotel runs short-staffed instead of shutting " +
+                    "down, and can trade its way back. Only affects hotels, and only the lack of " +
+                    "resources penalty."
+                },
+                {
+                    m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.HotelEfficiencyFloor)),
+                    "Minimum efficiency when out of stock"
+                },
+                {
+                    m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.HotelEfficiencyFloor)),
+                    "The worst a hotel's efficiency falls to when it has no supplies. The base " +
+                    "game uses 0%. At 50% it runs at half capacity until deliveries resume."
                 },
                 {
                     m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.HotelRoomMultiplier)),
