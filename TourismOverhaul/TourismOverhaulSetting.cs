@@ -44,6 +44,17 @@ namespace TourismOverhaul
         [SettingsUISection(SectionMain, GroupDemand)]
         public int TouristsPerThousandCitizens { get; set; } = 60;
 
+        /// <summary>
+        /// Attractiveness contributed by each building in an old town zone.
+        ///
+        /// The base game gives ordinary zoned buildings no attractiveness at all, so a preserved
+        /// old quarter draws nobody unless a landmark happens to sit in it. Small per building on
+        /// purpose: one old house should be worth little, a whole quarter a lot. 0 disables it.
+        /// </summary>
+        [SettingsUISlider(min = 0f, max = 25f, step = 1f, unit = "integer")]
+        [SettingsUISection(SectionMain, GroupDemand)]
+        public int HistoricBuildingAttractiveness { get; set; } = 3;
+
         /// <summary>Upper bound on tourist citizens.</summary>
         [SettingsUISlider(min = 1500f, max = 100000f, step = 500f, unit = "integer")]
         [SettingsUISection(SectionMain, GroupDemand)]
@@ -358,6 +369,7 @@ namespace TourismOverhaul
             FixTouristDemand = true;
             MaxArrivalsPerUpdate = 128;
             TouristShoppingChance = 25;
+            HistoricBuildingAttractiveness = 3;
             HotelRoomDemandOccupancy = 80;
             ReplaceNativeSpawner = true;
 

@@ -81,6 +81,10 @@ namespace TourismOverhaul
             // TouristFindTargetSystem which it disables.
             updateSystem.UpdateAt<TouristTargetSearchSystem>(SystemUpdatePhase.GameSimulation);
 
+            // Makes old town buildings attractive in their own right, so a historic district draws
+            // visitors without needing a landmark dropped into it.
+            updateSystem.UpdateAt<HistoricAttractivenessSystem>(SystemUpdatePhase.GameSimulation);
+
             // Gives visitors a shopping need, so they choose shops over parks. Must run in the
             // simulation phase, before CitizenBehaviorSystem reads the need on its next tick.
             updateSystem.UpdateAt<TouristShoppingSystem>(SystemUpdatePhase.GameSimulation);
