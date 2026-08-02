@@ -48,6 +48,15 @@ namespace TourismOverhaul.Systems
         /// <summary>Below this, a tourist is saving for the hotel rather than browsing.</summary>
         private const int kMinimumShoppingMoney = 200;
 
+        /// <summary>
+        /// Upper bound on a single shopping trip, in resource units.
+        ///
+        /// A sanity bound, not a balance lever: it stops one visitor clearing a shop's entire stock
+        /// in a single visit. What a tourist actually buys is set by what they are carrying, which
+        /// is the figure that should govern it.
+        /// </summary>
+        private const int kMaxShoppingAmount = 2000;
+
         private EntityQuery m_TouristQuery;
 
         // 262144 frames per in-game day. At 2048 this runs 128 times a day, so the per-update
@@ -194,7 +203,17 @@ namespace TourismOverhaul.Systems
                         // Spend a slice of what they are carrying, scaled by party size, so a
                         // family buys more than a lone traveller and nobody is asked to spend
                         // money they do not have.
-                        int amount = math.clamp(money / 20 * occupants, 5, 200);
+                        //
+                        // The ceiling used to be 200, which a visitor with a normal wallet exceeded
+                        // eight times over — so it bound on essentially every trip and every
+                        // shopper bought the same token amount. Raising the shopping chance then
+                        // did nothing useful: more trips, each still capped at 200. Shops came to
+                        // 1% of tourist spending against 94% for leisure, and the cap was most of
+                        // the reason.
+                        //
+                        // The remaining ceiling is a sanity bound rather than a balance figure: it
+                        // stops a single trip clearing out a company's entire stock.
+                        int amount = math.clamp(money / 20 * occupants, 5, kMaxShoppingAmount);
 
                         needs[i] = new HouseholdNeed
                         {

@@ -166,7 +166,7 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
   <Tag Value="Code Mod" />
 
   <ForumLink Value="https://forum.paradoxplaza.com/forum/threads/mod-tourism-overhaul-fix-tourism.1937099/" />
-  <ModVersion Value="1.4.0" />
+  <ModVersion Value="1.5.0" />
   <GameVersion Value="1.6.*" />
 
   <!--
@@ -174,23 +174,31 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
     accumulating history here republishes every past release with every upload. The full record
     belongs in CHANGELOG.md.
   -->
-  <ChangeLog>1.4.0
+  <ChangeLog>1.5.0
 
-Historic districts now draw visitors.
+A new Tourism Finance view, beside the Tourism one, showing where visitor money actually goes:
+hotels, shops, transport fares, and leisure. It reports the last full month and keeps its figures
+between sessions.
 
-Attractiveness in the base game comes almost entirely from parks and signature landmarks. An
-ordinary building contributes nothing, however beautiful, so a preserved old quarter draws nobody
-unless a landmark happens to sit inside it.
+Building it turned up a real problem. Over 90% of tourist money was going to leisure venues, and
+not because visitors love parks — venues charge more as their stock runs down, tourists visit
+constantly, and they were paying the higher price they had created. Leisure venues now have more
+capacity, so a visit costs closer to its base price.
 
-Mark a building as historical — the same option you already use to preserve its level — and it
-now adds to your city's appeal. One old house counts for very little; a whole preserved street or
-quarter is worth travelling for. Tourism becomes something a district can earn through its
-character, instead of something you place.
+Also new:
+- Crowded attractions lose some of their appeal, so visitors spread across your city instead of
+  piling into the same few places. A small square fills quickly; a large attraction absorbs far
+  more before anyone looks elsewhere.
+- Tourist transport fares are tracked separately from residents', which the game itself cannot
+  tell apart once the money reaches your budget.
 
-Adjustable, and can be turned off.
+Fixed:
+- Hotel spending was estimated rather than counted, and read as zero.
+- Fares always read zero.
+- Spending figures reset after loading a save.
 
-Also in this release: the description now covers tourist shopping, which arrived in 1.2.0 and was
-never properly explained.</ChangeLog>
+Changed: room cost and visitor spending money are now percentages that scale together, so making
+rooms cheaper also makes visitors carry proportionally less, instead of the two drifting apart.</ChangeLog>
 
   <ExternalLink Type="github" Url="https://github.com/Meapy/CS2-TourismOverhaul" />
 </Publish>

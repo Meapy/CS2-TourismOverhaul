@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 26 26">
+  <!--
+    Tourism Finance info view icon.
+
+    The suitcase is redrawn to match the game's own Tourism.svg — same isometric projection, same
+    palette (#6be8f5 lid, #3fc9d8 lit face, #1c9dab shaded face, #9b9b9b handle, #4d4d4d edge) — so
+    the two views read as a pair in the toolbar rather than one looking like a bolted-on mod icon.
+
+    The currency mark sits in the lower right, where it overlaps the case without hiding the
+    silhouette. Drawn flat rather than isometric so it stays legible at 26px, in the game's own
+    positive-money green.
+  -->
+  <g id="TourismFinance">
+    <path id="lid" d="M7.3,9.3 L12.1,6.2 L18.8,10.2 L14.0,13.4 Z" fill="#6be8f5"/>
+    <path id="face-left" d="M7.3,9.3 L14.0,13.4 L14.0,24.1 L7.3,20.2 Z" fill="#3fc9d8"/>
+    <path id="face-right" d="M14.0,13.4 L18.8,10.2 L18.8,21.1 L14.0,24.1 Z" fill="#1c9dab"/>
+    <path id="edge" d="M15.4,8.9 L16.1,8.4 L19.3,10.3 L19.3,21.1 L18.6,21.5 L18.6,10.7 Z" fill="#4d4d4d"/>
+    <path id="handle" d="M13.1,7.3 L13.1,3.1 C13.1,2.7 13.2,2.4 13.4,2.3 C13.6,2.2 13.8,2.2 13.9,2.3
+                         L17.6,4.5 C17.8,4.6 17.9,4.9 17.9,5.3 L17.9,9.6 L16.9,9.0 L16.9,4.9
+                         L14.4,3.4 L14.4,7.5 Z" fill="#9b9b9b"/>
+
+    <circle cx="19.4" cy="19.4" r="6.0" fill="#0a1a24" opacity="0.55"/>
+    <circle cx="19.4" cy="19.4" r="5.1" fill="#3ddc84"/>
+    <path d="M19.4,15.2 L19.4,23.6" stroke="#0d3b23" stroke-width="1.5" stroke-linecap="round"/>
+    <path d="M21.5,17.2 C21.5,16.2 20.5,15.9 19.4,15.9 C18.3,15.9 17.4,16.4 17.4,17.4
+             C17.4,19.4 21.5,18.6 21.5,20.9 C21.5,22.0 20.5,22.5 19.4,22.5 C18.3,22.5 17.3,22.1 17.3,21.1"
+          fill="none" stroke="#0d3b23" stroke-width="1.6" stroke-linecap="round"/>
+  </g>
+</svg>

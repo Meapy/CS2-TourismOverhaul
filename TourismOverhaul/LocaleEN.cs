@@ -20,6 +20,14 @@ namespace TourismOverhaul
             {
                 // Zone prefabs are named through the asset keys, not the settings ones. Without
                 // these the zones appear in the zoning menu as unlabelled tiles.
+                { "Assets.NAME[TourismOverhaul Finance]", "Tourism Finance" },
+                {
+                    "Assets.DESCRIPTION[TourismOverhaul Finance]",
+                    "Where visitors are spending their money: hotels, shops, transport fares and " +
+                    "everything else."
+                },
+                { "Infoviews.INFOVIEW[TourismOverhaul Finance]", "Tourism Finance" },
+
                 { "Assets.NAME[TourismOverhaul Hotels]", "Hotels" },
                 {
                     "Assets.DESCRIPTION[TourismOverhaul Hotels]",
@@ -211,6 +219,20 @@ namespace TourismOverhaul
                     "Set to 0 to size tourist demand on population alone."
                 },
                 {
+                    m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.EnableAttractionCrowding)),
+                    "Crowded places lose their appeal"
+                },
+                {
+                    m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.EnableAttractionCrowding)),
+                    "Attractions become less appealing the busier they get, so visitors spread " +
+                    "across your city instead of all piling into the same few places.\n\n" +
+                    "The base game never notices how full somewhere already is, so the single most " +
+                    "attractive park stays the first choice however packed it becomes.\n\n" +
+                    "How quickly a place fills up depends on its size: a small square is crowded " +
+                    "after a handful of visitors, while a large attraction absorbs many more before " +
+                    "anyone looks elsewhere."
+                },
+                {
                     m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.HistoricBuildingAttractiveness)),
                     "Historical building appeal"
                 },
@@ -376,17 +398,33 @@ namespace TourismOverhaul
                     "regardless of their planned stay."
                 },
                 {
-                    m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.TouristDailySpending)),
-                    "Daily spending money"
+                    m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.LodgingCostPercent)),
+                    "Hotel room cost"
                 },
                 {
-                    m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.TouristDailySpending)),
-                    "Money per day on top of the hotel bill, for shopping, leisure venues and " +
-                    "public transport fares — tourists pay real ticket prices from the same " +
-                    "wallet.\n\n" +
-                    "A reserve is always added on top, because a household that drops below " +
-                    "1000 stops shopping for the rest of its visit while still occupying a room. " +
-                    "Raise this if you want tourism to show up in your commercial income."
+                    m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.LodgingCostPercent)),
+                    "What a room costs per night, against the base game's own rate.\n\n" +
+                    "The base game works out at around ¢1,500 a night, which is steep next to what " +
+                    "the rest of the economy charges for anything. Lower this and rooms get " +
+                    "cheaper — and because spending money is set against the room rate, visitors " +
+                    "carry proportionally less too, so the whole tourist economy scales together " +
+                    "instead of drifting apart.\n\n" +
+                    "Hotels earn less per guest at lower settings. That is the honest cost of " +
+                    "cheaper rooms."
+                },
+                {
+                    m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.SpendingPerNightPercent)),
+                    "Spending money per night"
+                },
+                {
+                    m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.SpendingPerNightPercent)),
+                    "How much a visitor carries for each night, beyond the room, as a share of the " +
+                    "room rate. At 100% they budget as much for your city as for the bed.\n\n" +
+                    "Covers shopping, leisure venues and transport fares — tourists pay real ticket " +
+                    "prices from the same wallet. A reserve is always added on top, because a " +
+                    "household that runs too low stops shopping for the rest of its visit while " +
+                    "still occupying a room.\n\n" +
+                    "Raise it if you want tourism to show up in your commercial income."
                 },
                 {
                     m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.FixHotelDemand)),

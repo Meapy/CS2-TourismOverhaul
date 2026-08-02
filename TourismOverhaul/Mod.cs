@@ -81,6 +81,19 @@ namespace TourismOverhaul
             // TouristFindTargetSystem which it disables.
             updateSystem.UpdateAt<TouristTargetSearchSystem>(SystemUpdatePhase.GameSimulation);
 
+            // Adds the Tourism Finance info view beside the stock Tourism one.
+            updateSystem.UpdateAt<TourismFinanceViewSystem>(SystemUpdatePhase.GameSimulation);
+
+            // Gives leisure venues more service capacity, which lowers their surge pricing.
+            updateSystem.UpdateAt<LeisurePricingSystem>(SystemUpdatePhase.GameSimulation);
+
+            // Watches tourist wallets and attributes what leaves them to a category.
+            updateSystem.UpdateAt<TouristSpendingLedgerSystem>(SystemUpdatePhase.GameSimulation);
+
+            // Damps a crowded attraction's appeal so visitors spread out. Must run after
+            // HistoricAttractivenessSystem, which sets the values this one scales.
+            updateSystem.UpdateAt<AttractionCrowdingSystem>(SystemUpdatePhase.GameSimulation);
+
             // Makes old town buildings attractive in their own right, so a historic district draws
             // visitors without needing a landmark dropped into it.
             updateSystem.UpdateAt<HistoricAttractivenessSystem>(SystemUpdatePhase.GameSimulation);

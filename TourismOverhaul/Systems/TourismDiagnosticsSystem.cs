@@ -66,6 +66,10 @@ namespace TourismOverhaul.Systems
         /// </summary>
         private int m_LeftNeverInitialised;
 
+        // Tourist money, sampled between snapshots so spending can be inferred from the balance.
+        private long m_LastWalletTotal;
+        private bool m_HasWalletSample;
+
         private int m_TrackedMonth = -1;
         private int m_UpdatesSinceSnapshot;
 
@@ -154,6 +158,97 @@ namespace TourismOverhaul.Systems
                 $"  departures by reason (cims): NoTarget {m_LeftCitizens.x}, " +
                 $"NoHotel {m_LeftCitizens.y}, NoMoney {m_LeftCitizens.z}, other {m_LeftCitizens.w}\n" +
                 $"  unaccounted: {arrived - left} cims arrived but never recorded as leaving";
+        }
+
+        /// <summary>
+        /// Follows the money tourists are carrying, which is the only way to see what they spend
+        /// without instrumenting every till in the city.
+        ///
+        /// Every visitor is created holding a wallet, so money enters the economy on arrival and
+        /// leaves with them if unspent. Between two snapshots:
+        ///
+        ///     spent = brought in by arrivals - change in the balance - taken away by departures
+        ///
+        /// Departures are the term this cannot see directly, so the figure is an upper bound on
+        /// spending rather than an exact total. It is still the number that matters: if arrivals
+        /// bring in far more than the city ever absorbs, the wallet is too large, and if the
+        /// balance climbs steadily then visitors are hoarding rather than spending.
+        ///
+        /// Lodging is charged nightly by the hotel system and shopping is settled by the native
+        /// buyer path, so the split between them has to come from watching hotel and shop income
+        /// rather than from here.
+        /// </summary>
+        private string DescribeSpending()
+        {
+            long held = 0;
+
+            BufferTypeHandle<Game.Economy.Resources> resourceHandle =
+                GetBufferTypeHandle<Game.Economy.Resources>(isReadOnly: true);
+
+            NativeArray<ArchetypeChunk> chunks =
+                m_TouristHouseholdQuery.ToArchetypeChunkArray(Allocator.Temp);
+            try
+            {
+                for (int c = 0; c < chunks.Length; c++)
+                {
+                    ArchetypeChunk chunk = chunks[c];
+
+                    if (!chunk.Has(ref resourceHandle))
+                    {
+                        continue;
+                    }
+
+                    BufferAccessor<Game.Economy.Resources> resources =
+                        chunk.GetBufferAccessor(ref resourceHandle);
+
+                    for (int i = 0; i < resources.Length; i++)
+                    {
+                        held += Game.Economy.EconomyUtils.GetResources(
+                            Game.Economy.Resource.Money, resources[i]);
+                    }
+                }
+            }
+            finally
+            {
+                chunks.Dispose();
+            }
+
+            long change = m_HasWalletSample ? held - m_LastWalletTotal : 0;
+
+            m_LastWalletTotal = held;
+            m_HasWalletSample = true;
+
+            int budget = m_EconomySystem != null ? m_EconomySystem.TouristBudget : 0;
+            int tourists = m_DemandSystem != null ? m_DemandSystem.CurrentTourists : 0;
+            long perHead = tourists > 0 ? held / tourists : 0;
+
+            return
+                $"  tourist money: {held} held citywide, {change:+#;-#;0} since last snapshot, " +
+                $"{perHead} per visitor against a {budget} starting wallet";
+        }
+
+        /// <summary>
+        /// The spending split, with the raw signal counts behind it.
+        ///
+        /// The counts matter more than the money when a category reads zero: a category with no
+        /// signals is not being detected, while one with signals but no money is being detected and
+        /// then losing the spend to something else.
+        /// </summary>
+        private string DescribeLedger()
+        {
+            TouristSpendingLedgerSystem ledger =
+                World.GetOrCreateSystemManaged<TouristSpendingLedgerSystem>();
+
+            if (ledger == null)
+            {
+                return "  spending: ledger unavailable";
+            }
+
+            return
+                $"  spending: hotels {ledger.Lodging}, shops {ledger.Goods}, fares {ledger.Fares}, " +
+                $"leisure/other {ledger.Other}\n" +
+                $"  signals: {ledger.GoodsSignalsSeen} purchase(s) seen, " +
+                $"{ledger.RidesCharged} ride(s) charged";
         }
 
         private string DescribeLodgingDemand()
@@ -316,6 +411,8 @@ namespace TourismOverhaul.Systems
                 $"  waiting at a connection with no destination: {waiting}\n" +
                 $"  free hotel rooms: {freeRooms}\n" +
                 DescribeCohort() + "\n" +
+                DescribeSpending() + "\n" +
+                DescribeLedger() + "\n" +
                 DescribeLodgingDemand() + "\n" +
                 $"  hotel zones: {m_HotelZoneSystem.HotelBuildingsMoved} hotel and " +
                 $"{m_HotelZoneSystem.MotelBuildingsMoved} motel building prefabs assigned\n" +

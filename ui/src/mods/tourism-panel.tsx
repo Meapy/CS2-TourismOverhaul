@@ -26,6 +26,11 @@ const arrivalsTrain$ = bindValue<number>("tourismOverhaul", "arrivalsTrain", 0);
 const arrivalsAir$ = bindValue<number>("tourismOverhaul", "arrivalsAir", 0);
 const arrivalsShip$ = bindValue<number>("tourismOverhaul", "arrivalsShip", 0);
 
+const spentLodging$ = bindValue<number>("tourismOverhaul", "spentLodging", 0);
+const spentGoods$ = bindValue<number>("tourismOverhaul", "spentGoods", 0);
+const spentFares$ = bindValue<number>("tourismOverhaul", "spentFares", 0);
+const spentOther$ = bindValue<number>("tourismOverhaul", "spentOther", 0);
+
 /**
  * cs2/ui is resolved at runtime as window["cs2/ui"], and its surface does not necessarily match
  * the type definitions — ui.d.ts re-exports InfoRow/InfoSection as PanelSectionRow/PanelSection,
@@ -107,6 +112,7 @@ export const TourismOverhaulRows = () => {
   const share = (n: number) =>
     arrivalsTotal > 0 ? ` (${Math.round((n / arrivalsTotal) * 100)}%)` : "";
 
+
   return (
     <>
       <Row
@@ -150,6 +156,56 @@ export const TourismOverhaulRows = () => {
     </>
   );
 };
+
+/**
+ * The Tourism Finance view's own rows: where visitor money went, over the last full month.
+ *
+ * Kept apart from the tourism rows because they belong to a different view. The values come from
+ * TouristSpendingLedgerSystem, which samples wallets and attributes each fall to whatever the
+ * household was doing at the time.
+ */
+export const TourismFinanceRows = () => {
+  const onLodging = useValue(spentLodging$);
+  const onGoods = useValue(spentGoods$);
+  const onFares = useValue(spentFares$);
+  const onOther = useValue(spentOther$);
+
+  const total = onLodging + onGoods + onFares + onOther;
+  const money = (n: number) => `¢${n.toLocaleString()}`;
+  const share = (n: number) =>
+    total > 0 ? ` (${Math.round((n / total) * 100)}%)` : "";
+
+  return (
+    <>
+      <Row
+        left="Tourist spending"
+        right={`${money(total)} /mo.`}
+        tooltip="What visitors spent in your city over the last full month, and on what.
+                 Totals are exact — every coin that leaves a wallet is counted — but the split
+                 between categories is inferred from what each visitor was doing at the time, so
+                 read it as a strong indication rather than an audit."
+      />
+      <Row left="Hotels" right={`${money(onLodging)}${share(onLodging)}`} subRow subRowDimmed />
+      <Row left="Shops" right={`${money(onGoods)}${share(onGoods)}`} subRow subRowDimmed />
+      <Row left="Fares" right={`${money(onFares)}${share(onFares)}`} subRow subRowDimmed />
+      <Row left="Leisure and other" right={`${money(onOther)}${share(onOther)}`} subRow subRowDimmed />
+    </>
+  );
+};
+
+/**
+ * The panel the game shows when the Tourism Finance view is selected.
+ *
+ * Self-contained rather than wrapping anything, because this view is ours and has no native panel
+ * to extend.
+ */
+export const TourismFinancePanel = () => (
+  <RowErrorBoundary>
+    <Section>
+      <TourismFinanceRows />
+    </Section>
+  </RowErrorBoundary>
+);
 
 /**
  * Wraps the native panel component, rendering it unchanged and appending our rows.
