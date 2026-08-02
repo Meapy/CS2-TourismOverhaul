@@ -29,6 +29,7 @@ const arrivalsShip$ = bindValue<number>("tourismOverhaul", "arrivalsShip", 0);
 const spentLodging$ = bindValue<number>("tourismOverhaul", "spentLodging", 0);
 const spentGoods$ = bindValue<number>("tourismOverhaul", "spentGoods", 0);
 const spentFares$ = bindValue<number>("tourismOverhaul", "spentFares", 0);
+const spentLeisure$ = bindValue<number>("tourismOverhaul", "spentLeisure", 0);
 const spentOther$ = bindValue<number>("tourismOverhaul", "spentOther", 0);
 
 /**
@@ -168,9 +169,10 @@ export const TourismFinanceRows = () => {
   const onLodging = useValue(spentLodging$);
   const onGoods = useValue(spentGoods$);
   const onFares = useValue(spentFares$);
+  const onLeisure = useValue(spentLeisure$);
   const onOther = useValue(spentOther$);
 
-  const total = onLodging + onGoods + onFares + onOther;
+  const total = onLodging + onGoods + onFares + onLeisure + onOther;
   const money = (n: number) => `¢${n.toLocaleString()}`;
   const share = (n: number) =>
     total > 0 ? ` (${Math.round((n / total) * 100)}%)` : "";
@@ -188,7 +190,15 @@ export const TourismFinanceRows = () => {
       <Row left="Hotels" right={`${money(onLodging)}${share(onLodging)}`} subRow subRowDimmed />
       <Row left="Shops" right={`${money(onGoods)}${share(onGoods)}`} subRow subRowDimmed />
       <Row left="Fares" right={`${money(onFares)}${share(onFares)}`} subRow subRowDimmed />
-      <Row left="Leisure and other" right={`${money(onOther)}${share(onOther)}`} subRow subRowDimmed />
+      <Row left="Leisure" right={`${money(onLeisure)}${share(onLeisure)}`} subRow subRowDimmed />
+      <Row
+        left="Unattributed"
+        right={`${money(onOther)}${share(onOther)}`}
+        subRow
+        subRowDimmed
+        tooltip="Money that left visitor wallets by a route this mod does not recognise. A small
+                 figure is normal; a large one means there is a spending path still to find."
+      />
     </>
   );
 };

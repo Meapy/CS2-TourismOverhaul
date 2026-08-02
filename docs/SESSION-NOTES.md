@@ -100,6 +100,29 @@ before concluding a behaviour does not happen.
 - **Shopping** — settled by `ResourceBuyerSystem`. The citizen carries `ResourceBuyer` only while a
   purchase is outstanding.
 
+## Inferring behaviour from momentary components
+
+`ResourceBuyer` exists only while a purchase is outstanding. Sampling households every few thousand
+frames misses most of them, so shopping read as 1% of tourist spending while a quarter of it sat in
+"unattributed". The fix was to stop inferring: `TouristShoppingSystem` grants the need, so it marks
+the household with `ExpectsPurchase` at that moment and the ledger clears the mark with the drop
+that pays for it.
+
+The general rule: if this mod causes the behaviour, record it directly. Only infer what the game
+does on its own, and expect to lose most of it if the marker is short-lived.
+
+The same reasoning gave exact figures for lodging (counted in `HotelCapacitySystem` where guests are
+billed) and fares (reconstructed from the route on the transition onto a vehicle).
+
+## Serialized components need a version field from day one
+
+`TourismLedger` shipped without one. Adding a fifth field made the reader run past the end of older
+saves and throw `ComponentSerializerException: Data size mismatch`. Renaming the type to
+`TourismLedgerData` is what made those saves loadable again — the old name no longer resolves, so
+stale data is skipped rather than misread.
+
+Write a version int first, always. Add new fields at the end and read them conditionally.
+
 ## Publishing
 
 - Verbs are `Publish` (first upload), `NewVersion` (new package), `Update` (metadata only). There is

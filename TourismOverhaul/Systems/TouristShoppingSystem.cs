@@ -58,6 +58,7 @@ namespace TourismOverhaul.Systems
         private const int kMaxShoppingAmount = 2000;
 
         private EntityQuery m_TouristQuery;
+        private EndFrameBarrier m_EndFrameBarrier;
 
         // 262144 frames per in-game day. At 2048 this runs 128 times a day, so the per-update
         // chance below converts to a handful of shopping trips per visitor per day.
@@ -69,6 +70,8 @@ namespace TourismOverhaul.Systems
         protected override void OnCreate()
         {
             base.OnCreate();
+
+            m_EndFrameBarrier = World.GetOrCreateSystemManaged<EndFrameBarrier>();
 
             m_TouristQuery = GetEntityQuery(
                 ComponentType.ReadOnly<TouristHousehold>(),
@@ -156,6 +159,8 @@ namespace TourismOverhaul.Systems
             BufferTypeHandle<HouseholdCitizen> citizenHandle =
                 GetBufferTypeHandle<HouseholdCitizen>(isReadOnly: true);
 
+            EntityCommandBuffer commandBuffer = m_EndFrameBarrier.CreateCommandBuffer();
+
             NativeArray<ArchetypeChunk> chunks = m_TouristQuery.ToArchetypeChunkArray(Allocator.Temp);
 
             try
@@ -164,6 +169,7 @@ namespace TourismOverhaul.Systems
                 {
                     ArchetypeChunk chunk = chunks[c];
 
+                    NativeArray<Entity> entities = chunk.GetNativeArray(entityHandle);
                     NativeArray<HouseholdNeed> needs = chunk.GetNativeArray(ref needHandle);
                     BufferAccessor<Game.Economy.Resources> resources =
                         chunk.GetBufferAccessor(ref resourceHandle);
@@ -220,6 +226,11 @@ namespace TourismOverhaul.Systems
                             m_Resource = options[random.NextInt(options.Length)],
                             m_Amount = amount
                         };
+
+                        // Tell the ledger this household is going shopping. Catching ResourceBuyer
+                        // later is unreliable — it exists only while a purchase is outstanding, and
+                        // sampling misses most of them.
+                        commandBuffer.AddComponent<Components.ExpectsPurchase>(entities[i]);
 
                         TripsStarted++;
                     }

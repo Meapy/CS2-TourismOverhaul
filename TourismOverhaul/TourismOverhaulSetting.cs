@@ -423,7 +423,7 @@ namespace TourismOverhaul
             TouristShoppingChance = 40;
             HistoricBuildingAttractiveness = 3;
             EnableAttractionCrowding = true;
-            AttractionCrowdTolerance = 3;
+            AttractionCrowdTolerance = 2;
             HotelRoomDemandOccupancy = 80;
             ReplaceNativeSpawner = true;
 

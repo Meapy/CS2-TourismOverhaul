@@ -166,7 +166,7 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
   <Tag Value="Code Mod" />
 
   <ForumLink Value="https://forum.paradoxplaza.com/forum/threads/mod-tourism-overhaul-fix-tourism.1937099/" />
-  <ModVersion Value="1.5.0" />
+  <ModVersion Value="1.5.1" />
   <GameVersion Value="1.6.*" />
 
   <!--
@@ -174,31 +174,20 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
     accumulating history here republishes every past release with every upload. The full record
     belongs in CHANGELOG.md.
   -->
-  <ChangeLog>1.5.0
+  <ChangeLog>1.5.1
 
-A new Tourism Finance view, beside the Tourism one, showing where visitor money actually goes:
-hotels, shops, transport fares, and leisure. It reports the last full month and keeps its figures
-between sessions.
+Fixes the Tourism Finance view, which was badly under-reporting shopping.
 
-Building it turned up a real problem. Over 90% of tourist money was going to leisure venues, and
-not because visitors love parks — venues charge more as their stock runs down, tourists visit
-constantly, and they were paying the higher price they had created. Leisure venues now have more
-capacity, so a visit costs closer to its base price.
+Visitors were shopping all along, but the view could not see most of it and the money ended up in
+the wrong category. Shops now account for around 30% of tourist spending rather than 1%, and
+leisure sits at about 46% rather than the 90% shown in 1.5.0. Tourists are not the near-exclusive
+park-goers that version suggested — they split their money between going out and buying things.
 
-Also new:
-- Crowded attractions lose some of their appeal, so visitors spread across your city instead of
-  piling into the same few places. A small square fills quickly; a large attraction absorbs far
-  more before anyone looks elsewhere.
-- Tourist transport fares are tracked separately from residents', which the game itself cannot
-  tell apart once the money reaches your budget.
+Leisure and unattributed spending are now separate rows, so what the mod can actually account for
+is distinguishable from what it cannot.
 
-Fixed:
-- Hotel spending was estimated rather than counted, and read as zero.
-- Fares always read zero.
-- Spending figures reset after loading a save.
-
-Changed: room cost and visitor spending money are now percentages that scale together, so making
-rooms cheaper also makes visitors carry proportionally less, instead of the two drifting apart.</ChangeLog>
+Also fixed: saves made with 1.5.0 could fail to load once the extra category was added. Existing
+tourism finance figures start again from this version; nothing else in your city is affected.</ChangeLog>
 
   <ExternalLink Type="github" Url="https://github.com/Meapy/CS2-TourismOverhaul" />
 </Publish>

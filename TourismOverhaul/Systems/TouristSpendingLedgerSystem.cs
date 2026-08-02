@@ -49,6 +49,10 @@ namespace TourismOverhaul.Systems
         private NativeHashMap<Entity, int2> m_LastSample;
 
         private HotelCapacitySystem m_HotelSystem;
+        private EndFrameBarrier m_EndFrameBarrier;
+
+        /// <summary>Rebuilt once per update, used to clear purchase marks as they are paid.</summary>
+        private EntityCommandBuffer m_CommandBuffer;
 
         private int m_Cursor;
         private int m_TrackedMonth = -1;
@@ -57,12 +61,14 @@ namespace TourismOverhaul.Systems
         private long m_Lodging;
         private long m_Goods;
         private long m_Fares;
+        private long m_Leisure;
         private long m_Other;
 
         // The last complete month, which is what the panel shows.
         private long m_LastLodging;
         private long m_LastGoods;
         private long m_LastFares;
+        private long m_LastLeisure;
         private long m_LastOther;
         private bool m_HasCompleteMonth;
 
@@ -75,7 +81,8 @@ namespace TourismOverhaul.Systems
         /// contains something.
         /// </summary>
         private bool UseCompleteMonth =>
-            m_HasCompleteMonth && (m_LastLodging + m_LastGoods + m_LastFares + m_LastOther) > 0;
+            m_HasCompleteMonth
+            && (m_LastLodging + m_LastGoods + m_LastFares + m_LastLeisure + m_LastOther) > 0;
 
         /// <summary>Spent on hotel rooms over the last full month.</summary>
         public long Lodging => UseCompleteMonth ? m_LastLodging : m_Lodging;
@@ -86,11 +93,21 @@ namespace TourismOverhaul.Systems
         /// <summary>Spent on transport fares over the last full month.</summary>
         public long Fares => UseCompleteMonth ? m_LastFares : m_Fares;
 
-        /// <summary>Spent on leisure and anything unattributed, over the last full month.</summary>
+        /// <summary>Spent at leisure venues over the last full month.</summary>
+        public long Leisure => UseCompleteMonth ? m_LastLeisure : m_Leisure;
+
+        /// <summary>
+        /// Spending that could not be attributed, over the last full month.
+        ///
+        /// Kept separate from leisure rather than folded into it, because the two say different
+        /// things: leisure is a measurement, this is the residue. A large figure here means money is
+        /// leaving tourist wallets by a path this system does not recognise, which is worth knowing
+        /// rather than hiding inside a category that sounds like an answer.
+        /// </summary>
         public long Other => UseCompleteMonth ? m_LastOther : m_Other;
 
         /// <summary>Everything above.</summary>
-        public long Total => Lodging + Goods + Fares + Other;
+        public long Total => Lodging + Goods + Fares + Leisure + Other;
 
         /// <summary>
         /// Times a household was seen mid-purchase, and times a ride was charged. For diagnostics.
@@ -115,10 +132,11 @@ namespace TourismOverhaul.Systems
 
             m_DemandSystem = World.GetOrCreateSystemManaged<TouristDemandSystem>();
             m_HotelSystem = World.GetOrCreateSystemManaged<HotelCapacitySystem>();
+            m_EndFrameBarrier = World.GetOrCreateSystemManaged<EndFrameBarrier>();
 
             m_LastSample = new NativeHashMap<Entity, int2>(4096, Allocator.Persistent);
 
-            m_LedgerQuery = GetEntityQuery(ComponentType.ReadWrite<Components.TourismLedger>());
+            m_LedgerQuery = GetEntityQuery(ComponentType.ReadWrite<Components.TourismLedgerData>());
 
             m_TouristQuery = GetEntityQuery(
                 ComponentType.ReadOnly<TouristHousehold>(),
@@ -161,14 +179,14 @@ namespace TourismOverhaul.Systems
             if (m_LedgerQuery.IsEmptyIgnoreFilter)
             {
                 Entity ledger = EntityManager.CreateEntity(
-                    ComponentType.ReadWrite<Components.TourismLedger>());
+                    ComponentType.ReadWrite<Components.TourismLedgerData>());
 
                 // -1, not the default 0, because 0 is a real month. RollOverMonthIfNeeded uses -1
                 // to mean "nothing has been counted yet" and skips banking on the first turnover.
                 // With 0 it treated the very first update as a completed month, banked a set of
                 // zeros as the reported figure, and the panel then showed nothing until the next
                 // month came round — an entire in-game day later.
-                EntityManager.SetComponentData(ledger, new Components.TourismLedger
+                EntityManager.SetComponentData(ledger, new Components.TourismLedgerData
                 {
                     m_Month = -1
                 });
@@ -177,16 +195,18 @@ namespace TourismOverhaul.Systems
                 return;
             }
 
-            Components.TourismLedger saved = m_LedgerQuery.GetSingleton<Components.TourismLedger>();
+            Components.TourismLedgerData saved = m_LedgerQuery.GetSingleton<Components.TourismLedgerData>();
 
             m_Lodging = saved.m_Lodging;
             m_Goods = saved.m_Goods;
             m_Fares = saved.m_Fares;
+            m_Leisure = saved.m_Leisure;
             m_Other = saved.m_Other;
 
             m_LastLodging = saved.m_LastLodging;
             m_LastGoods = saved.m_LastGoods;
             m_LastFares = saved.m_LastFares;
+            m_LastLeisure = saved.m_LastLeisure;
             m_LastOther = saved.m_LastOther;
 
             m_HasCompleteMonth = saved.m_HasCompleteMonth;
@@ -207,15 +227,17 @@ namespace TourismOverhaul.Systems
                 return;
             }
 
-            m_LedgerQuery.SetSingleton(new Components.TourismLedger
+            m_LedgerQuery.SetSingleton(new Components.TourismLedgerData
             {
                 m_Lodging = (int)m_Lodging,
                 m_Goods = (int)m_Goods,
                 m_Fares = (int)m_Fares,
+                m_Leisure = (int)m_Leisure,
                 m_Other = (int)m_Other,
                 m_LastLodging = (int)m_LastLodging,
                 m_LastGoods = (int)m_LastGoods,
                 m_LastFares = (int)m_LastFares,
+                m_LastLeisure = (int)m_LastLeisure,
                 m_LastOther = (int)m_LastOther,
                 m_HasCompleteMonth = m_HasCompleteMonth,
                 m_Month = m_TrackedMonth
@@ -230,6 +252,8 @@ namespace TourismOverhaul.Systems
             }
 
             RollOverMonthIfNeeded();
+
+            m_CommandBuffer = m_EndFrameBarrier.CreateCommandBuffer();
 
             // Drain the exact lodging charges accumulated by the hotel system since last update.
             if (m_HotelSystem != null)
@@ -306,6 +330,7 @@ namespace TourismOverhaul.Systems
                 m_LastLodging = m_Lodging;
                 m_LastGoods = m_Goods;
                 m_LastFares = m_Fares;
+                m_LastLeisure = m_Leisure;
                 m_LastOther = m_Other;
                 m_HasCompleteMonth = true;
             }
@@ -313,6 +338,7 @@ namespace TourismOverhaul.Systems
             m_Lodging = 0;
             m_Goods = 0;
             m_Fares = 0;
+            m_Leisure = 0;
             m_Other = 0;
             m_TrackedMonth = month;
         }
@@ -380,6 +406,16 @@ namespace TourismOverhaul.Systems
             if ((flags & kFlagGoods) != 0)
             {
                 m_Goods += spent;
+
+                // The trip has been paid for, so the mark has done its job.
+                if (EntityManager.HasComponent<Components.ExpectsPurchase>(household))
+                {
+                    m_CommandBuffer.RemoveComponent<Components.ExpectsPurchase>(household);
+                }
+            }
+            else if ((flags & kFlagLeisure) != 0)
+            {
+                m_Leisure += spent;
             }
             else
             {
@@ -389,10 +425,15 @@ namespace TourismOverhaul.Systems
             // Shopping signals are consumed by the drop they explain, so one trip is not credited
             // with every later purchase. The aboard flag is kept, since it tracks a ride in
             // progress rather than an unexplained payment.
+            // Shopping and leisure signals are consumed by the drop they explain. The aboard flag is
+            // kept, since it tracks a ride in progress rather than an unexplained payment.
             m_LastSample[household] = new int2(balance, flags & kFlagAboard);
         }
 
         private const int kFlagGoods = 1;
+
+        /// <summary>Set while a member is out at a venue, which is a positive leisure signal.</summary>
+        private const int kFlagLeisure = 4;
 
         /// <summary>Set while a member is aboard, so a single ride is charged once.</summary>
         private const int kFlagAboard = 2;
@@ -528,6 +569,16 @@ namespace TourismOverhaul.Systems
             DynamicBuffer<HouseholdCitizen> citizens =
                 EntityManager.GetBuffer<HouseholdCitizen>(household, isReadOnly: true);
 
+            // Set by TouristShoppingSystem when it sends the household shopping, and cleared by the
+            // drop that pays for it. Far more reliable than catching ResourceBuyer, which exists
+            // only while a purchase is outstanding and is usually gone by the time we look.
+            if (EntityManager.HasComponent<Components.ExpectsPurchase>(household))
+            {
+                return kFlagGoods;
+            }
+
+            int leisure = 0;
+
             for (int i = 0; i < citizens.Length; i++)
             {
                 Entity citizen = citizens[i].m_Citizen;
@@ -536,9 +587,17 @@ namespace TourismOverhaul.Systems
                 {
                     return kFlagGoods;
                 }
+
+                // Leisure is a weaker signal than a purchase, so it does not return early — a
+                // household with one member shopping and another at a venue should count as
+                // shopping, since that is the more specific claim.
+                if (EntityManager.HasComponent<Game.Citizens.Leisure>(citizen))
+                {
+                    leisure = kFlagLeisure;
+                }
             }
 
-            return 0;
+            return leisure;
         }
 
     }

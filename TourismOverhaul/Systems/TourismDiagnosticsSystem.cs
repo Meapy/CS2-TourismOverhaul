@@ -246,7 +246,7 @@ namespace TourismOverhaul.Systems
 
             return
                 $"  spending: hotels {ledger.Lodging}, shops {ledger.Goods}, fares {ledger.Fares}, " +
-                $"leisure/other {ledger.Other}\n" +
+                $"leisure {ledger.Leisure}, unattributed {ledger.Other}\n" +
                 $"  signals: {ledger.GoodsSignalsSeen} purchase(s) seen, " +
                 $"{ledger.RidesCharged} ride(s) charged";
         }

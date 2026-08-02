@@ -5,13 +5,51 @@ All notable changes to CS2 Tourism Overhaul.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [semantic](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1] — 2026-08-02
+
+### Fixed
+
+- **Shopping was almost entirely missed, and the money was landing in the wrong category.** The
+  ledger recognised a purchase by finding `ResourceBuyer` on a citizen, but that component exists
+  only while a purchase is outstanding, and households are sampled every few thousand frames — so
+  most trips started and settled unseen. `TouristShoppingSystem` grants the need in the first place,
+  so it now marks the household with `ExpectsPurchase` at that moment and the ledger clears the mark
+  with the drop that pays for it. Shops went from 1% of tourist spending to 30%.
+
+  This also corrects the picture 1.5.0 reported. Leisure was never ~90% of tourist spending; it is
+  around 46%, with shops at 30%. The earlier figure was mislabelled shopping, and the conclusion
+  drawn from it — that tourist behaviour was lopsided toward leisure and would need
+  `CitizenBehaviorSystem` replaced to change — was wrong.
+- **Saves made with 1.5.0 failed to load** with `ComponentSerializerException: Data size mismatch`
+  once a fifth spending category was added, because the ledger component had no version field and
+  the reader ran past the end of the older layout. The component is renamed to `TourismLedgerData`
+  so stale data is skipped rather than misread, and it now writes a version first. New fields go at
+  the end and read conditionally from here on.
+
+### Added
+
+- Leisure and unattributed spending are separate rows. Leisure is read from `Game.Citizens.Leisure`,
+  the same kind of positive marker `ResourceBuyer` provides, so "unattributed" is genuine residue
+  rather than a label that sounds like an answer.
+
+### Known
+
+- Around 19% of tourist spending is still unattributed. The likely path is parking fees:
+  `PersonalCarAISystem:890-902` moves money from the household through a transfer queue with no
+  marker left on the citizen, and roughly 30% of visitors arrive with a car.
+- `AttractionCrowdingSystem` damps attractiveness, which `SetupAttraction:369` reads when choosing
+  an attraction — but leisure trips use `SetupLeisureTarget`, which does not. Crowds at a park from
+  leisure traffic are therefore unaffected.
+
 ## [1.5.0] — 2026-08-02
 
 ### Added
 
 - **Tourism Finance info view**, beside the stock Tourism view, with its own icon drawn to the game's
   own conventions. Shows what visitors spent over the last full month, split into hotels, shops,
-  fares, and leisure and other, each with its share. `TourismFinanceViewSystem` creates the view by
+  fares, leisure and unattributed, each with its share. Leisure is read from `Game.Citizens.Leisure`
+  on a citizen, the same kind of positive marker `ResourceBuyer` provides for shopping, so the
+  remaining "unattributed" row is genuine residue rather than a category that sounds like an answer. `TourismFinanceViewSystem` creates the view by
   copying the Tourism one and sharing its infomodes — `InfoviewPrefab.isValid` is false without at
   least one (`:67`), and the map colouring a player wants while reading tourist finances is the same
   one they want while reading tourist numbers.
@@ -49,13 +87,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ### Known
 
-- Leisure accounts for around 90% of tourist spending. This is the simulation being reported
-  accurately rather than a fault: `CitizenBehaviorSystem:446-452` skips the leisure cooldown and
-  counter checks for tourists, so leisure wins every free decision, while a shopping need is
-  consumed by the trip it starts (`:764-766`). Changing the ordering would mean replacing the
-  tourist branch of `CitizenBehaviorSystem`.
-- "Leisure and other" is a single bucket. `Game.Citizens.Leisure` would separate genuine venue
-  spending from unattributed residue, and is worth adding to confirm the figure above.
+- Leisure appeared to account for around 90% of tourist spending. **This was wrong** — see 1.5.1.
+  Most of it was shopping the ledger failed to detect.
+- `LeisurePricingSystem` matches only 15 prefabs, because parks and attractions are city services
+  without `ServiceCompanyData` and so never enter the surge-pricing branch it targets. It is
+  harmless but close to inert, and needs a wider query or removal.
 
 ### Changed
 

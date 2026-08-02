@@ -39,6 +39,7 @@ namespace TourismOverhaul.Systems
         private ValueBinding<int> m_SpentLodging;
         private ValueBinding<int> m_SpentGoods;
         private ValueBinding<int> m_SpentFares;
+        private ValueBinding<int> m_SpentLeisure;
         private ValueBinding<int> m_SpentOther;
 
         private TouristSpendingLedgerSystem m_LedgerSystem;
@@ -97,6 +98,7 @@ namespace TourismOverhaul.Systems
             AddBinding(m_SpentLodging = new ValueBinding<int>(kGroup, "spentLodging", 0));
             AddBinding(m_SpentGoods = new ValueBinding<int>(kGroup, "spentGoods", 0));
             AddBinding(m_SpentFares = new ValueBinding<int>(kGroup, "spentFares", 0));
+            AddBinding(m_SpentLeisure = new ValueBinding<int>(kGroup, "spentLeisure", 0));
             AddBinding(m_SpentOther = new ValueBinding<int>(kGroup, "spentOther", 0));
 
             m_ToolSystem = World.GetOrCreateSystemManaged<Game.Tools.ToolSystem>();
@@ -138,6 +140,7 @@ namespace TourismOverhaul.Systems
                 m_SpentLodging.Update(Clamp(m_LedgerSystem.Lodging));
                 m_SpentGoods.Update(Clamp(m_LedgerSystem.Goods));
                 m_SpentFares.Update(Clamp(m_LedgerSystem.Fares));
+                m_SpentLeisure.Update(Clamp(m_LedgerSystem.Leisure));
                 m_SpentOther.Update(Clamp(m_LedgerSystem.Other));
             }
         }
