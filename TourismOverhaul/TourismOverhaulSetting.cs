@@ -353,7 +353,7 @@ namespace TourismOverhaul
             ReclaimAbandonedHotelRooms = true;
             PreferAirAndSea = true;
             LoadAwareArrivals = true;
-            ArrivalBacklogSensitivity = 25;
+            ArrivalBacklogSensitivity = 15;
 
             FixTouristDemand = true;
             MaxArrivalsPerUpdate = 128;

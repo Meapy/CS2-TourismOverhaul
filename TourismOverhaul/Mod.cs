@@ -88,9 +88,6 @@ namespace TourismOverhaul
             // Opt-in daily breakdown for when tourist numbers misbehave.
             updateSystem.UpdateAt<TourismDiagnosticsSystem>(SystemUpdatePhase.GameSimulation);
 
-            // One-shot survey of which building assets can host a hotel.
-            updateSystem.UpdateAt<HotelAssetSurveySystem>(SystemUpdatePhase.GameSimulation);
-
             // Optional view feature: mark tourists, then draw a coloured ring for each.
             updateSystem.UpdateAt<TouristHighlightSystem>(SystemUpdatePhase.GameSimulation);
             updateSystem.UpdateBefore<TouristMarkerRenderSystem, Game.Rendering.OverlayRenderSystem>(
