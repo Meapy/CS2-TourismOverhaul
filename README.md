@@ -19,6 +19,10 @@ against the defects.
 | D | Panel reports ~8x the achievable figure; count omits tourists in transit | `TourismReportingSystem` |
 | E | Hotels cannot be zoned for — they appear at random inside mixed commercial groups | `HotelZoneSystem` |
 | F | Lodging demand is measured against raw room capacity, so adding rooms suppresses hotel construction | `TouristEconomySystem` |
+| G | Tourist target search uses an origin radius of zero, evicting any arrival not standing on a lane | `TouristTargetSearchSystem` |
+| H | Hotel rooms are never released, so availability decays permanently | `HotelRoomReclaimSystem` |
+| I | Tourists never shop — needs come from household stock they do not have | `TouristShoppingSystem` |
+| J | Ordinary buildings contribute no attractiveness, so historic districts draw nobody | `HistoricAttractivenessSystem` |
 
 Plus optional extras: a hotel room multiplier (`HotelCapacitySystem`), resident holidays
 (`ResidentTravelSystem`), three new Tourism info view rows (`TourismPanelUISystem` + the `ui`

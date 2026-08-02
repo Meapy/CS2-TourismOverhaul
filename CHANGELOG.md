@@ -5,6 +5,29 @@ All notable changes to CS2 Tourism Overhaul.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [semantic](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] — 2026-08-01
+
+### Added
+
+- **Historical buildings add to city attractiveness.** Attractiveness is the sum of
+  `AttractivenessProvider.m_Attractiveness` across every building carrying one
+  (`TourismSystem:95-97`), which in the base game is parks, attractions and signature landmarks.
+  Ordinary buildings contribute nothing, so a preserved old quarter draws nobody unless a landmark
+  sits inside it. `HistoricAttractivenessSystem` reads `BuildingFlags.Historical` — the flag the
+  player already sets from the building panel — and grants each one a small value, so a district
+  earns its appeal collectively rather than a single building carrying it. New "Historical building
+  appeal" setting, default 3, 0 to disable.
+
+  Note this raises the tourist target and improves how destinations on those streets score
+  (`CitizenPathfindSetup:87-91`). It does not make the historical buildings themselves visitable —
+  that would require them to be leisure providers, which has knock-on effects on citizen behaviour
+  beyond tourism.
+
+### Fixed
+
+- `BuildingFlags` is ambiguous between `Game.Buildings` and `Game.Prefabs`, which have unrelated
+  values. Fully qualified at the use site.
+
 ## [1.3.1] — 2026-08-01
 
 ### Fixed

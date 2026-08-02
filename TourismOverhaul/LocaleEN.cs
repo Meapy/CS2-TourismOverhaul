@@ -211,6 +211,23 @@ namespace TourismOverhaul
                     "Set to 0 to size tourist demand on population alone."
                 },
                 {
+                    m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.HistoricBuildingAttractiveness)),
+                    "Historical building appeal"
+                },
+                {
+                    m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.HistoricBuildingAttractiveness)),
+                    "How much each building you have marked as historical adds to city " +
+                    "attractiveness.\n\n" +
+                    "In the base game, ordinary buildings contribute nothing — attractiveness comes " +
+                    "almost entirely from parks and signature landmarks. A beautifully preserved " +
+                    "old quarter draws no visitors at all unless a landmark happens to sit inside " +
+                    "it.\n\n" +
+                    "Marking a building historical already says something about its character. Now " +
+                    "it draws visitors too. Deliberately small per building: one old house should " +
+                    "be worth very little, a whole preserved quarter worth travelling for. Set to " +
+                    "0 to turn it off."
+                },
+                {
                     m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.TouristShoppingChance)),
                     "Shopping over sightseeing"
                 },
