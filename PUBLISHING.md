@@ -60,6 +60,8 @@ Publishing is an external write. Build and verify first, then publish deliberate
         -¢3,648,366/mo and a negative bank balance. It is a striking shot, but it advertises a hotel
         losing money on the listing for a mod that claims to keep hotels viable. Prefer a capture of
         a profitable hotel.
+- [ ] **`ShortDescription`** must be 200 characters or fewer. The publisher rejects the upload
+      with "Must be a string between 1 and 200 length" rather than truncating.
 - [ ] **Tags** — `Code Mod` is set. Validate against the live service rather than trusting it;
       accepted tags are server-side data and change.
 - [x] `ForumLink` points at the discussion thread:

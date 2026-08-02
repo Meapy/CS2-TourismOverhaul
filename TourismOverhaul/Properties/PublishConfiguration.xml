@@ -11,7 +11,8 @@
   -->
   <ModId Value="153543" />
   <DisplayName Value="Tourism Overhaul" />
-  <ShortDescription Value="Fixes the tourism simulation: tourists actually arrive by plane and ferry, spend money in your shops, demand scales with your city, hotels and motels get their own zones, and the numbers finally mean something." />
+  <!-- Paradox rejects anything over 200 characters. This is 171. -->
+  <ShortDescription Value="Fixes the tourism simulation: tourists arrive by plane and ferry, spend money in your shops, hotels and motels get their own zones, and the numbers finally mean something." />
 
   <LongDescription># Tourism Overhaul
 
