@@ -25,6 +25,16 @@ namespace TourismOverhaul
             Settings = new TourismOverhaulSetting(this);
             Settings.RegisterInOptionsUI();
             GameManager.instance.localizationManager.AddSource("en-US", new LocaleEN(Settings));
+
+            // Every other locale the game ships with. LocaleOverlay fills whatever a locale has not
+            // translated from the English source, so a partial translation never leaves a blank
+            // label — see Translations.cs for why the long descriptions stay in English.
+            foreach (string locale in Translations.SupportedLocales)
+            {
+                GameManager.instance.localizationManager.AddSource(
+                    locale, new LocaleOverlay(Settings, Translations.For(locale, Settings)));
+            }
+
             AssetDatabase.global.LoadSettings(ModName, Settings, new TourismOverhaulSetting(this));
 
             // Fix A: rewrite the tourist outside-connection split to match what the city has.

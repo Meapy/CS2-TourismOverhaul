@@ -5,6 +5,25 @@ All notable changes to CS2 Tourism Overhaul.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [semantic](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] — 2026-08-02
+
+### Added
+
+- **Translations for the eleven other languages the game ships with** — German, Spanish, French,
+  Italian, Japanese, Korean, Polish, Brazilian Portuguese, Russian, Simplified Chinese and
+  Traditional Chinese. Every settings group heading, option label, the Hotels and Motels zone names
+  and every row label in the Tourism and Tourism Finance panels now appear in the player's own
+  language.
+
+  The long settings descriptions stay in English on purpose. They run to several paragraphs of
+  domain vocabulary — surge pricing, outside connections, attractiveness — and a confidently wrong
+  description is worse than an English one, because the player cannot tell that it is wrong. A new
+  `LocaleOverlay` fills anything a locale has not translated from the English source, so a partial
+  translation never leaves a blank label and contributions can be added a few strings at a time.
+  The panel rows do the same on the frontend side: each asks the game to translate its key and
+  passes the English text as the fallback, so an untranslated row renders in English rather than
+  showing a raw locale key.
+
 ## [1.5.1] — 2026-08-02
 
 ### Fixed

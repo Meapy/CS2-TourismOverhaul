@@ -121,6 +121,22 @@ demand falls to zero, and `ZoneSpawnSystem:319` then rejects every hotel prefab 
 the requirement by the same multiplier, so the setting changes how many guests a hotel holds without
 also claiming the city is oversupplied.
 
+## Translations
+
+Labels are translated into all eleven other locales the game ships with. `Translations.cs` holds one
+positional string array per locale against a shared key list built from `nameof(...)`, so a key
+cannot drift from the property it names. Three key shapes share the table: `#` prefixes a settings
+group, `@` an info-panel row, and a bare name a settings label.
+
+`LocaleOverlay` merges English first and the locale on top, so an absent or blank entry falls back
+to readable English rather than a blank label. The panel rows do the same on the frontend side,
+passing their English text as the `translate()` fallback. Both properties make a translation additive
+and safe to contribute a few strings at a time.
+
+The long settings descriptions stay in English deliberately — they are paragraphs of simulation
+vocabulary, and a confidently wrong description is worse than an English one because the player
+cannot tell that it is wrong. Pull requests from native speakers are welcome, for those as well.
+
 ## Design constraints
 
 - No Harmony patches, no reflection.
