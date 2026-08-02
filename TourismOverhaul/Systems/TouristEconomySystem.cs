@@ -111,7 +111,19 @@ namespace TourismOverhaul.Systems
             ResourcePrefabs resourcePrefabs = m_ResourceSystem.GetPrefabs();
 
             float marketPrice = EconomyUtils.GetMarketPrice(Resource.Lodging, resourcePrefabs, EntityManager);
-            int nightlyPrice = (int)(leisure.m_TouristLodgingConsumePerDay * marketPrice);
+
+            // The nightly rate is lodging consumed per day times the market price of lodging. The
+            // game ships 30 units a day, so at a market price of 50 a room costs 1,500 a night —
+            // steep next to what the rest of the economy charges for anything.
+            //
+            // Scaling the consumption rather than the price is the right lever: the market price is
+            // set by supply and demand and writing to it would fight the economy, whereas how much
+            // lodging a visitor uses is a property of the visitor. Hotels sell less lodging per
+            // guest and earn proportionally less, which is the honest consequence of cheaper rooms.
+            float consumePerDay =
+                leisure.m_TouristLodgingConsumePerDay * math.max(1, settings.LodgingCostPercent) / 100f;
+
+            int nightlyPrice = (int)(consumePerDay * marketPrice);
 
             NightlyHotelPrice = nightlyPrice;
 
@@ -133,7 +145,12 @@ namespace TourismOverhaul.Systems
             //      and ResidentAISystem.GetTicketPrice charges real fares on public transport.
             //   3. A reserve, because dropping under kMinimumShoppingMoney stops them shopping
             //      for the rest of the visit even though they are still in the city.
-            int dailySpending = math.max(0, settings.TouristDailySpending);
+            // Spending is expressed against the room rate rather than as a flat sum of money, so
+            // the two stay in proportion. A flat figure drifts out of step the moment lodging is
+            // repriced: at a 6,000 daily allowance against a 1,500 room, 78% of every wallet was a
+            // number nobody had related to anything the economy charges for. Deriving it means
+            // lowering the cost of a room lowers what visitors carry, automatically.
+            int dailySpending = nightlyPrice * math.max(0, settings.SpendingPerNightPercent) / 100;
             int budget = nights * (nightlyPrice + dailySpending) + kMinimumShoppingMoney;
 
             if (budget == m_LastWrittenBudget)
@@ -147,8 +164,23 @@ namespace TourismOverhaul.Systems
             // HouseholdInitializeSystem draws random(range) - range/2 + offset. With offset 1.5x
             // and range 1x the budget, wallets land uniformly in [budget, 2 x budget], so even the
             // poorest arrival can afford the full stay.
-            economy.m_TouristInitialWealthRange = budget;
-            economy.m_TouristInitialWealthOffset = (int)(budget * 1.5f);
+            // HouseholdInitializeSystem:162 rolls each arrival's wallet as
+            //
+            //     random.NextInt(range) - range / 2 + offset
+            //
+            // so wallets are uniform across [offset - range/2, offset + range/2]. Setting range to
+            // the budget and offset to 1.5x it gave everyone between one and two full budgets —
+            // varied, but every visitor comfortably solvent, which is why they all behaved alike.
+            //
+            // The spread is now a setting, anchored so the poorest arrival still carries a full
+            // budget. Widening it adds well-off visitors above that floor rather than adding
+            // paupers below it, because a tourist who cannot afford the stay is not an interesting
+            // traveller, just one who leaves early as TouristNoMoney.
+            float spread = math.max(0f, settings.WealthVariationPercent) / 100f;
+            int range = math.max(1, (int)(budget * spread));
+
+            economy.m_TouristInitialWealthRange = range;
+            economy.m_TouristInitialWealthOffset = budget + range / 2;
 
             EntityManager.SetComponentData(economyEntity, economy);
 
@@ -158,7 +190,9 @@ namespace TourismOverhaul.Systems
             Mod.Log.Info(
                 $"Tourist budget set to {budget} = {nights} nights x ({nightlyPrice} lodging + " +
                 $"{dailySpending} spending) + {kMinimumShoppingMoney} reserve " +
-                $"(lodging market price {marketPrice:0.00}).");
+                $"(lodging market price {marketPrice:0.00}, room cost at " +
+                $"{settings.LodgingCostPercent}%, spending at {settings.SpendingPerNightPercent}% " +
+                $"of the room rate).");
         }
 
         /// <summary>

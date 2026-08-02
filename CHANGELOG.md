@@ -5,6 +5,100 @@ All notable changes to CS2 Tourism Overhaul.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [semantic](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1] — 2026-08-02
+
+### Fixed
+
+- **Shopping was almost entirely missed, and the money was landing in the wrong category.** The
+  ledger recognised a purchase by finding `ResourceBuyer` on a citizen, but that component exists
+  only while a purchase is outstanding, and households are sampled every few thousand frames — so
+  most trips started and settled unseen. `TouristShoppingSystem` grants the need in the first place,
+  so it now marks the household with `ExpectsPurchase` at that moment and the ledger clears the mark
+  with the drop that pays for it. Shops went from 1% of tourist spending to 30%.
+
+  This also corrects the picture 1.5.0 reported. Leisure was never ~90% of tourist spending; it is
+  around 46%, with shops at 30%. The earlier figure was mislabelled shopping, and the conclusion
+  drawn from it — that tourist behaviour was lopsided toward leisure and would need
+  `CitizenBehaviorSystem` replaced to change — was wrong.
+- **Saves made with 1.5.0 failed to load** with `ComponentSerializerException: Data size mismatch`
+  once a fifth spending category was added, because the ledger component had no version field and
+  the reader ran past the end of the older layout. The component is renamed to `TourismLedgerData`
+  so stale data is skipped rather than misread, and it now writes a version first. New fields go at
+  the end and read conditionally from here on.
+
+### Added
+
+- Leisure and unattributed spending are separate rows. Leisure is read from `Game.Citizens.Leisure`,
+  the same kind of positive marker `ResourceBuyer` provides, so "unattributed" is genuine residue
+  rather than a label that sounds like an answer.
+
+### Known
+
+- Around 19% of tourist spending is still unattributed. The likely path is parking fees:
+  `PersonalCarAISystem:890-902` moves money from the household through a transfer queue with no
+  marker left on the citizen, and roughly 30% of visitors arrive with a car.
+- `AttractionCrowdingSystem` damps attractiveness, which `SetupAttraction:369` reads when choosing
+  an attraction — but leisure trips use `SetupLeisureTarget`, which does not. Crowds at a park from
+  leisure traffic are therefore unaffected.
+
+## [1.5.0] — 2026-08-02
+
+### Added
+
+- **Tourism Finance info view**, beside the stock Tourism view, with its own icon drawn to the game's
+  own conventions. Shows what visitors spent over the last full month, split into hotels, shops,
+  fares, leisure and unattributed, each with its share. Leisure is read from `Game.Citizens.Leisure`
+  on a citizen, the same kind of positive marker `ResourceBuyer` provides for shopping, so the
+  remaining "unattributed" row is genuine residue rather than a category that sounds like an answer. `TourismFinanceViewSystem` creates the view by
+  copying the Tourism one and sharing its infomodes — `InfoviewPrefab.isValid` is false without at
+  least one (`:67`), and the map colouring a player wants while reading tourist finances is the same
+  one they want while reading tourist numbers.
+- **Tourist fares counted separately from residents'.** The game pays fares straight into
+  `PlayerMoney` (`ResidentAISystem:3922-3928`), so once the money arrives there is no record of who
+  paid it. The fare is a property of the route though, so the ledger reproduces
+  `GetTicketPrice` (`:3046-3057`) and counts on the transition onto a vehicle — each ride charged
+  once, tourists only.
+- **Crowded attractions lose their appeal.** Nothing in the base game notices how full somewhere
+  already is, so the most attractive park stays the first choice however packed. Appeal is now
+  damped by `1 / (1 + crowd / capacity)`, with capacity from the building's footprint, so small
+  squares saturate quickly and large attractions absorb more.
+- The spending ledger persists across saves, on a serialized singleton component.
+
+### Fixed
+
+- **Leisure dominated tourist spending at over 90%.** `LeisureSystem:125` charges
+  `consumption x market price x GetServicePriceMultiplier(available, max)` — surge pricing that rises
+  as a venue's stock is drawn down. Tourists are ideal for driving it, since
+  `CitizenBehaviorSystem:446-452` skips the cooldown and leisure-counter checks for them entirely.
+  `LeisurePricingSystem` gives venues more service capacity, which lowers the multiplier.
+- Lodging spend is counted where guests are billed rather than estimated from elapsed frames. The
+  estimate was smaller than the sampling noise, so hotels read zero and everything fell to "other".
+- Fares read a structural zero because `CurrentVehicle` was being looked for on the citizen. A
+  citizen is a record, not a body — the creature entity carries it, reached through
+  `CurrentTransport`.
+- The ledger reported zero for a whole in-game day after each load: a freshly created component
+  defaulted its month to 0, which is a real month, so the first update banked a set of zeros as the
+  reported figure. The sentinel is now explicit, and a banked month is only used if it contains
+  something.
+- Shopping trips were capped at 200 resource units, which a visitor with a normal wallet exceeded
+  eight times over, so the cap bound on essentially every trip. Raising the shopping chance produced
+  more trips that each bought the same token amount. The bound is now 2,000 and acts as a sanity
+  limit rather than a balance figure.
+
+### Known
+
+- Leisure appeared to account for around 90% of tourist spending. **This was wrong** — see 1.5.1.
+  Most of it was shopping the ledger failed to detect.
+- `LeisurePricingSystem` matches only 15 prefabs, because parks and attractions are city services
+  without `ServiceCompanyData` and so never enter the surge-pricing branch it targets. It is
+  harmless but close to inert, and needs a wider query or removal.
+
+### Changed
+
+- Hotel room cost and visitor spending money are now expressed as percentages that scale together,
+  replacing a flat daily allowance that had drifted to 78% of every wallet.
+- Visitor wealth varies from one full budget upward rather than within a narrow band.
+
 ## [1.4.0] — 2026-08-01
 
 ### Added

@@ -166,7 +166,7 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
   <Tag Value="Code Mod" />
 
   <ForumLink Value="https://forum.paradoxplaza.com/forum/threads/mod-tourism-overhaul-fix-tourism.1937099/" />
-  <ModVersion Value="1.4.0" />
+  <ModVersion Value="1.5.1" />
   <GameVersion Value="1.6.*" />
 
   <!--
@@ -174,23 +174,20 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
     accumulating history here republishes every past release with every upload. The full record
     belongs in CHANGELOG.md.
   -->
-  <ChangeLog>1.4.0
+  <ChangeLog>1.5.1
 
-Historic districts now draw visitors.
+Fixes the Tourism Finance view, which was badly under-reporting shopping.
 
-Attractiveness in the base game comes almost entirely from parks and signature landmarks. An
-ordinary building contributes nothing, however beautiful, so a preserved old quarter draws nobody
-unless a landmark happens to sit inside it.
+Visitors were shopping all along, but the view could not see most of it and the money ended up in
+the wrong category. Shops now account for around 30% of tourist spending rather than 1%, and
+leisure sits at about 46% rather than the 90% shown in 1.5.0. Tourists are not the near-exclusive
+park-goers that version suggested — they split their money between going out and buying things.
 
-Mark a building as historical — the same option you already use to preserve its level — and it
-now adds to your city's appeal. One old house counts for very little; a whole preserved street or
-quarter is worth travelling for. Tourism becomes something a district can earn through its
-character, instead of something you place.
+Leisure and unattributed spending are now separate rows, so what the mod can actually account for
+is distinguishable from what it cannot.
 
-Adjustable, and can be turned off.
-
-Also in this release: the description now covers tourist shopping, which arrived in 1.2.0 and was
-never properly explained.</ChangeLog>
+Also fixed: saves made with 1.5.0 could fail to load once the extra category was added. Existing
+tourism finance figures start again from this version; nothing else in your city is affected.</ChangeLog>
 
   <ExternalLink Type="github" Url="https://github.com/Meapy/CS2-TourismOverhaul" />
 </Publish>

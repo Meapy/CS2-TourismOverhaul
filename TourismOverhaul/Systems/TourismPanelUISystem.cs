@@ -36,6 +36,27 @@ namespace TourismOverhaul.Systems
         private ValueBinding<int> m_ArrivalsAir;
         private ValueBinding<int> m_ArrivalsShip;
 
+        private ValueBinding<int> m_SpentLodging;
+        private ValueBinding<int> m_SpentGoods;
+        private ValueBinding<int> m_SpentFares;
+        private ValueBinding<int> m_SpentLeisure;
+        private ValueBinding<int> m_SpentOther;
+
+        private TouristSpendingLedgerSystem m_LedgerSystem;
+
+        /// <summary>
+        /// Whether the Tourism Finance view is the one currently open.
+        ///
+        /// Published from C# because the frontend cannot reliably discover it. The panel component
+        /// receives only [closeHint, focusKey, onClose] and reads the active view from a binding
+        /// internally; reaching that binding through the module registry failed twice, first for
+        /// the wrong call signature and then with "activeInfoview is not defined". ToolSystem knows
+        /// the answer directly, so ask it rather than continuing to guess at the UI plumbing.
+        /// </summary>
+        private ValueBinding<bool> m_FinanceViewActive;
+
+        private Game.Tools.ToolSystem m_ToolSystem;
+
         private EntityQuery m_HotelQuery;
 
         private ResidentTravelSystem m_ResidentTravelSystem;
@@ -71,6 +92,17 @@ namespace TourismOverhaul.Systems
             AddBinding(m_ArrivalsTrain = new ValueBinding<int>(kGroup, "arrivalsTrain", 0));
             AddBinding(m_ArrivalsAir = new ValueBinding<int>(kGroup, "arrivalsAir", 0));
             AddBinding(m_ArrivalsShip = new ValueBinding<int>(kGroup, "arrivalsShip", 0));
+
+            m_LedgerSystem = World.GetOrCreateSystemManaged<TouristSpendingLedgerSystem>();
+
+            AddBinding(m_SpentLodging = new ValueBinding<int>(kGroup, "spentLodging", 0));
+            AddBinding(m_SpentGoods = new ValueBinding<int>(kGroup, "spentGoods", 0));
+            AddBinding(m_SpentFares = new ValueBinding<int>(kGroup, "spentFares", 0));
+            AddBinding(m_SpentLeisure = new ValueBinding<int>(kGroup, "spentLeisure", 0));
+            AddBinding(m_SpentOther = new ValueBinding<int>(kGroup, "spentOther", 0));
+
+            m_ToolSystem = World.GetOrCreateSystemManaged<Game.Tools.ToolSystem>();
+            AddBinding(m_FinanceViewActive = new ValueBinding<bool>(kGroup, "financeViewActive", false));
         }
 
         protected override void OnUpdate()
@@ -94,6 +126,28 @@ namespace TourismOverhaul.Systems
             m_ArrivalsTrain.Update(arrivals.y);
             m_ArrivalsAir.Update(arrivals.z);
             m_ArrivalsShip.Update(arrivals.w);
+
+            // Clamped into int for the binding: a month's spending in a large city fits easily,
+            // and the panel formats it as money rather than showing raw precision.
+            // Matched by name rather than entity, so it survives the prefab being recreated on load.
+            m_FinanceViewActive.Update(
+                m_ToolSystem != null
+                && m_ToolSystem.activeInfoview != null
+                && m_ToolSystem.activeInfoview.name == "TourismOverhaul Finance");
+
+            if (m_LedgerSystem != null)
+            {
+                m_SpentLodging.Update(Clamp(m_LedgerSystem.Lodging));
+                m_SpentGoods.Update(Clamp(m_LedgerSystem.Goods));
+                m_SpentFares.Update(Clamp(m_LedgerSystem.Fares));
+                m_SpentLeisure.Update(Clamp(m_LedgerSystem.Leisure));
+                m_SpentOther.Update(Clamp(m_LedgerSystem.Other));
+            }
+        }
+
+        private static int Clamp(long value)
+        {
+            return value > int.MaxValue ? int.MaxValue : (int)value;
         }
 
         /// <summary>

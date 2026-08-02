@@ -55,6 +55,17 @@ namespace TourismOverhaul
         [SettingsUISection(SectionMain, GroupDemand)]
         public int HistoricBuildingAttractiveness { get; set; } = 3;
 
+        /// <summary>Crowded attractions become less appealing, so visitors spread out.</summary>
+        [SettingsUISection(SectionMain, GroupDemand)]
+        public bool EnableAttractionCrowding { get; set; } = true;
+
+        /// <summary>
+        /// How tolerant attractions are of crowds, as a multiplier on their footprint-derived
+        /// capacity. Lower spreads visitors around sooner; higher lets favourites stay busy.
+        /// </summary>
+        [SettingsUIHidden]
+        public int AttractionCrowdTolerance { get; set; } = 4;
+
         /// <summary>Upper bound on tourist citizens.</summary>
         [SettingsUISlider(min = 1500f, max = 100000f, step = 500f, unit = "integer")]
         [SettingsUISection(SectionMain, GroupDemand)]
@@ -76,10 +87,48 @@ namespace TourismOverhaul
         [SettingsUISection(SectionMain, GroupDemand)]
         public int TouristShoppingChance { get; set; } = 25;
 
-        /// <summary>Money per day each visitor spends on shopping, leisure and fares.</summary>
-        [SettingsUISlider(min = 0f, max = 20000f, step = 250f, unit = "money")]
+        /// <summary>
+        /// What a hotel room costs per night, as a percentage of the game's own rate.
+        ///
+        /// The game charges lodging consumed per day times the market price of lodging, which works
+        /// out at 1,500 a night — expensive next to what the rest of the economy charges. Lowering
+        /// this reduces the room rate, and because spending is expressed against the room rate, it
+        /// scales what visitors carry along with it.
+        /// </summary>
+        [SettingsUISlider(min = 10f, max = 200f, step = 5f, unit = "percentage")]
         [SettingsUISection(SectionMain, GroupDemand)]
-        public int TouristDailySpending { get; set; } = 2000;
+        public int LodgingCostPercent { get; set; } = 100;
+
+        /// <summary>
+        /// Money a visitor carries for shopping, leisure and fares each night, as a percentage of
+        /// the room rate.
+        ///
+        /// Expressed against the room rate rather than as a flat sum so the two stay in proportion:
+        /// repricing rooms reprices the whole wallet. 100% means a visitor budgets as much for the
+        /// city as for the bed.
+        /// </summary>
+        [SettingsUISlider(min = 0f, max = 400f, step = 10f, unit = "percentage")]
+        [SettingsUISection(SectionMain, GroupDemand)]
+        public int SpendingPerNightPercent { get; set; } = 100;
+
+        /// <summary>
+        /// How much visitors differ in how much money they bring, as a percentage of the budget.
+        ///
+        /// The poorest arrival always carries a full budget; this widens the range above that. At
+        /// 0 every visitor carries exactly the same amount.
+        /// </summary>
+        [SettingsUIHidden]
+        public int WealthVariationPercent { get; set; } = 100;
+
+        /// <summary>
+        /// Service capacity given to leisure venues, which lowers their surge pricing.
+        ///
+        /// A visit costs consumption x market price x a multiplier that rises as the venue's stock
+        /// runs down. Tourists visit constantly, drain venues and pay the higher price they caused —
+        /// measured at 93% of all tourist spending. More capacity means a lower multiplier.
+        /// </summary>
+        [SettingsUIHidden]
+        public int LeisureCapacityMultiplier { get; set; } = 4;
 
         // ---- How they get here ----
 
@@ -333,7 +382,10 @@ namespace TourismOverhaul
             TouristsPerThousandCitizens = 60;
             MaximumTourists = 60000;
             PreferLargerTouristGroups = 50;
-            TouristDailySpending = 2000;
+            LodgingCostPercent = 100;
+            SpendingPerNightPercent = 75;
+            WealthVariationPercent = 100;
+            LeisureCapacityMultiplier = 5;
 
             ArrivalWeightRoad = 5;
             ArrivalWeightTrain = 20;
@@ -368,8 +420,10 @@ namespace TourismOverhaul
 
             FixTouristDemand = true;
             MaxArrivalsPerUpdate = 128;
-            TouristShoppingChance = 25;
+            TouristShoppingChance = 40;
             HistoricBuildingAttractiveness = 3;
+            EnableAttractionCrowding = true;
+            AttractionCrowdTolerance = 2;
             HotelRoomDemandOccupancy = 80;
             ReplaceNativeSpawner = true;
 

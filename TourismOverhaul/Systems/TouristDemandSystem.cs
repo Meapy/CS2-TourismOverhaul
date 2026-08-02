@@ -56,6 +56,7 @@ namespace TourismOverhaul.Systems
         private const int kFillUpdates = 256;
 
         private EntityQuery m_HotelQuery;
+        private EntityQuery m_ArrivedQuery;
 
         private CitySystem m_CitySystem;
         private SimulationSystem m_SimulationSystem;
@@ -138,6 +139,14 @@ namespace TourismOverhaul.Systems
             m_CitySystem = World.GetOrCreateSystemManaged<CitySystem>();
             m_SimulationSystem = World.GetOrCreateSystemManaged<SimulationSystem>();
             m_TimeSystem = World.GetOrCreateSystemManaged<TimeSystem>();
+
+            // Households dispatched but not yet counted. They lose ArrivalMode once counted, so
+            // this query drains itself.
+            m_ArrivedQuery = GetEntityQuery(
+                ComponentType.ReadOnly<TouristHousehold>(),
+                ComponentType.ReadOnly<Components.ArrivalMode>(),
+                ComponentType.Exclude<Deleted>(),
+                ComponentType.Exclude<Temp>());
             m_EndFrameBarrier = World.GetOrCreateSystemManaged<EndFrameBarrier>();
             m_NativeSpawnSystem = World.GetOrCreateSystemManaged<TouristSpawnSystem>();
             m_WelcomeSystem = World.GetOrCreateSystemManaged<HotelWelcomeSystem>();
@@ -233,6 +242,7 @@ namespace TourismOverhaul.Systems
                 population = EntityManager.GetComponentData<Population>(city).m_Population;
             }
 
+            CountConvertedArrivals();
             RollOverMonthIfNeeded();
             UpdateArrivalRate();
 
@@ -624,32 +634,106 @@ namespace TourismOverhaul.Systems
         }
 
         /// <summary>
+        /// Connection type to panel row index. The most specific mode wins, so a combined road and
+        /// rail terminal counts as rail.
+        /// </summary>
+        private static byte ModeIndex(OutsideConnectionTransferType type)
+        {
+            if ((type & OutsideConnectionTransferType.Air) != 0) return 2;
+            if ((type & OutsideConnectionTransferType.Ship) != 0) return 3;
+            if ((type & OutsideConnectionTransferType.Train) != 0) return 1;
+            return 0;
+        }
+
+        /// <summary>
+        /// Counts households that have now been given citizens, then forgets their arrival mode.
+        ///
+        /// This is what makes the arrivals figure mean "visitors who arrived" rather than "attempts
+        /// that were made". A household that is dispatched and then discarded before initialisation
+        /// never reaches this, so it is never counted — which is the whole point, since that was the
+        /// bulk of the old figure.
+        ///
+        /// Counted in citizens actually present, not the template's expected head count, so the
+        /// number matches the people standing in the city.
+        /// </summary>
+        private void CountConvertedArrivals()
+        {
+            if (m_ArrivedQuery.IsEmptyIgnoreFilter)
+            {
+                return;
+            }
+
+            EntityCommandBuffer commandBuffer = m_EndFrameBarrier.CreateCommandBuffer();
+
+            EntityTypeHandle entityHandle = GetEntityTypeHandle();
+            ComponentTypeHandle<Components.ArrivalMode> modeHandle =
+                GetComponentTypeHandle<Components.ArrivalMode>(isReadOnly: true);
+            BufferTypeHandle<HouseholdCitizen> citizenHandle =
+                GetBufferTypeHandle<HouseholdCitizen>(isReadOnly: true);
+
+            NativeArray<ArchetypeChunk> chunks = m_ArrivedQuery.ToArchetypeChunkArray(Allocator.Temp);
+            try
+            {
+                for (int c = 0; c < chunks.Length; c++)
+                {
+                    ArchetypeChunk chunk = chunks[c];
+
+                    if (!chunk.Has(ref citizenHandle))
+                    {
+                        continue;
+                    }
+
+                    NativeArray<Entity> entities = chunk.GetNativeArray(entityHandle);
+                    NativeArray<Components.ArrivalMode> modes = chunk.GetNativeArray(ref modeHandle);
+                    BufferAccessor<HouseholdCitizen> citizens = chunk.GetBufferAccessor(ref citizenHandle);
+
+                    for (int i = 0; i < entities.Length; i++)
+                    {
+                        int occupants = citizens[i].Length;
+
+                        // Not initialised yet; leave the mode on it and try again next update.
+                        if (occupants == 0)
+                        {
+                            continue;
+                        }
+
+                        RecordArrival(modes[i].m_Mode, occupants);
+                        commandBuffer.RemoveComponent<Components.ArrivalMode>(entities[i]);
+                    }
+                }
+            }
+            finally
+            {
+                chunks.Dispose();
+            }
+        }
+
+        /// <summary>
         /// Attributes an arrival to the connection type it came through.
         ///
         /// OutsideConnectionTransferType is a flags enum and a connection may carry more than one,
         /// so the most specific mode wins: a combined road and rail terminal counts as rail.
         /// </summary>
-        private void RecordArrival(OutsideConnectionTransferType type, int citizens)
+        private void RecordArrival(byte mode, int citizens)
         {
-            if ((type & OutsideConnectionTransferType.Air) != 0)
+            switch (mode)
             {
-                m_ThisMonthArrivals.z += citizens;
-                m_ArrivalsSinceSample.z += citizens;
-            }
-            else if ((type & OutsideConnectionTransferType.Ship) != 0)
-            {
-                m_ThisMonthArrivals.w += citizens;
-                m_ArrivalsSinceSample.w += citizens;
-            }
-            else if ((type & OutsideConnectionTransferType.Train) != 0)
-            {
-                m_ThisMonthArrivals.y += citizens;
-                m_ArrivalsSinceSample.y += citizens;
-            }
-            else if ((type & OutsideConnectionTransferType.Road) != 0)
-            {
-                m_ThisMonthArrivals.x += citizens;
-                m_ArrivalsSinceSample.x += citizens;
+                case 1:
+                    m_ThisMonthArrivals.y += citizens;
+                    m_ArrivalsSinceSample.y += citizens;
+                    break;
+                case 2:
+                    m_ThisMonthArrivals.z += citizens;
+                    m_ArrivalsSinceSample.z += citizens;
+                    break;
+                case 3:
+                    m_ThisMonthArrivals.w += citizens;
+                    m_ArrivalsSinceSample.w += citizens;
+                    break;
+                default:
+                    m_ThisMonthArrivals.x += citizens;
+                    m_ArrivalsSinceSample.x += citizens;
+                    break;
             }
         }
 
@@ -823,7 +907,6 @@ namespace TourismOverhaul.Systems
                         if (outsideConnectionDatas.HasComponent(connectionPrefab))
                         {
                             arrivalType = outsideConnectionDatas[connectionPrefab].m_Type;
-                            RecordArrival(arrivalType, ExpectedOccupants(householdDatas[index]));
                         }
                     }
 
@@ -847,6 +930,12 @@ namespace TourismOverhaul.Systems
                     commandBuffer.AddComponent(household, new CurrentBuilding
                     {
                         m_CurrentBuilding = connection
+                    });
+
+                    // Counted later, when the household is actually given citizens. See ArrivalMode.
+                    commandBuffer.AddComponent(household, new Components.ArrivalMode
+                    {
+                        m_Mode = ModeIndex(arrivalType)
                     });
                 }
             }

@@ -135,6 +135,12 @@ namespace TourismOverhaul.Systems
             RunLodgingUpdate(multiplier);
         }
 
+        /// <summary>
+        /// Money charged to guests for rooms since the last reset. Read and cleared by
+        /// TouristSpendingLedgerSystem, which owns the reporting period.
+        /// </summary>
+        public long LodgingChargedSinceReset { get; set; }
+
         private void DisableNativeSystem()
         {
             if (m_NativeDisabled || m_NativeLodgingProvider == null)
@@ -392,6 +398,14 @@ namespace TourismOverhaul.Systems
             }
 
             int income = Mathf.RoundToInt(pricePerUpdate * guests);
+
+            // Exact lodging spend, counted where the guests are actually billed.
+            //
+            // The ledger used to estimate this from the nightly rate and elapsed frames, which was
+            // hopeless: it samples each household only every few thousand frames, so the estimate
+            // was a rounding error against the real drop and virtually everything fell through to
+            // "other". Here the charge is known precisely, so it is simply reported.
+            LodgingChargedSinceReset += income;
             int lodgingConsumed = Mathf.CeilToInt(consumePerUpdate * guests);
 
             if (EntityManager.HasBuffer<Game.Economy.Resources>(company))
