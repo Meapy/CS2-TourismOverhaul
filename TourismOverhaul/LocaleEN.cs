@@ -41,6 +41,25 @@ namespace TourismOverhaul
                     "to roadside plots near your outside connections."
                 },
 
+                // Row labels for the Tourism and Tourism Finance info-view panels. The frontend
+                // reads these through the game's own translate() with the English text as its
+                // fallback, so a locale that omits one still renders rather than showing the key.
+                { "TourismOverhaul.PANEL[TouristsInCity]", "Tourists in city" },
+                { "TourismOverhaul.PANEL[HotelRoomsFree]", "Hotel rooms free" },
+                { "TourismOverhaul.PANEL[Occupancy]", "Occupancy" },
+                { "TourismOverhaul.PANEL[LocalCimsAway]", "Local cims away" },
+                { "TourismOverhaul.PANEL[ArrivalsByMode]", "Arrivals by mode" },
+                { "TourismOverhaul.PANEL[Road]", "Road" },
+                { "TourismOverhaul.PANEL[Train]", "Train" },
+                { "TourismOverhaul.PANEL[Plane]", "Plane" },
+                { "TourismOverhaul.PANEL[Sea]", "Sea" },
+                { "TourismOverhaul.PANEL[TouristSpending]", "Tourist spending" },
+                { "TourismOverhaul.PANEL[Hotels]", "Hotels" },
+                { "TourismOverhaul.PANEL[Shops]", "Shops" },
+                { "TourismOverhaul.PANEL[Fares]", "Fares" },
+                { "TourismOverhaul.PANEL[Leisure]", "Leisure" },
+                { "TourismOverhaul.PANEL[Unattributed]", "Unattributed" },
+
                 { m_Setting.GetSettingsLocaleID(), "Tourism Overhaul" },
                 { m_Setting.GetOptionTabLocaleID(TourismOverhaulSetting.SectionMain), "Main" },
 

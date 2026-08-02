@@ -1,5 +1,6 @@
 import { Component, ReactNode } from "react";
 import { bindValue, useValue } from "cs2/api";
+import { useLocalization } from "cs2/l10n";
 import * as CS2UI from "cs2/ui";
 
 /**
@@ -14,6 +15,20 @@ import * as CS2UI from "cs2/ui";
  */
 
 const LOG_PREFIX = "[TourismOverhaul]";
+
+/**
+ * Row labels, looked up in the player's language.
+ *
+ * Keys are registered on the C# side (LocaleEN for English, Translations.cs for the rest). The
+ * English text is passed as the fallback rather than left to the game, so a locale that has not
+ * translated a row shows readable English instead of the raw key — and so these labels remain
+ * legible in the source.
+ */
+const usePanelText = () => {
+  const { translate } = useLocalization();
+  return (key: string, english: string) =>
+    translate(`TourismOverhaul.PANEL[${key}]`, english) ?? english;
+};
 
 const citizensAway$ = bindValue<number>("tourismOverhaul", "citizensAway", 0);
 const currentTourists$ = bindValue<number>("tourismOverhaul", "currentTourists", 0);
@@ -98,6 +113,8 @@ export const TourismOverhaulRows = () => {
   const hotelRoomsFree = useValue(hotelRoomsFree$);
   const hotelRoomsTotal = useValue(hotelRoomsTotal$);
 
+  const t = usePanelText();
+
   const byRoad = useValue(arrivalsRoad$);
   const byTrain = useValue(arrivalsTrain$);
   const byAir = useValue(arrivalsAir$);
@@ -117,20 +134,20 @@ export const TourismOverhaulRows = () => {
   return (
     <>
       <Row
-        left="Tourists in city"
+        left={t("TouristsInCity", "Tourists in city")}
         right={`${currentTourists.toLocaleString()} / ${targetTourists.toLocaleString()}`}
         tooltip="Tourists currently in the city, against the number it can sustain at this
                  attractiveness and population."
       />
       <Row
-        left="Hotel rooms free"
+        left={t("HotelRoomsFree", "Hotel rooms free")}
         right={`${hotelRoomsFree.toLocaleString()} / ${hotelRoomsTotal.toLocaleString()}`}
         subRow
         tooltip="Free rooms against total rooms. When this reaches zero, arrivals with no room
                  leave the same evening."
       />
       <Row
-        left="Occupancy"
+        left={t("Occupancy", "Occupancy")}
         right={`${occupancy}%`}
         subRow
         subRowDimmed
@@ -138,22 +155,42 @@ export const TourismOverhaulRows = () => {
                  tourist numbers."
       />
       <Row
-        left="Local cims away"
+        left={t("LocalCimsAway", "Local cims away")}
         right={citizensAway.toLocaleString()}
         tooltip="Your own residents currently out of town on holiday."
       />
       <Row
-        left="Arrivals by mode"
+        left={t("ArrivalsByMode", "Arrivals by mode")}
         right={`${arrivalsTotal.toLocaleString()} /mo.`}
         tooltip="Visitors sent through each outside connection type over the last full month,
                  counted in cims rather than travel parties. This is a flow, not a population: it
                  counts everyone who came through the door across a whole month, where Tourists in
                  city counts who is here right now. The two differ by the average length of stay."
       />
-      <Row left="Road" right={`${byRoad.toLocaleString()}${share(byRoad)}`} subRow subRowDimmed />
-      <Row left="Train" right={`${byTrain.toLocaleString()}${share(byTrain)}`} subRow subRowDimmed />
-      <Row left="Plane" right={`${byAir.toLocaleString()}${share(byAir)}`} subRow subRowDimmed />
-      <Row left="Sea" right={`${bySea.toLocaleString()}${share(bySea)}`} subRow subRowDimmed />
+      <Row
+        left={t("Road", "Road")}
+        right={`${byRoad.toLocaleString()}${share(byRoad)}`}
+        subRow
+        subRowDimmed
+      />
+      <Row
+        left={t("Train", "Train")}
+        right={`${byTrain.toLocaleString()}${share(byTrain)}`}
+        subRow
+        subRowDimmed
+      />
+      <Row
+        left={t("Plane", "Plane")}
+        right={`${byAir.toLocaleString()}${share(byAir)}`}
+        subRow
+        subRowDimmed
+      />
+      <Row
+        left={t("Sea", "Sea")}
+        right={`${bySea.toLocaleString()}${share(bySea)}`}
+        subRow
+        subRowDimmed
+      />
     </>
   );
 };
@@ -166,6 +203,8 @@ export const TourismOverhaulRows = () => {
  * household was doing at the time.
  */
 export const TourismFinanceRows = () => {
+  const t = usePanelText();
+
   const onLodging = useValue(spentLodging$);
   const onGoods = useValue(spentGoods$);
   const onFares = useValue(spentFares$);
@@ -180,19 +219,39 @@ export const TourismFinanceRows = () => {
   return (
     <>
       <Row
-        left="Tourist spending"
+        left={t("TouristSpending", "Tourist spending")}
         right={`${money(total)} /mo.`}
         tooltip="What visitors spent in your city over the last full month, and on what.
                  Totals are exact — every coin that leaves a wallet is counted — but the split
                  between categories is inferred from what each visitor was doing at the time, so
                  read it as a strong indication rather than an audit."
       />
-      <Row left="Hotels" right={`${money(onLodging)}${share(onLodging)}`} subRow subRowDimmed />
-      <Row left="Shops" right={`${money(onGoods)}${share(onGoods)}`} subRow subRowDimmed />
-      <Row left="Fares" right={`${money(onFares)}${share(onFares)}`} subRow subRowDimmed />
-      <Row left="Leisure" right={`${money(onLeisure)}${share(onLeisure)}`} subRow subRowDimmed />
       <Row
-        left="Unattributed"
+        left={t("Hotels", "Hotels")}
+        right={`${money(onLodging)}${share(onLodging)}`}
+        subRow
+        subRowDimmed
+      />
+      <Row
+        left={t("Shops", "Shops")}
+        right={`${money(onGoods)}${share(onGoods)}`}
+        subRow
+        subRowDimmed
+      />
+      <Row
+        left={t("Fares", "Fares")}
+        right={`${money(onFares)}${share(onFares)}`}
+        subRow
+        subRowDimmed
+      />
+      <Row
+        left={t("Leisure", "Leisure")}
+        right={`${money(onLeisure)}${share(onLeisure)}`}
+        subRow
+        subRowDimmed
+      />
+      <Row
+        left={t("Unattributed", "Unattributed")}
         right={`${money(onOther)}${share(onOther)}`}
         subRow
         subRowDimmed
