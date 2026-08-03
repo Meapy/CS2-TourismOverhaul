@@ -488,6 +488,13 @@ namespace TourismOverhaul.Systems
             {
                 target = math.min(target, hotelRooms);
             }
+            else if (target == 0)
+            {
+                // With no hotel rooms yet, the first zoned motel or hotel can never become
+                // viable if demand remains at zero. Force one visitor so the lodging demand
+                // machinery can kick in and the first_zone_build_exception can work.
+                target = 1;
+            }
 
             return target;
         }

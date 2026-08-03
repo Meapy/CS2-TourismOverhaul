@@ -1,4 +1,5 @@
 using Game;
+using Game.City;
 using Game.Economy;
 using Game.Prefabs;
 using Game.Simulation;
@@ -48,8 +49,10 @@ namespace TourismOverhaul.Systems
         private EntityQuery m_EconomyParameterQuery;
         private EntityQuery m_DemandParameterQuery;
         private EntityQuery m_LeisureParameterQuery;
+        private EntityQuery m_CityQuery;
 
         private ResourceSystem m_ResourceSystem;
+        private TouristDemandSystem m_DemandSystem;
 
         private int m_LastWrittenBudget = -1;
         private float m_LastWrittenRoomRequirement = -1f;
@@ -68,10 +71,12 @@ namespace TourismOverhaul.Systems
             base.OnCreate();
 
             m_ResourceSystem = World.GetOrCreateSystemManaged<ResourceSystem>();
+            m_DemandSystem = World.GetOrCreateSystemManaged<TouristDemandSystem>();
 
             m_EconomyParameterQuery = GetEntityQuery(ComponentType.ReadWrite<EconomyParameterData>());
             m_DemandParameterQuery = GetEntityQuery(ComponentType.ReadWrite<DemandParameterData>());
             m_LeisureParameterQuery = GetEntityQuery(ComponentType.ReadOnly<LeisureParametersData>());
+            m_CityQuery = GetEntityQuery(ComponentType.ReadOnly<Tourism>());
 
             RequireForUpdate(m_EconomyParameterQuery);
             RequireForUpdate(m_DemandParameterQuery);
@@ -229,6 +234,29 @@ namespace TourismOverhaul.Systems
             // a player-facing one — at 3 rooms per tourist and a 10x multiplier it reaches 30.
             float requirement = math.clamp(perTourist * multiplier, 0.1f, 30f);
 
+            // The first hotel or motel should still be buildable when the city has no lodging
+            // capacity yet. That prevents the very first zoned lodging building from being blocked
+            // by the normal "rooms per tourist" demand threshold.
+            bool hasLodgingCapacity = true;
+            if (!m_CityQuery.IsEmptyIgnoreFilter)
+            {
+                int2 lodging = m_CityQuery.GetSingleton<Tourism>().m_Lodging;
+                hasLodgingCapacity = lodging.y > 0;
+            }
+
+            if (!hasLodgingCapacity)
+            {
+                int tourists = m_DemandSystem != null ? m_DemandSystem.CurrentTourists : 0;
+                if (tourists > 0)
+                {
+                    requirement = math.clamp(1f / tourists + 1e-3f, 0.01f, 30f);
+                }
+                else
+                {
+                    requirement = 4f;
+                }
+            }
+
             if (math.abs(requirement - m_LastWrittenRoomRequirement) < 0.001f)
             {
                 return;
@@ -243,9 +271,12 @@ namespace TourismOverhaul.Systems
 
             m_LastWrittenRoomRequirement = requirement;
 
+            string reason = hasLodgingCapacity
+                ? $"({perTourist:0.00} wanted x {multiplier:0} room multiplier)"
+                : "(first hotel/motel build exception)";
+
             Mod.Log.Info(
-                $"Hotel room requirement set to {requirement:0.00} rooms per tourist " +
-                $"({perTourist:0.00} wanted x {multiplier:0} room multiplier).");
+                $"Hotel room requirement set to {requirement:0.00} rooms per tourist {reason}");
         }
     }
 }

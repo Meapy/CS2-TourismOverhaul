@@ -49,7 +49,7 @@ namespace TourismOverhaul.Systems
         /// A 2x2 square is 4 cells and so tolerates 4x this many; a large attraction on a 10x10 lot
         /// tolerates 25 times as many. That ratio is the point of the feature.
         /// </summary>
-        private const int kVisitorsPerLotCell = 8;
+        private const int kVisitorsPerLotCell = 6;
 
         /// <summary>Floor, so a crowded attraction still beats an ordinary building.</summary>
         private const float kMinimumFactor = 0.1f;

@@ -177,7 +177,7 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
   <Tag Value="Code Mod" />
 
   <ForumLink Value="https://forum.paradoxplaza.com/forum/threads/mod-tourism-overhaul-fix-tourism.1937099/" />
-  <ModVersion Value="1.6.0" />
+  <ModVersion Value="1.6.1" />
   <GameVersion Value="1.6.*" />
 
   <!--
@@ -185,24 +185,10 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
     accumulating history here republishes every past release with every upload. The full record
     belongs in CHANGELOG.md.
   -->
-  <ChangeLog>1.6.0
+  <ChangeLog>1.6.1
+  Updated some default values, made first motel and hotel always spawn, regardless of demand
 
-The mod now speaks your language.
-
-Every settings label and group, the Hotels and Motels zone names, the Tourism Finance view and all
-the row labels in both info panels are translated into the eleven other languages the game ships
-with: German, Spanish, French, Italian, Japanese, Korean, Polish, Brazilian Portuguese, Russian,
-Simplified Chinese and Traditional Chinese.
-
-The long explanatory descriptions under each setting stay in English on purpose. They are several
-paragraphs of simulation detail each, and a confidently wrong translation is worse than an English
-one because you cannot tell that it is wrong.
-
-Anything a language has not translated falls back to English rather than showing a blank label, so
-corrections and additions can be contributed a few strings at a time. Native speakers are very
-welcome to send them on GitHub.
-
-No simulation behaviour changed in this version. Saves are unaffected.</ChangeLog>
+</ChangeLog>
 
   <ExternalLink Type="github" Url="https://github.com/Meapy/CS2-TourismOverhaul" />
 </Publish>
