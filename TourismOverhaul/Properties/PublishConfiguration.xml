@@ -126,6 +126,21 @@ something a district can earn through its character, instead of something you pl
 Everything is individually toggleable, and everything is off or at vanilla values by default
 except the arrival fixes.
 
+## Tourism has a demand bar
+
+The base game shows you demand for residential, commercial, industrial and office, and nothing for
+tourism — so there is no way to tell whether your city could support more visitors, or what is
+stopping it.
+
+This mod adds a seventh demand bar, in light red. It sits with the others in the City Information
+panel and in the toolbar, and it reads as how much more tourism your city could carry.
+
+Underneath it, the same kind of factor list the other six have, saying what is actually holding
+tourism back — not enough hotel rooms, rooms standing empty, attractiveness, visitors already here,
+or the ways into your city. Hover it and the panel explains it, exactly as it does for the rest.
+
+The bar is drawn by the game rather than by the mod, so it matches the others precisely.
+
 ## In your language
 
 The zones, the info views, the panel rows and every setting are translated into all eleven other
@@ -177,7 +192,7 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
   <Tag Value="Code Mod" />
 
   <ForumLink Value="https://forum.paradoxplaza.com/forum/threads/mod-tourism-overhaul-fix-tourism.1937099/" />
-  <ModVersion Value="1.6.1" />
+  <ModVersion Value="1.7.0" />
   <GameVersion Value="1.6.*" />
 
   <!--
@@ -185,10 +200,26 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
     accumulating history here republishes every past release with every upload. The full record
     belongs in CHANGELOG.md.
   -->
-  <ChangeLog>1.6.1
-  Updated some default values, made first motel and hotel always spawn, regardless of demand
+  <ChangeLog>1.7.0
 
-</ChangeLog>
+Tourism now has a demand bar, alongside the game's own six.
+
+It appears in the City Information panel's Demand page with its own list of factors, and as a
+seventh bar in the toolbar stack, in light red.
+
+The bar shows how much more tourism your city could carry — the gap between the visitors your
+attractiveness could support and the visitors you actually have. The factors underneath say what is
+holding it back: not enough rooms, rooms standing empty, attractiveness, visitors already here, or
+the ways into your city. Hovering the section explains it, the same as the other six.
+
+Signs follow the game's convention, where a plus means the factor is pushing demand up. So a
+lodging shortage shows a plus, for the same reason unoccupied buildings show a minus under
+commercial demand.
+
+The bar itself is drawn by the game rather than the mod: tourism is registered as a seventh demand
+type, so its colours, arrow, icon and hover behaviour are the game's own.
+
+No simulation behaviour changed in this version. Saves are unaffected.</ChangeLog>
 
   <ExternalLink Type="github" Url="https://github.com/Meapy/CS2-TourismOverhaul" />
 </Publish>

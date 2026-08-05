@@ -81,6 +81,12 @@ namespace TourismOverhaul
             // Publishes our tourism figures to the UI layer for the frontend module.
             updateSystem.UpdateAt<TourismPanelUISystem>(SystemUpdatePhase.UIUpdate);
 
+            // The tourist demand bar. Separate from the panel system because that one runs at
+            // interval 512 — around eight seconds of real play — and a demand bar that steps every
+            // eight seconds does not read as a demand bar. This one takes the default UI interval,
+            // as CityInfoUISystem does for the native six.
+            updateSystem.UpdateAt<TouristDemandUISystem>(SystemUpdatePhase.UIUpdate);
+
 
             // Frees rooms held by emptied households, and deletes the households. Without it,
             // availability decays permanently as guests come and go.

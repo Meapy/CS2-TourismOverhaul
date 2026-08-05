@@ -3,6 +3,52 @@
 Findings and decisions that are expensive to rediscover. Everything here was established by reading
 the decompiled game or by measurement in a live city; nothing is assumed.
 
+## The frontend cannot be read, only measured
+
+`F:\CS2Decompiled` holds the C# assemblies only. The interface is TypeScript compiled into packed
+`.cok` archives, and the locale strings are packed with it. Neither is greppable. Building the
+demand bar took roughly a dozen build-and-look rounds because of this, and most of them were spent
+guessing where one log line would have answered it. If a frontend question comes up, log first.
+
+Things that cost a round each, all of which now have one-line answers:
+
+**Class map values are multi-class strings.** `classes.title` is `"title_TAF title_PYv title_bwV"`,
+not one name. `"." + value` therefore builds a *descendant* selector matching nothing, silently.
+One value even contains a literal `undefined`. Split on whitespace and join with dots — see `sel()`
+in `ui/src/mods/tourist-demand.tsx`. Passing the raw string as `className` is fine; only selectors
+break.
+
+**The game usually wants data, not markup.** Both surfaces looked like they needed a component
+built to match, and neither did. Registering tourism in `DemandType` / `demandColors` /
+`demandIcons` made `DemandSection` render the whole thing. `DemandBars` turned out to take its bars
+as `items: [{key, color, value}]` — one appended entry. The class map there is geometry
+(`maxBarHeight`, `barGap`, `rangeFill`), which correctly indicates the bars are computed into a
+fixed SVG; the wrong conclusion was that a matching bar had to be drawn.
+
+**Missing text means an empty element, not a missing one.** For a registered type the game builds
+the full structure and leaves the strings blank, because the locale key does not resolve. The
+section title is `[class*="title_"]` inside the section; the pane's are `[class*="title_"]` and
+`[class*="paragraphs_"]` under `infoColumn`. Fill those. Appending a node instead always looks
+wrong however it is anchored, because the real elements are already sitting above it.
+
+**The title locale namespace does not exist.** Sixteen candidate patterns were probed and ten
+registered simultaneously with marker letters; none rendered. The game does not build the section
+title from a key on the type name, so there is nothing for a locale entry to hook. Writing into the
+element is the fix, not a workaround.
+
+**`useCachedLocalization` is per-consumer.** Patching the object it returns does not intercept the
+calls native components make. That diagnostic does not work; do not try it again.
+
+**Wrap the content, not the page.** `CityInfoDemand` is the scroll container: a sibling appended
+after it renders outside the panel, full-bleed across the toolbar. `DemandSection` is the thing
+inside the list. Its props are `{type, demand, factors, onHover, onSelect, className}` — `onHover`
+and `onSelect` are **required**; omitting them makes every hover throw inside the native handler,
+which an error boundary then catches and re-renders from, producing what looks like a performance
+collapse.
+
+**`__Type` must match.** Managed bindings the native UI consumes carry it. Factor rows expect
+`Game.UI.InGame.FactorInfo`; ours said `TourismOverhaul.DemandFactor` and rendered nothing.
+
 ## The zero-radius origin — the root of almost everything
 
 `TouristFindTargetSystem:99-104` builds its pathfind origin without setting `m_Value2`, the origin

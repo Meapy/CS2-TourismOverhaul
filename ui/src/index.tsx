@@ -2,6 +2,11 @@ import { ModRegistrar } from "cs2/modding";
 import { bindValue, useValue } from "cs2/api";
 import { logInfoviewModules } from "mods/find-tourism-panel";
 import { wrapTourismPanel, TourismFinancePanel } from "mods/tourism-panel";
+import {
+  wrapDemandSection,
+  wrapDemandToolbar,
+  wrapDemandFactorDetail,
+} from "mods/tourist-demand";
 
 // Zone toolbar icons. These are not rendered by this module — the C# side puts the URL on the zone
 // prefab's UIObject and the game's toolbar loads it. They are imported here purely so webpack's
@@ -50,7 +55,122 @@ const register: ModRegistrar = (moduleRegistry) => {
   console.log("[TourismOverhaul] Tourism panel extended.");
 
   registerFinancePanel(moduleRegistry);
+  registerDemand(moduleRegistry);
 };
+
+/**
+ * The two places the game draws demand: the Demand info view page with its arrow bars and factor
+ * lists, and the compact pill stack in the toolbar.
+ *
+ * Neither path can be read from disk, so both are pinned guesses with a guard. On a miss the mod
+ * logs every module matching /demand/i and skips that surface, leaving the native UI untouched —
+ * the same approach that pinned the Tourism panel.
+ */
+// The section, not the page. CityInfoDemand is the scroll container: wrapping it rendered our
+// section outside the panel, full-bleed across the toolbar. DemandSection renders inside the list,
+// so ours goes after the last of them instead.
+const DEMAND_PAGE_PATH =
+  "game-ui/game/components/city-info-panel/city-info-demand/demand-section/demand-section.tsx";
+const DEMAND_PAGE_EXPORT = "DemandSection";
+
+const DEMAND_TOOLBAR_PATH =
+  "game-ui/game/components/toolbar/top/city-info-field/demand-bars.tsx";
+const DEMAND_TOOLBAR_EXPORT = "DemandBars";
+
+function registerDemand(moduleRegistry: any): void {
+  const page = tryExtend(
+    moduleRegistry,
+    DEMAND_PAGE_PATH,
+    DEMAND_PAGE_EXPORT,
+    wrapDemandSection,
+    "Demand section"
+  );
+
+  const toolbar = tryExtend(
+    moduleRegistry,
+    DEMAND_TOOLBAR_PATH,
+    DEMAND_TOOLBAR_EXPORT,
+    wrapDemandToolbar,
+    "toolbar demand stack"
+  );
+
+  // Diagnostic only: reports what the native factor row is handed, which is what will say whether
+  // our labels are missing because of a wrong key or a wrong shape.
+  tryExtend(
+    moduleRegistry,
+    "game-ui/game/components/city-info-panel/city-info-demand/demand-section/demand-factors.tsx",
+    "DemandFactorDetail",
+    wrapDemandFactorDetail,
+    "Demand factor row"
+  );
+
+  // The right-hand detail pane — the one that describes the hovered section — is not in the
+  // /demand/i set, so it lives under a different name. Listed here so it can be pinned rather
+  // than guessed at, which is what cost four rounds on the locale keys.
+  const paneCandidates = moduleRegistry.find(/city-info/i) ?? [];
+
+  console.log(
+    `[TourismOverhaul] ${paneCandidates.length} module(s) matching /city-info/i:`
+  );
+
+  for (const [path, ...exports] of paneCandidates) {
+    console.log(`[TourismOverhaul]   ${path} → ${exports.join(", ")}`);
+  }
+
+  if (!page || !toolbar) {
+    logDemandModules(moduleRegistry);
+  }
+}
+
+/**
+ * Extends a native component, and says so clearly if the target is not there.
+ *
+ * extend rather than append: append relies on the target rendering props.children. Both of these
+ * registered cleanly through append and neither rendered, which is what that failure looks like.
+ * Wrapping does not depend on the native component cooperating.
+ *
+ * Returns whether it happened, so the caller can dump candidates once rather than once per miss.
+ */
+function tryExtend(
+  moduleRegistry: any,
+  path: string,
+  exportName: string,
+  wrapper: (native: any) => any,
+  label: string
+): boolean {
+  // find, not get: get throws when the module is absent rather than returning nothing.
+  const matches = moduleRegistry.find(path) ?? [];
+
+  const found = matches.some(
+    ([p, ...exports]: [string, ...string[]]) => p === path && exports.includes(exportName)
+  );
+
+  if (!found) {
+    console.warn(
+      `[TourismOverhaul] ${label} not found at "${path}" export "${exportName}". ` +
+        `Tourist demand will not appear there.`
+    );
+    return false;
+  }
+
+  moduleRegistry.extend(path, exportName, wrapper);
+  console.log(`[TourismOverhaul] ${label} extended with tourist demand.`);
+  return true;
+}
+
+/** Lists every module whose path mentions demand, so a moved one can be pinned rather than guessed. */
+function logDemandModules(moduleRegistry: any): void {
+  const candidates = moduleRegistry.find(/demand/i) ?? [];
+
+  console.log(
+    `[TourismOverhaul] ${candidates.length} module(s) matching /demand/i — pin the right ` +
+      `path and export in index.tsx:`
+  );
+
+  for (const [path, ...exports] of candidates) {
+    console.log(`[TourismOverhaul]   ${path} → ${exports.join(", ")}`);
+  }
+}
 
 /**
  * The active info view panel picks a component from a registry keyed by info view. Our view is new,

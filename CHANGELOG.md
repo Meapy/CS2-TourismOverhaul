@@ -5,6 +5,37 @@ All notable changes to CS2 Tourism Overhaul.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [semantic](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] — 2026-08-05
+
+### Added
+
+- **A tourist demand bar, alongside the game's own six.** It appears in the City Information
+  panel's Demand page with its own factor list, and as a seventh bar in the toolbar stack, in light
+  red.
+
+  The bar reads as how much more tourism the city could carry: the gap between the visitors its
+  attractiveness could support and the visitors it currently has. That deliberately uses the
+  uncapped figure, because the lodging-capped one would fall to zero the moment hotels filled —
+  reporting no demand at exactly the point the player most needs to build.
+
+  The factor list says what is holding tourism back: *Lodging Shortage*, *Attractiveness*, *Empty
+  Hotel Rooms*, *Visitors Already Here* and *Ways Into The City*. Signs follow the game's own
+  convention, where `+` means the factor is pushing demand up — so a lodging shortage reads `+` for
+  the same reason unoccupied buildings read `−` under commercial demand. The weights are indicative
+  shares rather than an exact decomposition, which is worth knowing before reading much into small
+  differences between them.
+
+  Hovering the section describes tourist demand in the detail pane, as the other six do.
+
+### Notes
+
+- The bar is drawn by the game rather than by the mod. Tourism is registered as a seventh demand
+  type, so the arrow geometry, colour, icon plate, hover and selection states, the factor rows and
+  the toolbar bar are all the game's own and will follow any future changes to them.
+- `DemandFactor.TouristDemand` has existed in the game's own enum since release and is never
+  written by anything. It joins the unread departure timer and the uncalled stay-length function as
+  a third piece of tourism that was specified and left unfinished.
+
 ## [1.6.0] — 2026-08-02
 
 ### Added
