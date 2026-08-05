@@ -121,6 +121,25 @@ demand falls to zero, and `ZoneSpawnSystem:319` then rejects every hotel prefab 
 the requirement by the same multiplier, so the setting changes how many guests a hotel holds without
 also claiming the city is oversupplied.
 
+## Tourist demand
+
+A seventh demand bar, in the Demand page and the toolbar stack. `TouristDemandUISystem` mirrors
+`CityInfoUISystem`: it publishes a 0–1 float advanced every frame with the native
+`AdvanceSmoothDemand` constants (`CityInfoUISystem.cs:225-228` — note it falls five times faster
+than it rises), and a factor array refreshed on a 256-tick `UIUpdateState`, capped at five and
+sorted by absolute weight as `FactorInfo.CompareTo` does.
+
+Demand is `(IntrinsicTarget - CurrentTourists) / IntrinsicTarget`. `IntrinsicTarget` rather than
+`TargetTourists` because the latter is lodging-capped and would read zero exactly when hotels fill.
+
+Nothing is drawn by the mod. Tourism is registered as a seventh member of the game's `DemandType`
+enum with entries in `demandColors` and `demandIcons`, and the native `DemandSection` and
+`DemandBars` render it — the latter takes its bars as an `items` prop, so one appended entry is the
+whole toolbar integration. `docs/DEMAND-UI-PLAN.md` has the full trace.
+
+Two strings the game does not supply for an unregistered type — the section title and the detail
+pane text — are written into the elements it renders empty. See `docs/SESSION-NOTES.md`.
+
 ## Translations
 
 Labels are translated into all eleven other locales the game ships with. `Translations.cs` holds one

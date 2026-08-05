@@ -1,0 +1,334 @@
+using System.Collections.Generic;
+using Colossal.Serialization.Entities;
+using Colossal.UI.Binding;
+using Game;
+using Game.Buildings;
+using Game.Common;
+using Game.Companies;
+using Game.Simulation;
+using Game.Tools;
+using Game.UI;
+using Unity.Collections;
+using Unity.Entities;
+using Unity.Mathematics;
+
+namespace TourismOverhaul.Systems
+{
+    /// <summary>
+    /// Publishes tourist demand as a seventh demand bar, in the shape the game's own six use.
+    ///
+    /// Modelled on CityInfoUISystem rather than folded into TourismPanelUISystem: that system runs
+    /// at interval 512, around eight seconds of real play, and a demand bar stepping every eight
+    /// seconds reads as broken. This one takes the default UI interval and advances the smoothed
+    /// value from the frame delta, which is what the native bars do.
+    ///
+    /// See docs/DEMAND-UI-PLAN.md for the trace behind the numbers.
+    /// </summary>
+    public partial class TouristDemandUISystem : UISystemBase
+    {
+        private const string kGroup = "tourismOverhaul";
+
+        /// <summary>
+        /// Factor keys, matching the locale entries in LocaleEN and Translations.
+        ///
+        /// Deliberately not Game.Simulation.DemandFactor. That enum has a TouristDemand member
+        /// which the game declares and never writes — see the plan document — but its name would
+        /// render through the game's own localisation as a label we do not control, and only one
+        /// of these factors has a native counterpart at all.
+        /// </summary>
+        private const string kFactorNoRooms = "NoRooms";
+        private const string kFactorAttractiveness = "Attractiveness";
+        private const string kFactorEmptyRooms = "EmptyRooms";
+        private const string kFactorAtCeiling = "AtCeiling";
+        private const string kFactorConnections = "Connections";
+
+        private ValueBinding<float> m_Demand;
+        private RawValueBinding m_Factors;
+
+        private TouristDemandSystem m_DemandSystem;
+        private SimulationSystem m_SimulationSystem;
+        private EntityQuery m_HotelQuery;
+
+        private UIUpdateState m_UpdateState;
+
+        private float m_Smoothed;
+        private uint m_LastFrameIndex;
+
+        /// <summary>
+        /// Set on load so the first update snaps to the current value instead of animating up from
+        /// zero. Native serializes the smoothed figure to achieve the same thing; we avoid adding a
+        /// serialized field to a mod whose save format has already broken once, and the visible
+        /// difference is a single frame.
+        /// </summary>
+        private bool m_SnapNext = true;
+
+        protected override void OnCreate()
+        {
+            base.OnCreate();
+
+            m_DemandSystem = World.GetOrCreateSystemManaged<TouristDemandSystem>();
+            m_SimulationSystem = World.GetOrCreateSystemManaged<SimulationSystem>();
+
+            // Mirrors TourismPanelUISystem.m_HotelQuery — lodging companies renting a property,
+            // which is what LodgingProviderSystem maintains m_FreeRooms for.
+            m_HotelQuery = GetEntityQuery(
+                ComponentType.ReadOnly<LodgingProvider>(),
+                ComponentType.ReadOnly<PropertyRenter>(),
+                ComponentType.ReadOnly<Renter>(),
+                ComponentType.Exclude<Deleted>(),
+                ComponentType.Exclude<Temp>());
+
+            AddBinding(m_Demand = new ValueBinding<float>(kGroup, "touristDemand", 0f));
+            AddBinding(m_Factors = new RawValueBinding(kGroup, "touristDemandFactors", WriteFactors));
+
+            // 256 matches CityInfoUISystem:117. The bar moves every frame; the text under it stays
+            // still long enough to read.
+            m_UpdateState = UIUpdateState.Create(World, 256);
+        }
+
+        protected override void OnGameLoaded(Context serializationContext)
+        {
+            base.OnGameLoaded(serializationContext);
+
+            m_SnapNext = true;
+            m_LastFrameIndex = 0u;
+            m_UpdateState.ForceUpdate();
+        }
+
+        protected override void OnUpdate()
+        {
+            base.OnUpdate();
+
+            if (m_DemandSystem == null || m_SimulationSystem == null)
+            {
+                return;
+            }
+
+            uint delta = m_SimulationSystem.frameIndex - m_LastFrameIndex;
+
+            if (delta != 0)
+            {
+                m_LastFrameIndex = m_SimulationSystem.frameIndex;
+
+                int target = ComputeDemand();
+
+                m_Smoothed = m_SnapNext
+                    ? math.saturate(target / 100f)
+                    : AdvanceSmoothDemand(m_Smoothed, target, delta);
+
+                m_SnapNext = false;
+
+                // Snapped to the same 0.001 the native bars publish at, so an idle city stops
+                // pushing binding updates the frontend cannot render anyway.
+                m_Demand.Update(Colossal.Mathematics.MathUtils.Snap(m_Smoothed, 0.001f));
+            }
+
+            if (m_UpdateState.Advance())
+            {
+                m_Factors.Update();
+            }
+        }
+
+        /// <summary>
+        /// Copied verbatim from CityInfoUISystem:225-228. The asymmetry is the point: demand falls
+        /// five times faster than it rises, and matching that is most of what makes the bar feel
+        /// like it belongs beside the other six.
+        /// </summary>
+        private static float AdvanceSmoothDemand(float current, int target, uint delta)
+        {
+            return math.clamp(
+                target / 100f,
+                current - 0.000625f * delta,
+                current + 0.000125f * delta);
+        }
+
+        /// <summary>
+        /// How much more tourism the city could carry, as a percentage of what it could carry in
+        /// total.
+        ///
+        /// IntrinsicTarget rather than TargetTourists on purpose. TargetTourists is already capped
+        /// by lodging, so a city with full hotels would report no demand at exactly the moment the
+        /// player most needs to build more.
+        /// </summary>
+        private int ComputeDemand()
+        {
+            int ceiling = math.max(0, m_DemandSystem.IntrinsicTarget);
+
+            if (ceiling == 0)
+            {
+                return 0;
+            }
+
+            int appetite = math.max(0, ceiling - m_DemandSystem.CurrentTourists);
+
+            return math.clamp(appetite * 100 / ceiling, 0, 100);
+        }
+
+        /// <summary>
+        /// Writes the +/- list, in the game's own format: zero weights dropped, sorted by absolute
+        /// weight descending, as FactorInfo.CompareTo does.
+        ///
+        /// These weights are indicative shares rather than an exact decomposition of the demand
+        /// figure. Saying so is better than implying a precision the numbers do not have.
+        /// </summary>
+        private void WriteFactors(IJsonWriter writer)
+        {
+            List<KeyValuePair<string, int>> factors = CollectFactors();
+
+            factors.Sort((a, b) =>
+            {
+                int byWeight = math.abs(b.Value).CompareTo(math.abs(a.Value));
+                return byWeight != 0 ? byWeight : string.CompareOrdinal(a.Key, b.Key);
+            });
+
+            // Five, as CityInfoUISystem:284 does. The panel has room for that many and the sort
+            // has already put the ones worth reading at the top.
+            int count = math.min(5, factors.Count);
+
+            writer.ArrayBegin(count);
+
+            for (int i = 0; i < count; i++)
+            {
+                // The native type name, not ours. The frontend's factor row is handed
+                // {"__Type":"Game.UI.InGame.FactorInfo","factor":...,"weight":...} and a different
+                // type name makes the payload something it does not recognise.
+                writer.TypeBegin("Game.UI.InGame.FactorInfo");
+                writer.PropertyName("factor");
+                writer.Write(factors[i].Key);
+                writer.PropertyName("weight");
+                writer.Write(factors[i].Value);
+                writer.TypeEnd();
+            }
+
+            writer.ArrayEnd();
+        }
+
+        private List<KeyValuePair<string, int>> CollectFactors()
+        {
+            List<KeyValuePair<string, int>> factors = new List<KeyValuePair<string, int>>(5);
+
+            if (m_DemandSystem == null)
+            {
+                return factors;
+            }
+
+            int ceiling = math.max(0, m_DemandSystem.IntrinsicTarget);
+            int current = math.max(0, m_DemandSystem.CurrentTourists);
+            int appetite = math.max(0, ceiling - current);
+
+            CountRooms(out int roomsFree, out int roomsTotal);
+
+            if (ceiling == 0)
+            {
+                // Nothing worth visiting yet, so there is exactly one thing to say.
+                factors.Add(new KeyValuePair<string, int>(kFactorAttractiveness, -100));
+                return factors;
+            }
+
+            // Visitors who would come and have nowhere to sleep. The actionable one: this is what
+            // painting a Hotels or Motels zone fixes.
+            int unhoused = math.max(0, appetite - roomsFree);
+
+            if (unhoused > 0)
+            {
+                factors.Add(new KeyValuePair<string, int>(
+                    kFactorNoRooms,
+                    math.clamp(unhoused * 100 / math.max(1, appetite), 1, 100)));
+            }
+
+            // Rooms standing empty with no appetite to fill them - lodging is not the constraint,
+            // and building more would not help.
+            if (roomsFree > appetite && roomsTotal > 0)
+            {
+                factors.Add(new KeyValuePair<string, int>(
+                    kFactorEmptyRooms,
+                    -math.clamp((roomsFree - appetite) * 100 / roomsTotal, 1, 100)));
+            }
+
+            // Headroom the city's appeal is generating, against how much of it is already taken up.
+            if (appetite > 0)
+            {
+                factors.Add(new KeyValuePair<string, int>(
+                    kFactorAttractiveness,
+                    math.clamp(appetite * 100 / ceiling, 1, 100)));
+            }
+
+            // Only once visitors are genuinely damping demand. Below half the ceiling this is the
+            // exact inverse of the attractiveness weight above — the two always sum to 100 — so
+            // showing both everywhere would fill a row with no information in it.
+            int taken = current * 100 / ceiling;
+
+            if (taken >= 50)
+            {
+                factors.Add(new KeyValuePair<string, int>(
+                    kFactorAtCeiling, -math.clamp(taken, 1, 100)));
+            }
+
+            // Whether the ways into the city are carrying enough traffic to close the gap. Arrivals
+            // are a monthly flow and appetite is a population, so this compares like with like only
+            // loosely - it is a direction, not a rate.
+            int4 arrivals = m_DemandSystem.MonthlyArrivalsByMode;
+            int monthlyArrivals = arrivals.x + arrivals.y + arrivals.z + arrivals.w;
+
+            if (appetite > 0)
+            {
+                int coverage = math.clamp(monthlyArrivals * 100 / appetite, 0, 200);
+
+                // Below half the deficit reads as a way-in problem; well above it reads as the
+                // connections doing their part.
+                if (coverage < 50)
+                {
+                    factors.Add(new KeyValuePair<string, int>(
+                        kFactorConnections, -math.max(1, 50 - coverage)));
+                }
+                else if (coverage > 100)
+                {
+                    factors.Add(new KeyValuePair<string, int>(
+                        kFactorConnections, math.min(50, coverage - 100)));
+                }
+            }
+
+            return factors;
+        }
+
+        /// <summary>
+        /// Free and total hotel rooms. Same shape as TourismPanelUISystem.CountRooms so the two
+        /// panels cannot disagree: total is free rooms plus current renters, because
+        /// LodgingProvider tracks only the free count.
+        /// </summary>
+        private void CountRooms(out int free, out int total)
+        {
+            free = 0;
+            total = 0;
+
+            ComponentTypeHandle<LodgingProvider> providerHandle =
+                GetComponentTypeHandle<LodgingProvider>(isReadOnly: true);
+            BufferTypeHandle<Renter> renterHandle = GetBufferTypeHandle<Renter>(isReadOnly: true);
+
+            NativeArray<ArchetypeChunk> chunks =
+                m_HotelQuery.ToArchetypeChunkArray(Allocator.Temp);
+
+            try
+            {
+                for (int c = 0; c < chunks.Length; c++)
+                {
+                    ArchetypeChunk chunk = chunks[c];
+                    NativeArray<LodgingProvider> providers = chunk.GetNativeArray(ref providerHandle);
+                    BufferAccessor<Renter> renters = chunk.GetBufferAccessor(ref renterHandle);
+
+                    for (int i = 0; i < chunk.Count; i++)
+                    {
+                        int freeRooms = math.max(0, providers[i].m_FreeRooms);
+
+                        free += freeRooms;
+                        total += freeRooms + renters[i].Length;
+                    }
+                }
+            }
+            finally
+            {
+                chunks.Dispose();
+            }
+        }
+    }
+}

@@ -66,9 +66,15 @@ namespace TourismOverhaul
                         return setting.GetOptionGroupLocaleID(name.Substring(1));
                     }
 
-                    // "@Road" is an info-panel row label; the frontend asks for it by this key.
-                    return name[0] == '@'
-                        ? "TourismOverhaul.PANEL[" + name.Substring(1) + "]"
+                    // "@Road" is an info-panel row label and "!NoRooms" a demand factor; the
+                    // frontend asks for both by these keys.
+                    if (name[0] == '@')
+                    {
+                        return "TourismOverhaul.PANEL[" + name.Substring(1) + "]";
+                    }
+
+                    return name[0] == '!'
+                        ? "TourismOverhaul.DEMAND[" + name.Substring(1) + "]"
                         : setting.GetOptionLabelLocaleID(name);
             }
         }
@@ -111,7 +117,10 @@ namespace TourismOverhaul
             // Info-panel row labels, in the order the two panels draw them.
             "@TouristsInCity", "@HotelRoomsFree", "@Occupancy", "@LocalCimsAway",
             "@ArrivalsByMode", "@Road", "@Train", "@Plane", "@Sea",
-            "@TouristSpending", "@Hotels", "@Shops", "@Fares", "@Leisure", "@Unattributed"
+            "@TouristSpending", "@Hotels", "@Shops", "@Fares", "@Leisure", "@Unattributed",
+
+            // The tourist demand bar title and its factor labels.
+            "!Title", "!NoRooms", "!Attractiveness", "!EmptyRooms", "!AtCeiling", "!Connections"
         };
 
         private static readonly Dictionary<string, string[]> Labels =
@@ -135,7 +144,9 @@ namespace TourismOverhaul
                 "Einwohner unterwegs", "Ankünfte nach Verkehrsmittel",
                 "Straße", "Bahn", "Flugzeug", "Schiff",
                 "Touristenausgaben", "Hotels", "Geschäfte", "Fahrkarten", "Freizeit",
-                "Nicht zugeordnet"
+                "Nicht zugeordnet",
+                "Tourismusnachfrage", "Mangel an Unterkünften", "Attraktivität",
+                "Leere Hotelzimmer", "Bereits anwesende Besucher", "Wege in die Stadt"
             },
             ["es-ES"] = new[]
             {
@@ -156,7 +167,9 @@ namespace TourismOverhaul
                 "Residentes fuera", "Llegadas por medio",
                 "Carretera", "Tren", "Avión", "Mar",
                 "Gasto turístico", "Hoteles", "Tiendas", "Billetes", "Ocio",
-                "Sin asignar"
+                "Sin asignar",
+                "Demanda turística", "Escasez de alojamiento", "Atractivo",
+                "Habitaciones vacías", "Visitantes ya presentes", "Accesos a la ciudad"
             },
             ["fr-FR"] = new[]
             {
@@ -177,7 +190,9 @@ namespace TourismOverhaul
                 "Résidents absents", "Arrivées par mode",
                 "Route", "Train", "Avion", "Mer",
                 "Dépenses des touristes", "Hôtels", "Commerces", "Billets", "Loisirs",
-                "Non attribué"
+                "Non attribué",
+                "Demande touristique", "Pénurie d'hébergement", "Attrait",
+                "Chambres d'hôtel vides", "Visiteurs déjà présents", "Accès à la ville"
             },
             ["it-IT"] = new[]
             {
@@ -198,7 +213,9 @@ namespace TourismOverhaul
                 "Residenti fuori città", "Arrivi per mezzo",
                 "Strada", "Treno", "Aereo", "Mare",
                 "Spesa turistica", "Hotel", "Negozi", "Biglietti", "Svago",
-                "Non attribuito"
+                "Non attribuito",
+                "Domanda turistica", "Carenza di alloggi", "Attrattiva",
+                "Camere d'albergo vuote", "Visitatori già presenti", "Vie d'accesso alla città"
             },
             ["ja-JP"] = new[]
             {
@@ -212,7 +229,9 @@ namespace TourismOverhaul
                 "混雑した場所は魅力が下がる", "客室料金", "1泊あたりの小遣い",
                 "市内の観光客", "空室数", "稼働率", "外出中の住民", "交通手段別の到着",
                 "道路", "鉄道", "航空", "海路",
-                "観光客の支出", "ホテル", "店舗", "運賃", "レジャー", "未分類"
+                "観光客の支出", "ホテル", "店舗", "運賃", "レジャー", "未分類",
+                "観光需要", "宿泊施設の不足", "魅力度", "空室過剰",
+                "すでに滞在中の観光客", "都市への交通手段"
             },
             ["ko-KR"] = new[]
             {
@@ -226,7 +245,9 @@ namespace TourismOverhaul
                 "혼잡한 장소는 매력이 감소", "객실 요금", "1박당 지출 금액",
                 "도시 내 관광객", "빈 객실", "객실 점유율", "외지에 나간 주민", "교통수단별 도착",
                 "도로", "철도", "항공", "해상",
-                "관광객 지출", "호텔", "상점", "요금", "여가", "미분류"
+                "관광객 지출", "호텔", "상점", "요금", "여가", "미분류",
+                "관광 수요", "숙박 시설 부족", "매력도", "빈 객실",
+                "이미 방문 중인 관광객", "도시 진입로"
             },
             ["pl-PL"] = new[]
             {
@@ -247,7 +268,9 @@ namespace TourismOverhaul
                 "Mieszkańcy poza miastem", "Przyjazdy według środka transportu",
                 "Droga", "Kolej", "Samolot", "Morze",
                 "Wydatki turystów", "Hotele", "Sklepy", "Bilety", "Rozrywka",
-                "Nieprzypisane"
+                "Nieprzypisane",
+                "Popyt turystyczny", "Niedobór miejsc noclegowych", "Atrakcyjność",
+                "Puste pokoje hotelowe", "Turyści już w mieście", "Drogi do miasta"
             },
             ["pt-BR"] = new[]
             {
@@ -268,7 +291,9 @@ namespace TourismOverhaul
                 "Moradores fora da cidade", "Chegadas por meio de transporte",
                 "Rodovia", "Trem", "Avião", "Mar",
                 "Gastos dos turistas", "Hotéis", "Lojas", "Passagens", "Lazer",
-                "Não atribuído"
+                "Não atribuído",
+                "Demanda turística", "Falta de hospedagem", "Atratividade",
+                "Quartos de hotel vazios", "Visitantes já na cidade", "Acessos à cidade"
             },
             ["ru-RU"] = new[]
             {
@@ -290,7 +315,9 @@ namespace TourismOverhaul
                 "Жителей в отъезде", "Прибытия по видам транспорта",
                 "Дорога", "Железная дорога", "Самолёт", "Море",
                 "Расходы туристов", "Отели", "Магазины", "Проезд", "Досуг",
-                "Не распределено"
+                "Не распределено",
+                "Туристический спрос", "Нехватка мест в отелях", "Привлекательность",
+                "Пустые номера", "Туристы уже в городе", "Пути в город"
             },
             ["zh-HANS"] = new[]
             {
@@ -304,7 +331,8 @@ namespace TourismOverhaul
                 "拥挤地点吸引力下降", "客房价格", "每晚消费金额",
                 "城中游客", "空余客房", "入住率", "外出的居民", "各方式到达量",
                 "公路", "铁路", "航空", "海运",
-                "游客消费", "酒店", "商店", "票价", "休闲", "未分类"
+                "游客消费", "酒店", "商店", "票价", "休闲", "未分类",
+                "旅游需求", "住宿供给不足", "吸引力", "客房空置", "已在城中的游客", "进城通道"
             },
             ["zh-HANT"] = new[]
             {
@@ -318,7 +346,8 @@ namespace TourismOverhaul
                 "擁擠地點吸引力下降", "客房價格", "每晚消費金額",
                 "城中遊客", "空房數", "住房率", "外出的居民", "各方式抵達量",
                 "公路", "鐵路", "航空", "海運",
-                "遊客消費", "飯店", "商店", "票價", "休閒", "未分類"
+                "遊客消費", "飯店", "商店", "票價", "休閒", "未分類",
+                "旅遊需求", "住宿供給不足", "吸引力", "客房閒置", "已在城中的遊客", "進城通道"
             }
         };
     }

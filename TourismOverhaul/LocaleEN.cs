@@ -60,6 +60,32 @@ namespace TourismOverhaul
                 { "TourismOverhaul.PANEL[Leisure]", "Leisure" },
                 { "TourismOverhaul.PANEL[Unattributed]", "Unattributed" },
 
+                // The tourist demand bar and its +/- factor list. Factor keys are the mod's own
+                // rather than Game.Simulation.DemandFactor: that enum's TouristDemand member is
+                // declared and never written by the game, and its label is not ours to control.
+                { "TourismOverhaul.DEMAND[Title]", "Tourist Demand" },
+
+                // Shown in the Demand page's detail pane when the tourism section is hovered.
+                //
+                // The section title and this description are both drawn by the mod rather than
+                // looked up by the game. Ten candidate namespaces were registered at once to find
+                // the key format the native section builds, and none of them rendered — so the
+                // game does not derive either string from the demand type's name, and there is
+                // nothing for a locale entry to hook into. See ui/src/mods/tourist-demand.tsx.
+                {
+                    "TourismOverhaul.DEMAND[Description]",
+                    "Tourist demand is how many more visitors your city could carry. It rises " +
+                    "with attractiveness and falls as visitors arrive and fill the rooms you " +
+                    "have. Zone hotels and motels to turn it into arrivals."
+                },
+                // Neutral nouns, as every native demand factor is. The sign carries the direction,
+                // so a judgement in the label makes "+" read as approval of a problem.
+                { "TourismOverhaul.DEMAND[NoRooms]", "Lodging Shortage" },
+                { "TourismOverhaul.DEMAND[Attractiveness]", "Attractiveness" },
+                { "TourismOverhaul.DEMAND[EmptyRooms]", "Empty Hotel Rooms" },
+                { "TourismOverhaul.DEMAND[AtCeiling]", "Visitors Already Here" },
+                { "TourismOverhaul.DEMAND[Connections]", "Ways Into The City" },
+
                 { m_Setting.GetSettingsLocaleID(), "Tourism Overhaul" },
                 { m_Setting.GetOptionTabLocaleID(TourismOverhaulSetting.SectionMain), "Main" },
 
