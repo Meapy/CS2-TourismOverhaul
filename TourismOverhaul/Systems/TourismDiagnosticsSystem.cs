@@ -263,11 +263,13 @@ namespace TourismOverhaul.Systems
                 .m_HotelRoomPercentRequirement;
 
             int wanted = (int)(m_DemandSystem.CurrentTourists * requirement);
-            bool wantsMore = wanted - lodging.y > 0;
+            bool firstBuildException = lodging.y == 0;
+            bool wantsMore = firstBuildException || wanted - lodging.y > 0;
 
             return
                 $"  lodging: {lodging.x} rooms occupied of {lodging.y} total; city wants {wanted} " +
-                $"({requirement:0.00}/tourist) -> hotels will spawn: {(wantsMore ? "YES" : "NO")}";
+                $"({requirement:0.00}/tourist) -> hotels will spawn: {(wantsMore ? "YES" : "NO")}" +
+                $"{(firstBuildException ? " (first build exception)" : string.Empty)}";
         }
 
         protected override void OnDestroy()

@@ -64,7 +64,7 @@ namespace TourismOverhaul
         /// capacity. Lower spreads visitors around sooner; higher lets favourites stay busy.
         /// </summary>
         [SettingsUIHidden]
-        public int AttractionCrowdTolerance { get; set; } = 4;
+        public int AttractionCrowdTolerance { get; set; } = 2;
 
         /// <summary>Upper bound on tourist citizens.</summary>
         [SettingsUISlider(min = 1500f, max = 100000f, step = 500f, unit = "integer")]
