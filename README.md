@@ -129,8 +129,14 @@ A seventh demand bar, in the Demand page and the toolbar stack. `TouristDemandUI
 than it rises), and a factor array refreshed on a 256-tick `UIUpdateState`, capped at five and
 sorted by absolute weight as `FactorInfo.CompareTo` does.
 
-Demand is `(IntrinsicTarget - CurrentTourists) / IntrinsicTarget`. `IntrinsicTarget` rather than
-`TargetTourists` because the latter is lodging-capped and would read zero exactly when hotels fill.
+Demand is `max(0, (IntrinsicTarget - CurrentTourists) - roomsFree) / IntrinsicTarget` — visitors who
+would come and have nowhere to sleep. `IntrinsicTarget` rather than `TargetTourists` because the
+latter is lodging-capped and would read zero exactly when hotels fill, which is the opposite error.
+
+Free rooms are subtracted from the figure itself, not merely listed as a factor beside it. Measuring
+unmet appetite alone read high while over half the city's rooms stood empty — telling the player to
+build when building was the one thing that would not help. So the bar peaks when appetite is high
+and every room is taken, and reaches zero once a room is waiting for everyone who would come.
 
 Nothing is drawn by the mod. Tourism is registered as a seventh member of the game's `DemandType`
 enum with entries in `demandColors` and `demandIcons`, and the native `DemandSection` and
@@ -162,7 +168,20 @@ cannot tell that it is wrong. Pull requests from native speakers are welcome, fo
 - Native shopping trips, pathfinding, outside connections, hotels, costs and vehicles used as-is.
 - Safe to add to and remove from an existing save.
 - Everything is individually toggleable; everything is off or at vanilla values by default except
-  the arrival fixes.
+  the arrival fixes and leisure pricing (below).
+
+The second exception is `LeisureCostPercent`, which ships at 20% rather than vanilla 100%. Measured
+in a live city, non-lodging spending ran at ~24,000 per household per in-game day against a budget
+allowing 1,050, so wallets emptied in under an in-game day and visitors were evicted as
+`TouristNoMoney` in waves long before their stay elapsed. At vanilla pricing the length-of-stay
+mechanic cannot express itself, so a vanilla default would ship a feature that does not work. The
+slider returns it to 100% for anyone who wants the base game's economics.
+
+The lever is `ServiceCompanyData.m_ServiceConsuming`, which `LeisureSystem:102` divides by
+`kUpdateInterval` to get the units a visit takes, and `:125` multiplies by market price to get the
+charge — the same derived-output relationship as lodging. Note `EconomyUtils:548-551` clamps the
+surge multiplier to `[0.7, 1.3]`, so venue capacity can never move a price more than ±30% and is not
+a pricing lever despite looking like one.
 
 One deliberate exception: the optional hotel room multiplier replaces `LodgingProviderSystem` with
 a copy that applies the multiplier. Room count is computed inside a Burst job from values that also

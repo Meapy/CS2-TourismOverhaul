@@ -19,8 +19,8 @@ Publishing is an external write. Build and verify first, then publish deliberate
 
       Three files hold the same artwork — `Thumbnail.svg`, `Render-Thumbnail.ps1` and
       `make-thumbnail.html`. Keep them in step when it changes.
-- [ ] **Screenshots** — `PublishConfiguration.xml` already lists eight, in the order they should
-      appear. The captures live in `mod-page-images/` under names like `image copy 4.png`; this
+- [ ] **Screenshots** — `PublishConfiguration.xml` lists ten, in the order they should
+      appear (the demand page leads; it is captured separately from the nine copied below). The captures live in `mod-page-images/` under names like `image copy 4.png`; this
       copies and renames them into place:
 
       ```powershell
@@ -159,6 +159,23 @@ The publisher accepts exactly three commands, confirmed from `ModPublisher.exe -
 
 There is no `New`. After the first `Publish`, every subsequent release uses `NewVersion`.
 
+`Update` will not revise metadata for a version that is already published. Run it against a
+`ModVersion` that exists and it fails with:
+
+```
+Could not update mod metadata: User version already exists for this mod.
+```
+
+This matters because screenshots, descriptions, tags and links are all metadata and are **not**
+refreshed by `NewVersion` — that uploads the package only. So a screenshot corrected after the
+release has gone out cannot be fixed with either verb at the same version number. The choices are
+to publish a new version, or to edit the listing on the website.
+
+The practical consequence: get screenshots and descriptions right *before* running `NewVersion`,
+because afterwards they are expensive to change. Check the staged files exist and are under 2.1 MB
+first — an image that is missing or oversized fails quietly, which looks identical to a partial
+update.
+
 Authentication comes from the publisher's own Paradox session. Never pass credentials on the command
 line or store them in the repository.
 
@@ -177,7 +194,7 @@ Public page: https://mods.paradoxplaza.com/mods/153543
 - Run from the project directory — the publisher resolves media paths relative to its working
   directory.
 - Upload the exact folder whose hashes were recorded.
-- The publisher writes the assigned `ModId` back into `PublishConfiguration.xml`; commit that.
+- The publisher does **not** write `ModId` back — see above. It is set by hand and already committed.
 
 ## 6. After publishing
 

@@ -50,10 +50,18 @@ namespace TourismOverhaul.Systems
 
         /// <summary>
         /// Updates over which to close the shortfall. This system runs 1,024 times per in-game
-        /// month, so 256 fills a gap over roughly a quarter of a month — brisk enough to feel
-        /// responsive after building hotels, gentle enough not to overshoot and evict.
+        /// month, so 128 fills a gap over roughly an eighth of a month.
+        ///
+        /// Halved from 256, which doubles the arrival rate for any given shortfall: parties is
+        /// deficit / (partySize x this), so the horizon is the rate's only divisor.
+        ///
+        /// Worth being deliberate about, because a faster spawner is only a gain if arrivals
+        /// survive. While leisure was emptying wallets in under an in-game day, the extra arrivals
+        /// were evicted as TouristNoMoney within a day of landing and the rate simply pinned at its
+        /// ceiling — the same waste the comment in OnUpdate records from the old deficit / 16 form.
+        /// This is halved alongside the leisure repricing, not instead of it.
         /// </summary>
-        private const int kFillUpdates = 256;
+        private const int kFillUpdates = 128;
 
         private EntityQuery m_HotelQuery;
         private EntityQuery m_ArrivedQuery;
@@ -101,20 +109,44 @@ namespace TourismOverhaul.Systems
         /// month, where CurrentTourists counts who is standing in the city right now. The two
         /// differ by the average length of stay and are not expected to be close.
         ///
-        /// Counted at dispatch, immediately after the outside connection is resolved. Anything the
-        /// game later discards — a household that never gets initialised — is still counted here,
-        /// so treat this as arrivals sent rather than visitors confirmed.
+        /// Counted on conversion, once a dispatched household has actually been given citizens.
+        /// Anything the game discards before that is never counted, so this is visitors confirmed
+        /// rather than arrivals sent.
         ///
-        /// Reported as a smoothed rate per calendar month, not a running total. See
-        /// UpdateArrivalRate for why a calendar bucket was the wrong shape here.
+        /// A trailing window, not a calendar bucket: this is everyone who came through the door
+        /// over the last in-game month, ending now. See AdvanceArrivalWindow.
         /// </summary>
-        public int4 MonthlyArrivalsByMode => (int4)math.round(m_ArrivalRate);
+        public int4 MonthlyArrivalsByMode => m_WindowTotal;
 
-        // Smoothed arrivals per month, and the accumulator feeding it.
-        private float4 m_ArrivalRate;
-        private int4 m_ArrivalsSinceSample;
-        private float m_LastNormalizedDate;
-        private bool m_HasLastDate;
+        /// <summary>
+        /// One slice of the trailing month, in frames. 262144 frames make an in-game day, which
+        /// with the shipped m_DaysPerYear = 12 is one displayed month, so 128 slices of 2048
+        /// frames tile the window exactly.
+        ///
+        /// The slice size is what the row's resolution costs: the figure steps once per slice
+        /// rather than continuously. At 2048 frames that is 1/128th of an in-game day, a few
+        /// seconds of real play — fine enough to read as sliding, coarse enough that the saved
+        /// buffer is 128 entries rather than the 1024 a per-update slice would need.
+        /// </summary>
+        private const int kFramesPerBucket = 2048;
+
+        /// <summary>Slices in the window. kFramesPerBucket * this == 262144.</summary>
+        private const int kBucketCount = 262144 / kFramesPerBucket;
+
+        private EntityQuery m_ArrivalWindowQuery;
+
+        /// <summary>Ring position being written this update, and the counts destined for it.</summary>
+        private int m_CurrentBucket;
+        private int4 m_BucketAccumulator;
+
+        /// <summary>
+        /// The window sum, kept as a field rather than recomputed on read.
+        ///
+        /// MonthlyArrivalsByMode is read by two UI systems at interface frequency, and walking 128
+        /// buffer entries for each of them would be work done hundreds of times a second to
+        /// produce a number that changes once every few seconds.
+        /// </summary>
+        private int4 m_WindowTotal;
 
         /// <summary>Arrivals so far in the current month, for diagnostics that need a live figure.</summary>
         public int4 ThisMonthArrivals => m_ThisMonthArrivals;
@@ -184,6 +216,11 @@ namespace TourismOverhaul.Systems
 
             m_DemandParameterQuery = GetEntityQuery(ComponentType.ReadOnly<DemandParameterData>());
 
+            // The saved trailing-month arrival window. Created on first use if the save has none.
+            m_ArrivalWindowQuery = GetEntityQuery(
+                ComponentType.ReadWrite<Components.TouristArrivalWindowData>(),
+                ComponentType.ReadWrite<Components.TouristArrivalBucket>());
+
             // Counting query: only households that actually hold citizens count as tourists.
             m_TouristHouseholdQuery = GetEntityQuery(
                 ComponentType.ReadOnly<TouristHousehold>(),
@@ -242,9 +279,14 @@ namespace TourismOverhaul.Systems
                 population = EntityManager.GetComponentData<Population>(city).m_Population;
             }
 
+            // Slide the window before anything is counted, so this update's arrivals land in the
+            // slice they belong to rather than in whichever one was current last time.
+            AdvanceArrivalWindow();
+
             CountConvertedArrivals();
             RollOverMonthIfNeeded();
-            UpdateArrivalRate();
+
+            FlushArrivalWindow();
 
             CurrentTourists = CountTouristCitizens();
 
@@ -581,63 +623,212 @@ namespace TourismOverhaul.Systems
         }
 
         /// <summary>
-        /// Maintains arrivals as a smoothed per-month rate rather than a running total.
+        /// Slides the trailing month forward to the current frame.
         ///
-        /// A calendar bucket was the wrong shape for this row. With m_DaysPerYear = 12 a displayed
-        /// month is one in-game day, which is over an hour of real play at normal speed, so the
-        /// figure climbed for that whole hour before it meant anything — and reset to zero on
-        /// reload, because counters are not saved. A visibly climbing number invites the reading
-        /// that arrivals are running away, when it is simply a total that has not finished.
+        /// The window is a ring of per-slice counts. Sliding it means clearing every slice the
+        /// window has moved past since the last update — those now sit more than a month in the
+        /// past — and pointing the cursor at the slice the current frame falls in. Nothing else
+        /// moves, which is what makes this a window rather than a counter: the oldest slice ages
+        /// out at the same rate the newest fills, so the figure neither climbs all month nor drops
+        /// to zero at a boundary.
         ///
-        /// Measuring elapsed months from normalizedDate rather than from a frame count keeps this
-        /// correct at any speed and for any m_DaysPerYear, since twelve months to a year is a
-        /// calendar fact rather than a game setting.
+        /// A calendar bucket was the wrong shape here, and so was the smoothed rate that replaced
+        /// it. With m_DaysPerYear = 12 a displayed month is one in-game day, over an hour of real
+        /// play, so a total climbed for that whole hour before it meant anything; and both forms
+        /// lived in system fields, which CS2 does not save, so both reset on reload.
+        ///
+        /// Bucket indices are absolute (frameIndex / kFramesPerBucket) rather than ring positions,
+        /// because the distance between two of them is what says how much to clear. Comparing ring
+        /// positions cannot distinguish "one slice on" from "one slice short of a full lap".
         /// </summary>
-        private void UpdateArrivalRate()
+        private void AdvanceArrivalWindow()
         {
-            if (m_TimeSystem == null)
+            if (m_SimulationSystem == null)
             {
                 return;
             }
 
-            float date = math.saturate(m_TimeSystem.normalizedDate);
+            Entity window = GetOrCreateArrivalWindow();
 
-            if (!m_HasLastDate)
-            {
-                m_LastNormalizedDate = date;
-                m_HasLastDate = true;
-                return;
-            }
-
-            float elapsed = date - m_LastNormalizedDate;
-
-            // Year wrap, or the clock moved backwards after a load.
-            if (elapsed < 0f)
-            {
-                elapsed += 1f;
-            }
-
-            float months = elapsed * 12f;
-
-            // Too small an interval makes the division explode; wait for the next sample.
-            if (months < 0.0001f)
+            if (window == Entity.Null)
             {
                 return;
             }
 
-            m_LastNormalizedDate = date;
+            long bucket = m_SimulationSystem.frameIndex / kFramesPerBucket;
 
-            float4 sample = new float4(
-                m_ArrivalsSinceSample.x, m_ArrivalsSinceSample.y,
-                m_ArrivalsSinceSample.z, m_ArrivalsSinceSample.w) / months;
+            Components.TouristArrivalWindowData cursor =
+                EntityManager.GetComponentData<Components.TouristArrivalWindowData>(window);
 
-            m_ArrivalsSinceSample = default;
+            m_CurrentBucket = (int)(bucket % kBucketCount);
 
-            // Seed on the first real sample so the row is meaningful immediately rather than
-            // easing up from zero.
-            m_ArrivalRate = math.all(m_ArrivalRate == 0f)
-                ? sample
-                : math.lerp(m_ArrivalRate, sample, 0.05f);
+            if (cursor.m_LastBucket == bucket)
+            {
+                return;
+            }
+
+            DynamicBuffer<Components.TouristArrivalBucket> buckets =
+                EntityManager.GetBuffer<Components.TouristArrivalBucket>(window);
+
+            // How far the window has slid. A lap or more means every slice now predates the
+            // window, so they all go; -1 (never written) takes the same path, because starting
+            // from an unknown cursor is exactly the case where nothing in the ring can be trusted.
+            //
+            // Treating -1 as a distance of zero instead would walk from bucket 0 to the current
+            // one, which on a mature save is millions of iterations to clear 128 slices.
+            long elapsed = cursor.m_LastBucket < 0
+                ? kBucketCount
+                : bucket - cursor.m_LastBucket;
+
+            if (elapsed < 0 || elapsed >= kBucketCount)
+            {
+                for (int i = 0; i < buckets.Length; i++)
+                {
+                    buckets[i] = default;
+                }
+            }
+            else
+            {
+                // Clear only what the window has slid past, oldest first.
+                for (long i = cursor.m_LastBucket + 1; i <= bucket; i++)
+                {
+                    buckets[(int)(i % kBucketCount)] = default;
+                }
+            }
+
+            cursor.m_LastBucket = bucket;
+            EntityManager.SetComponentData(window, cursor);
+        }
+
+        /// <summary>
+        /// Writes this update's arrivals into the current slice and re-totals the window.
+        ///
+        /// Accumulated during the update and written once, rather than written per arrival,
+        /// because CountConvertedArrivals can attribute several hundred in a single pass and each
+        /// write would otherwise be a separate buffer read-modify-write.
+        /// </summary>
+        private void FlushArrivalWindow()
+        {
+            if (m_ArrivalWindowQuery.IsEmptyIgnoreFilter)
+            {
+                return;
+            }
+
+            Entity window = m_ArrivalWindowQuery.GetSingletonEntity();
+
+            DynamicBuffer<Components.TouristArrivalBucket> buckets =
+                EntityManager.GetBuffer<Components.TouristArrivalBucket>(window);
+
+            if (buckets.Length != kBucketCount)
+            {
+                return;
+            }
+
+            if (math.any(m_BucketAccumulator != 0))
+            {
+                Components.TouristArrivalBucket slice = buckets[m_CurrentBucket];
+
+                slice.m_Road += m_BucketAccumulator.x;
+                slice.m_Train += m_BucketAccumulator.y;
+                slice.m_Air += m_BucketAccumulator.z;
+                slice.m_Ship += m_BucketAccumulator.w;
+
+                buckets[m_CurrentBucket] = slice;
+                m_BucketAccumulator = default;
+            }
+
+            m_WindowTotal = SumWindow(buckets);
+        }
+
+        private static int4 SumWindow(DynamicBuffer<Components.TouristArrivalBucket> buckets)
+        {
+            int4 total = default;
+
+            for (int i = 0; i < buckets.Length; i++)
+            {
+                Components.TouristArrivalBucket slice = buckets[i];
+
+                total.x += slice.m_Road;
+                total.y += slice.m_Train;
+                total.z += slice.m_Air;
+                total.w += slice.m_Ship;
+            }
+
+            return total;
+        }
+
+        /// <summary>
+        /// The saved window entity, created with a full set of empty slices if this save has none.
+        ///
+        /// The buffer is sized once and never resized, so every later update can index it directly.
+        /// A save made before this component existed simply starts with an empty window and fills
+        /// it over the following in-game day.
+        /// </summary>
+        private Entity GetOrCreateArrivalWindow()
+        {
+            if (!m_ArrivalWindowQuery.IsEmptyIgnoreFilter)
+            {
+                Entity existing = m_ArrivalWindowQuery.GetSingletonEntity();
+
+                DynamicBuffer<Components.TouristArrivalBucket> buffer =
+                    EntityManager.GetBuffer<Components.TouristArrivalBucket>(existing);
+
+                // A save written with a different slice count cannot be reinterpreted, so start
+                // the window again rather than reading it as something it is not.
+                if (buffer.Length != kBucketCount)
+                {
+                    buffer.Clear();
+
+                    for (int i = 0; i < kBucketCount; i++)
+                    {
+                        buffer.Add(default);
+                    }
+
+                    EntityManager.SetComponentData(
+                        existing, new Components.TouristArrivalWindowData { m_LastBucket = -1L });
+                }
+
+                return existing;
+            }
+
+            Entity window = EntityManager.CreateEntity(
+                ComponentType.ReadWrite<Components.TouristArrivalWindowData>(),
+                ComponentType.ReadWrite<Components.TouristArrivalBucket>());
+
+            // -1, not the default 0, because 0 is a real bucket index — a new city starts at
+            // frame 0 — and the two mean opposite things when the window is first slid.
+            EntityManager.SetComponentData(
+                window, new Components.TouristArrivalWindowData { m_LastBucket = -1L });
+
+            DynamicBuffer<Components.TouristArrivalBucket> slices =
+                EntityManager.GetBuffer<Components.TouristArrivalBucket>(window);
+
+            for (int i = 0; i < kBucketCount; i++)
+            {
+                slices.Add(default);
+            }
+
+            return window;
+        }
+
+        protected override void OnGameLoadingComplete(
+            Colossal.Serialization.Entities.Purpose purpose, GameMode mode)
+        {
+            base.OnGameLoadingComplete(purpose, mode);
+
+            // The window itself is saved, but the total derived from it is a system field and is
+            // not. Re-derive it here so the row shows the restored figure on the first frame
+            // rather than a zero that lasts until the next update.
+            m_BucketAccumulator = default;
+            m_WindowTotal = default;
+
+            if (m_ArrivalWindowQuery.IsEmptyIgnoreFilter)
+            {
+                return;
+            }
+
+            m_WindowTotal = SumWindow(EntityManager.GetBuffer<Components.TouristArrivalBucket>(
+                m_ArrivalWindowQuery.GetSingletonEntity()));
         }
 
         /// <summary>
@@ -727,19 +918,19 @@ namespace TourismOverhaul.Systems
             {
                 case 1:
                     m_ThisMonthArrivals.y += citizens;
-                    m_ArrivalsSinceSample.y += citizens;
+                    m_BucketAccumulator.y += citizens;
                     break;
                 case 2:
                     m_ThisMonthArrivals.z += citizens;
-                    m_ArrivalsSinceSample.z += citizens;
+                    m_BucketAccumulator.z += citizens;
                     break;
                 case 3:
                     m_ThisMonthArrivals.w += citizens;
-                    m_ArrivalsSinceSample.w += citizens;
+                    m_BucketAccumulator.w += citizens;
                     break;
                 default:
                     m_ThisMonthArrivals.x += citizens;
-                    m_ArrivalsSinceSample.x += citizens;
+                    m_BucketAccumulator.x += citizens;
                     break;
             }
         }

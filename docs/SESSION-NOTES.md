@@ -3,6 +3,107 @@
 Findings and decisions that are expensive to rediscover. Everything here was established by reading
 the decompiled game or by measurement in a live city; nothing is assumed.
 
+## The surge multiplier is clamped, and scaling capacity moves it the wrong way
+
+`EconomyUtils.GetServicePriceMultiplier:548-551`:
+
+```csharp
+return math.lerp(0.7f, 1.3f, math.saturate(1f - serviceAvailable / (float)maxServiceAvailable));
+```
+
+Two things follow, and `LeisurePricingSystem` originally got both backwards.
+
+**It is clamped to [0.7, 1.3].** Whatever else is true, this term can move a price by at most ±30%.
+It can never explain a large overspend, so it is never the right place to look for one.
+
+**Raising `m_MaxService` raises the price.** For a given stock, a larger maximum shrinks
+`available/max`, which moves the lerp toward 1.3. Raising it also lifts the production ceiling so
+stock can grow to meet it, which pulls back the other way — the net is genuinely ambiguous. What is
+not ambiguous is that "more capacity means cheaper visits" is not a safe reading of this function.
+
+The lever that does scale the charge is `m_ServiceConsuming`, at `LeisureSystem:102` and `:125`:
+
+```csharp
+num2 = math.max((int)((float)serviceCompanyData.m_ServiceConsuming / kUpdateInterval), 1);
+int num4 = (int)((float)num2 * marketPrice * num3);
+```
+
+Same shape as lodging: the price is derived output, consumption is the input. Note `num2` also
+comes out of the venue's stock, so cutting it leaves availability higher and nudges the surge term
+toward 0.7 as a second-order effect — and note the `max(..., 1)` floor, which is why scaling below
+`kUpdateInterval` (5) does nothing at all.
+
+Measured, before the fix: non-lodging spending ran at ~24,000 per household per in-game day against
+a budget allowing 1,050, i.e. ~23x. Leisure was ~71% of it. Wallets emptied in well under one
+in-game day and tourists were evicted as `TouristNoMoney` in waves — `NoTarget` and `NoHotel` stayed
+flat at 5 and 11-13 throughout, so it was never routing or lodging.
+
+**Revenue caveat.** Money paid and stock consumed both scale with `num2`, so revenue per unit of
+stock is unchanged, but revenue per visit falls with the setting. Venues earn proportionally less
+unless visit numbers rise to compensate. Watch for leisure company insolvency after a large cut.
+
+## What the guest pays is not what the hotel receives
+
+`LodgingProviderJob.Execute:138-158` settles the two sides with different arithmetic:
+
+```csharp
+float num5 = num4 * marketPrice;                                  // per guest, per update
+EconomyUtils.AddResources(Money, -(int)num5, m_Resources[renter]);   // :145 — truncated
+int amount = Mathf.RoundToInt(num5 * (float)num6);                   // :148
+EconomyUtils.AddResources(Money, amount, m_Resources[entity]);       // :150 — rounded once
+```
+
+A wallet loses `(int)num5`; the company receives the untruncated total rounded once over the whole
+hotel. At the shipped rate (30/32 x 50 = 46.875 → 46) that is about 2% apart. The spending ledger
+measures money leaving tourists, so it must take `guests x (int)num5` — the company's receipt is a
+different quantity that happens to look like the same one.
+
+`HotelCapacitySystem` was reporting the company figure. Now both its paths report the wallet one.
+
+## Observing a native system instead of replacing it
+
+`HotelRoomMultiplier` defaults to 1, and the multiplier being above 1 is `HotelCapacitySystem`'s
+enable condition — so on a default setup it stood down, `LodgingProviderSystem` did the billing,
+and `LodgingChargedSinceReset` stayed zero. Hotel spending read 0$ for every player who had not
+raised the multiplier, and every other category's share was overstated to match.
+
+The fix is an observation walk on the inactive branch: reproduce the native guest count, multiply
+by the traced per-guest charge, write nothing. Two things make it safe to run beside a system that
+is live:
+
+- **The count does not depend on ordering.** Non-tourist renters are dropped and the overflow above
+  capacity is evicted (`:117-137`) before anyone is billed, and both are deterministic from state
+  that can be read. Applying the same filters gives the same number whether the native job has
+  already run this frame or is about to.
+- **Reads go through `EntityManager`, not chunk handles.** `EntityManager.GetBuffer` settles the
+  native job's writes to `Renter` before the read; `ToArchetypeChunkArray` does not, and would race
+  it.
+
+The tick that hands the native system back is skipped. On that tick there is no charge to attribute
+either way — the native system was disabled when it would have run, or we billed the same guests
+ourselves — so counting it would report money nobody paid.
+
+## The /mo. row is a sliding window, and windows have to be saved
+
+Two earlier attempts at this row failed the same way: a calendar accumulator, then a smoothed rate,
+both held in system fields. CS2 saves entities, not systems, so both reset on reload — and since a
+displayed month is one in-game day, over an hour of real play, they spent most of their lives
+meaningless.
+
+It is now a ring of 128 per-slice counts of 2048 frames each, tiling the 262144-frame window
+exactly, on a serialized singleton with a `DynamicBuffer`. Two details that are easy to get wrong:
+
+- **Bucket indices must be absolute** (`frameIndex / kFramesPerBucket`), not ring positions. The
+  distance between two absolute indices is what says how many slices to clear; ring positions
+  cannot tell "one slice on" from "one slice short of a full lap".
+- **The "never written" sentinel is -1 and must not be treated as a distance of zero.** Doing so
+  walks from bucket 0 to the current one — millions of iterations on a mature save — to clear 128
+  slices. Both -1 and any gap of a lap or more mean the same thing: clear everything.
+
+The window total is cached in a field and re-derived in `OnGameLoadingComplete`. Two UI systems read
+it at interface frequency, and summing 128 entries for each of them would be work done hundreds of
+times a second for a number that changes every few seconds.
+
 ## The frontend cannot be read, only measured
 
 `F:\CS2Decompiled` holds the C# assemblies only. The interface is TypeScript compiled into packed

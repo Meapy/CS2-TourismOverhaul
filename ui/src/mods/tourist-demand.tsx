@@ -115,9 +115,9 @@ const noop = () => {};
 const ENGLISH: Record<string, string> = {
   Title: "Tourist Demand",
   Description:
-    "Tourist demand is how many more visitors your city could carry. It rises with " +
-    "attractiveness and falls as visitors arrive and fill the rooms you have. Zone hotels and " +
-    "motels to turn it into arrivals.",
+    "Tourist demand is how many visitors would come but have nowhere to stay. It rises with " +
+    "attractiveness and as your hotels fill, and falls to nothing once there is a room waiting " +
+    "for everyone who wants one. Zone hotels and motels while it is high.",
   // A neutral noun, as the native factors all are ("Unoccupied Buildings", "Local Demand"). The
   // sign says which way it pushes demand, so a judgement in the label makes "+" read as approval
   // of a problem.

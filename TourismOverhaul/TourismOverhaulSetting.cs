@@ -121,11 +121,31 @@ namespace TourismOverhaul
         public int WealthVariationPercent { get; set; } = 100;
 
         /// <summary>
-        /// Service capacity given to leisure venues, which lowers their surge pricing.
+        /// What a visit to a leisure venue costs, as a percentage of the game's own price.
         ///
-        /// A visit costs consumption x market price x a multiplier that rises as the venue's stock
-        /// runs down. Tourists visit constantly, drain venues and pay the higher price they caused —
-        /// measured at 93% of all tourist spending. More capacity means a lower multiplier.
+        /// Leisure is far and away the largest drain on a visitor's wallet — measured at roughly
+        /// 24,000 per household per in-game day against a budget that allowed 1,050, which emptied
+        /// wallets in under a day and evicted the visitor as TouristNoMoney long before their stay
+        /// was up. Lowering this is what lets a visitor last the length of stay they were given.
+        ///
+        /// Scales the venue's consumption per visit, which is what the charge is computed from —
+        /// the same relationship as rooms, where the nightly rate is derived from lodging consumed
+        /// rather than authored directly. Below about 10% it stops biting, because the game floors
+        /// the amount consumed per visit at one unit.
+        /// </summary>
+        /// Defaulted here as well as in SetDefaults, because a player upgrading from a build
+        /// without this setting has no saved value for it and takes whatever the constructor
+        /// leaves. Leaving that at 100 would ship the fix switched off for exactly the saves that
+        /// need it.
+        [SettingsUISlider(min = 5f, max = 200f, step = 5f, unit = "percentage")]
+        [SettingsUISection(SectionMain, GroupDemand)]
+        public int LeisureCostPercent { get; set; } = 20;
+
+        /// <summary>
+        /// Service capacity given to leisure venues.
+        ///
+        /// Kept hidden and left at its default, because it is a much weaker lever than it looks —
+        /// see LeisurePricingSystem. Prefer LeisureCostPercent for changing what a visit costs.
         /// </summary>
         [SettingsUIHidden]
         public int LeisureCapacityMultiplier { get; set; } = 4;
@@ -270,7 +290,7 @@ namespace TourismOverhaul
         /// </summary>
         [SettingsUISlider(min = 1f, max = 256f, step = 1f, unit = "integer")]
         [SettingsUISection(SectionMain, GroupDemand)]
-        public int MaxArrivalsPerUpdate { get; set; } = 24;
+        public int MaxArrivalsPerUpdate { get; set; } = 128;
 
         /// <summary>Occupancy the city sizes demand against.</summary>
         [SettingsUIHidden]
@@ -385,6 +405,11 @@ namespace TourismOverhaul
             LodgingCostPercent = 100;
             SpendingPerNightPercent = 75;
             WealthVariationPercent = 100;
+
+            // 20% of the authored price. Measured burn was ~23x the budgeted allowance, and the
+            // consumption floor at LeisureSystem:102 caps how far this can usefully go, so this is
+            // most of the available travel rather than a cautious first step.
+            LeisureCostPercent = 20;
             LeisureCapacityMultiplier = 5;
 
             ArrivalWeightRoad = 5;

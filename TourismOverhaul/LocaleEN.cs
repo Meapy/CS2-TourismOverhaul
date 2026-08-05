@@ -74,9 +74,10 @@ namespace TourismOverhaul
                 // nothing for a locale entry to hook into. See ui/src/mods/tourist-demand.tsx.
                 {
                     "TourismOverhaul.DEMAND[Description]",
-                    "Tourist demand is how many more visitors your city could carry. It rises " +
-                    "with attractiveness and falls as visitors arrive and fill the rooms you " +
-                    "have. Zone hotels and motels to turn it into arrivals."
+                    "Tourist demand is how many visitors would come but have nowhere to stay. It " +
+                    "rises with attractiveness and as your hotels fill, and falls to nothing once " +
+                    "there is a room waiting for everyone who wants one. Zone hotels and motels " +
+                    "while it is high."
                 },
                 // Neutral nouns, as every native demand factor is. The sign carries the direction,
                 // so a judgement in the label makes "+" read as approval of a problem.
@@ -456,6 +457,25 @@ namespace TourismOverhaul
                     "instead of drifting apart.\n\n" +
                     "Hotels earn less per guest at lower settings. That is the honest cost of " +
                     "cheaper rooms."
+                },
+                {
+                    m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.LeisureCostPercent)),
+                    "Leisure venue cost"
+                },
+                {
+                    m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.LeisureCostPercent)),
+                    "What a visit to a museum, park, bar or other leisure venue costs, against the " +
+                    "base game's own price.\n\n" +
+                    "Leisure is by far the biggest drain on a visitor's wallet. Visitors have no " +
+                    "cooldown between outings, so they go out constantly, and at the base game's " +
+                    "prices they can run themselves broke in under a day and leave long before " +
+                    "their stay is up. If your tourist numbers collapse with visitors departing " +
+                    "for lack of money, this is the setting to lower.\n\n" +
+                    "Below about 10% it stops making any difference, because the game charges for " +
+                    "at least one unit per visit however cheap it gets.\n\n" +
+                    "This applies to residents as well as visitors — the price belongs to the " +
+                    "venue, not the customer — so your own citizens get cheaper days out too, and " +
+                    "the venues earn less per visit."
                 },
                 {
                     m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.SpendingPerNightPercent)),

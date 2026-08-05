@@ -120,7 +120,17 @@ namespace TourismOverhaul
             "@TouristSpending", "@Hotels", "@Shops", "@Fares", "@Leisure", "@Unattributed",
 
             // The tourist demand bar title and its factor labels.
-            "!Title", "!NoRooms", "!Attractiveness", "!EmptyRooms", "!AtCeiling", "!Connections"
+            "!Title", "!NoRooms", "!Attractiveness", "!EmptyRooms", "!AtCeiling", "!Connections",
+
+            // The detail pane text. Short enough to translate with confidence, unlike the settings
+            // descriptions, and it is the one place the bar explains what it means.
+            "!Description",
+
+            // Appended rather than filed next to the other settings labels above. Every locale
+            // array below is positional, so inserting mid-list would silently shift all eleven of
+            // them by one; appending leaves them correct and simply shorter than Keys, which For()
+            // already handles by falling back to English.
+            nameof(TourismOverhaulSetting.LeisureCostPercent)
         };
 
         private static readonly Dictionary<string, string[]> Labels =
@@ -146,7 +156,11 @@ namespace TourismOverhaul
                 "Touristenausgaben", "Hotels", "Geschäfte", "Fahrkarten", "Freizeit",
                 "Nicht zugeordnet",
                 "Tourismusnachfrage", "Mangel an Unterkünften", "Attraktivität",
-                "Leere Hotelzimmer", "Bereits anwesende Besucher", "Wege in die Stadt"
+                "Leere Hotelzimmer", "Bereits anwesende Besucher", "Wege in die Stadt",
+                "Die Tourismusnachfrage zeigt, wie viele Besucher kommen würden, aber keine " +
+                "Unterkunft finden. Sie steigt mit der Attraktivität und je voller Ihre Hotels " +
+                "sind, und fällt auf null, sobald für jeden ein Zimmer bereitsteht. Weisen Sie " +
+                "Hotel- und Motelzonen aus, solange sie hoch ist."
             },
             ["es-ES"] = new[]
             {
@@ -169,7 +183,11 @@ namespace TourismOverhaul
                 "Gasto turístico", "Hoteles", "Tiendas", "Billetes", "Ocio",
                 "Sin asignar",
                 "Demanda turística", "Escasez de alojamiento", "Atractivo",
-                "Habitaciones vacías", "Visitantes ya presentes", "Accesos a la ciudad"
+                "Habitaciones vacías", "Visitantes ya presentes", "Accesos a la ciudad",
+                "La demanda turística es cuántos visitantes vendrían pero no tienen dónde " +
+                "alojarse. Sube con el atractivo y a medida que se llenan tus hoteles, y baja a " +
+                "cero cuando hay una habitación libre para todo el que quiera una. Designa zonas " +
+                "de hoteles y moteles mientras sea alta."
             },
             ["fr-FR"] = new[]
             {
@@ -192,7 +210,11 @@ namespace TourismOverhaul
                 "Dépenses des touristes", "Hôtels", "Commerces", "Billets", "Loisirs",
                 "Non attribué",
                 "Demande touristique", "Pénurie d'hébergement", "Attrait",
-                "Chambres d'hôtel vides", "Visiteurs déjà présents", "Accès à la ville"
+                "Chambres d'hôtel vides", "Visiteurs déjà présents", "Accès à la ville",
+                "La demande touristique correspond au nombre de visiteurs qui viendraient mais " +
+                "n'ont nulle part où loger. Elle augmente avec l'attrait et à mesure que vos " +
+                "hôtels se remplissent, et tombe à zéro dès qu'une chambre attend chaque " +
+                "personne qui en veut une. Zonez des hôtels et des motels tant qu'elle est élevée."
             },
             ["it-IT"] = new[]
             {
@@ -215,7 +237,11 @@ namespace TourismOverhaul
                 "Spesa turistica", "Hotel", "Negozi", "Biglietti", "Svago",
                 "Non attribuito",
                 "Domanda turistica", "Carenza di alloggi", "Attrattiva",
-                "Camere d'albergo vuote", "Visitatori già presenti", "Vie d'accesso alla città"
+                "Camere d'albergo vuote", "Visitatori già presenti", "Vie d'accesso alla città",
+                "La domanda turistica indica quanti visitatori verrebbero ma non hanno dove " +
+                "alloggiare. Cresce con l'attrattiva e man mano che gli hotel si riempiono, e " +
+                "scende a zero quando c'è una camera libera per chiunque ne voglia una. Designa " +
+                "zone per hotel e motel finché è alta."
             },
             ["ja-JP"] = new[]
             {
@@ -231,7 +257,10 @@ namespace TourismOverhaul
                 "道路", "鉄道", "航空", "海路",
                 "観光客の支出", "ホテル", "店舗", "運賃", "レジャー", "未分類",
                 "観光需要", "宿泊施設の不足", "魅力度", "空室過剰",
-                "すでに滞在中の観光客", "都市への交通手段"
+                "すでに滞在中の観光客", "都市への交通手段",
+                "観光需要は、訪れたくても泊まる場所がない観光客の数です。魅力度が高いほど、" +
+                "またホテルが埋まるほど上昇し、希望者全員に空室が行き渡ると0になります。" +
+                "需要が高いうちにホテル・モーテル地区を指定しましょう。"
             },
             ["ko-KR"] = new[]
             {
@@ -247,7 +276,10 @@ namespace TourismOverhaul
                 "도로", "철도", "항공", "해상",
                 "관광객 지출", "호텔", "상점", "요금", "여가", "미분류",
                 "관광 수요", "숙박 시설 부족", "매력도", "빈 객실",
-                "이미 방문 중인 관광객", "도시 진입로"
+                "이미 방문 중인 관광객", "도시 진입로",
+                "관광 수요는 방문하고 싶지만 묵을 곳이 없는 관광객의 수입니다. 매력도가 높을수록, " +
+                "호텔이 찰수록 올라가며, 원하는 모든 사람에게 객실이 돌아가면 0이 됩니다. " +
+                "수요가 높을 때 호텔과 모텔 구역을 지정하세요."
             },
             ["pl-PL"] = new[]
             {
@@ -270,7 +302,11 @@ namespace TourismOverhaul
                 "Wydatki turystów", "Hotele", "Sklepy", "Bilety", "Rozrywka",
                 "Nieprzypisane",
                 "Popyt turystyczny", "Niedobór miejsc noclegowych", "Atrakcyjność",
-                "Puste pokoje hotelowe", "Turyści już w mieście", "Drogi do miasta"
+                "Puste pokoje hotelowe", "Turyści już w mieście", "Drogi do miasta",
+                "Popyt turystyczny to liczba gości, którzy przyjechaliby, ale nie mają gdzie się " +
+                "zatrzymać. Rośnie wraz z atrakcyjnością i zapełnianiem się hoteli, a spada do " +
+                "zera, gdy dla każdego chętnego czeka pokój. Wyznaczaj strefy hoteli i moteli, " +
+                "póki jest wysoki."
             },
             ["pt-BR"] = new[]
             {
@@ -293,7 +329,11 @@ namespace TourismOverhaul
                 "Gastos dos turistas", "Hotéis", "Lojas", "Passagens", "Lazer",
                 "Não atribuído",
                 "Demanda turística", "Falta de hospedagem", "Atratividade",
-                "Quartos de hotel vazios", "Visitantes já na cidade", "Acessos à cidade"
+                "Quartos de hotel vazios", "Visitantes já na cidade", "Acessos à cidade",
+                "A demanda turística é quantos visitantes viriam mas não têm onde ficar. Sobe com " +
+                "a atratividade e conforme seus hotéis lotam, e cai a zero quando há um quarto " +
+                "esperando por todos que queiram um. Zoneie hotéis e motéis enquanto ela estiver " +
+                "alta."
             },
             ["ru-RU"] = new[]
             {
@@ -317,7 +357,11 @@ namespace TourismOverhaul
                 "Расходы туристов", "Отели", "Магазины", "Проезд", "Досуг",
                 "Не распределено",
                 "Туристический спрос", "Нехватка мест в отелях", "Привлекательность",
-                "Пустые номера", "Туристы уже в городе", "Пути в город"
+                "Пустые номера", "Туристы уже в городе", "Пути в город",
+                "Туристический спрос — это сколько гостей приехали бы, но им негде остановиться. " +
+                "Он растёт с привлекательностью и по мере заполнения отелей и падает до нуля, " +
+                "когда номер найдётся для каждого желающего. Отводите зоны под отели и мотели, " +
+                "пока он высок."
             },
             ["zh-HANS"] = new[]
             {
@@ -332,7 +376,9 @@ namespace TourismOverhaul
                 "城中游客", "空余客房", "入住率", "外出的居民", "各方式到达量",
                 "公路", "铁路", "航空", "海运",
                 "游客消费", "酒店", "商店", "票价", "休闲", "未分类",
-                "旅游需求", "住宿供给不足", "吸引力", "客房空置", "已在城中的游客", "进城通道"
+                "旅游需求", "住宿供给不足", "吸引力", "客房空置", "已在城中的游客", "进城通道",
+                "旅游需求是指想来但无处住宿的游客数量。城市吸引力越高、酒店越满，需求就越高；" +
+                "当每位想住宿的游客都有房间时，需求降为零。需求高时请规划酒店和汽车旅馆区。"
             },
             ["zh-HANT"] = new[]
             {
@@ -347,7 +393,9 @@ namespace TourismOverhaul
                 "城中遊客", "空房數", "住房率", "外出的居民", "各方式抵達量",
                 "公路", "鐵路", "航空", "海運",
                 "遊客消費", "飯店", "商店", "票價", "休閒", "未分類",
-                "旅遊需求", "住宿供給不足", "吸引力", "客房閒置", "已在城中的遊客", "進城通道"
+                "旅遊需求", "住宿供給不足", "吸引力", "客房閒置", "已在城中的遊客", "進城通道",
+                "旅遊需求是指想來但無處住宿的遊客數量。城市吸引力越高、飯店越滿，需求就越高；" +
+                "當每位想住宿的遊客都有房間時，需求降為零。需求高時請規劃飯店與汽車旅館區。"
             }
         };
     }

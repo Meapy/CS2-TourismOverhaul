@@ -5,6 +5,81 @@ All notable changes to CS2 Tourism Overhaul.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [semantic](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.1] — 2026-08-05
+
+### Fixed
+
+- **Hotel spending read 0$ in the Tourism Finance view for anyone who had not raised the hotel room
+  multiplier.** `HotelCapacitySystem` treats that multiplier being above 1 as its enable condition,
+  and it defaults to 1 — so on a default setup the system stood down, the native
+  `LodgingProviderSystem` did the billing, and the counter the ledger drains was never incremented.
+  Not hotels versus motels: both were missing equally, and every other category's percentage was
+  overstated to match, for as long as the finance view has existed.
+
+  The inactive path now runs an observation-only walk that counts what the native system charges
+  without charging anything itself. It is not an estimate: `LodgingProviderJob:145` debits each
+  guest `(int)(consumePerUpdate * marketPrice)`, and the guest count is reproduced the way the job
+  arrives at it — non-tourist renters dropped, overflow above capacity evicted — both of which are
+  deterministic from readable state, so the figure is the same whether the native job has already
+  run that frame or is about to.
+
+- **The lodging figure was the hotel's income rather than the guests' outgoings.** `:145` truncates
+  the per-guest charge while `:148` rounds the untruncated total once across the whole hotel, so the
+  two differ by roughly 2%. The ledger measures money leaving visitors, and now reports that side.
+
+- **The arrivals `/mo.` row reset on reload and climbed for an hour of play before it meant
+  anything.** It is now distinct visitors over a trailing in-game month — a companion to *Tourists
+  in city*, which is who is present right now — held as a ring of 128 slices on a serialized
+  singleton so it survives a reload. The two previous attempts at this row both failed on exactly
+  that, because CS2 saves entities and not systems.
+
+- **Visitors went broke and were evicted as `TouristNoMoney` in waves, collapsing tourist numbers.**
+  Measured: non-lodging spending ran at ~24,000 per household per in-game day against a budget
+  allowing 1,050, with leisure ~71% of it. Wallets emptied in well under an in-game day, so the
+  length-of-stay mechanic never got to express itself. Routing and lodging were never involved —
+  `NoTarget` and `NoHotel` held flat at 5 and 11-13 throughout.
+
+- **`LeisurePricingSystem` was scaling the wrong field, in the wrong direction.**
+  `EconomyUtils.GetServicePriceMultiplier:548-551` is `lerp(0.7, 1.3, saturate(1 - available/max))`,
+  so raising a venue's maximum shrinks `available/max` and moves the price *up*, not down — and the
+  whole term is clamped to ±30% regardless, which could never account for a 23x overspend. It now
+  scales `m_ServiceConsuming`, which is what the charge is actually derived from. Capacity scaling
+  is kept, because it lifts the production ceiling and stops venues stalling; it is simply not a
+  pricing lever.
+
+### Added
+
+- **Leisure venue cost**, a new setting under Tourist demand, defaulting to **20%** of the base
+  game's price. This is the fix for the eviction waves above. It applies to residents as well as
+  visitors — the price belongs to the venue, not the customer — so venues earn proportionally less
+  per visit, offset by serving more surviving visitors.
+
+  Below about 10% it stops making any difference: `LeisureSystem:102` floors the units taken per
+  visit at 1.
+
+### Changed
+
+- **The tourist demand bar now measures visitors who would come and have nowhere to stay**, rather
+  than unmet appetite alone. Free rooms are subtracted from the figure itself instead of only
+  appearing as a factor beside it, because the old reading ran high while over half the city's rooms
+  stood empty — telling the player to build when building was the one thing that would not help.
+  *Empty Hotel Rooms* is now reported continuously as a vacancy rate and can sit alongside a
+  shortage, since some visitors having nowhere to stay and other rooms going unused are both true at
+  once.
+
+- **Arrivals fill a shortfall twice as fast.** The fill horizon halved from 256 updates to 128,
+  which doubles the arrival rate for a given deficit. Paired with the leisure repricing deliberately:
+  a faster spawner is only a gain if the arrivals survive long enough to be counted.
+
+### Notes
+
+- Saves from 1.7.0 load unchanged. The trailing-month window is a new serialized component, so an
+  existing save starts it empty and fills it over the following in-game day.
+- `TouristSpendingLedgerSystem` does not subtract the lodging charge from the wallet drop it
+  attributes, so lodging money is counted once under *Hotels* and again under *Leisure* or
+  *Unattributed*. Pre-existing, and small against the totals, but the category split is slightly
+  double-counted until it is addressed.
+
 ## [1.7.0] — 2026-08-05
 
 ### Added

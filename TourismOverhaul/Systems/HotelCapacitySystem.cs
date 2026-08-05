@@ -127,6 +127,10 @@ namespace TourismOverhaul.Systems
             if (!active)
             {
                 RestoreNativeSystem();
+
+                // The native system is doing the billing. Watch it rather than replacing it, so
+                // the finance view still has a lodging figure. See ObserveNativeLodgingCharges.
+                ObserveNativeLodgingCharges();
                 return;
             }
 
@@ -138,8 +142,23 @@ namespace TourismOverhaul.Systems
         /// <summary>
         /// Money charged to guests for rooms since the last reset. Read and cleared by
         /// TouristSpendingLedgerSystem, which owns the reporting period.
+        ///
+        /// Filled by whichever path is live: the mirrored update when the room multiplier is
+        /// raised, and the observation walk below when it is not.
         /// </summary>
         public long LodgingChargedSinceReset { get; set; }
+
+        /// <summary>
+        /// Set when the native system is handed back, so the tick that re-enables it is not
+        /// observed.
+        ///
+        /// Whether LodgingProviderSystem runs before or after this system within a frame is fixed
+        /// by system ordering, but on the tick we re-enable it there is no charge to attribute
+        /// either way: if it sorts before us it has already been skipped this frame, and if it
+        /// sorts after us we have just billed the same guests ourselves. Counting that tick would
+        /// report money nobody paid.
+        /// </summary>
+        private bool m_SkipNextObservation;
 
         private void DisableNativeSystem()
         {
@@ -162,6 +181,7 @@ namespace TourismOverhaul.Systems
 
             m_NativeLodgingProvider.Enabled = true;
             m_NativeDisabled = false;
+            m_SkipNextObservation = true;
             Mod.Log.Info("Native LodgingProviderSystem restored.");
         }
 
@@ -229,6 +249,157 @@ namespace TourismOverhaul.Systems
             m_LastWrittenServiceMultiplier = multiplier;
 
             Mod.Log.Info($"Hotel service capacity scaled x{multiplier} (now {ScaledMaxService} per hotel).");
+        }
+
+        /// <summary>
+        /// Counts what the native system is charging guests, without charging them anything.
+        ///
+        /// The room multiplier defaults to 1, so on a default setup this system stands down and
+        /// LodgingProviderSystem does the billing — and LodgingChargedSinceReset was never
+        /// incremented, leaving hotel spending at 0$ in the finance view for every player who had
+        /// not raised the multiplier, and overstating every other category's share by the same
+        /// amount. This walk closes that gap.
+        ///
+        /// It is an observation, not an estimate. Traced against LodgingProviderJob.Execute
+        /// (:138-158), the native charge per guest is
+        ///
+        ///     float num4 = m_LeisureParameters.m_TouristLodgingConsumePerDay / kUpdatesPerDay;
+        ///     float num5 = num4 * marketPrice;
+        ///     EconomyUtils.AddResources(Resource.Money, -(int)num5, m_Resources[renter]);   (:145)
+        ///
+        /// so a guest's wallet loses exactly (int)num5, truncated, and the total is that times the
+        /// number of guests. Note it is *not* the `amount` the company is credited at :150, which
+        /// is RoundToInt(num5 * guests) — the untruncated price rounded once over the whole hotel.
+        /// The ledger reports money leaving tourists, so the truncated per-guest figure is the
+        /// right one.
+        ///
+        /// The guest count is reproduced the same way the native job arrives at it (:117-137):
+        /// non-tourist renters are not guests, and a hotel whose renters exceed its rooms evicts
+        /// the overflow before billing. Both are deterministic from state that can be read, so the
+        /// count is the same whether the native job has already run this frame or is about to —
+        /// which matters, because system ordering decides that and this must not depend on it.
+        ///
+        /// Nothing here writes. No AddResources, no ServiceAvailable, no LodgingProvider, no
+        /// consumption into the city accumulator, no ServiceCompanyData scaling: every one of
+        /// those is serialized company state that the native system owns while it is enabled, and
+        /// writing any of it would either double-bill guests or fight the system that is running.
+        /// Renters and buffers are read through EntityManager, which settles the native job's
+        /// writes before the read rather than racing them.
+        /// </summary>
+        private void ObserveNativeLodgingCharges()
+        {
+            if (m_NativeLodgingProvider == null || !m_NativeLodgingProvider.Enabled)
+            {
+                return;
+            }
+
+            if (m_SkipNextObservation)
+            {
+                m_SkipNextObservation = false;
+                return;
+            }
+
+            if (m_ProviderQuery.IsEmptyIgnoreFilter || m_LeisureParameterQuery.IsEmptyIgnoreFilter)
+            {
+                return;
+            }
+
+            uint updateFrame = SimulationUtils.GetUpdateFrame(
+                m_SimulationSystem.frameIndex, kUpdatesPerDay, 16);
+
+            LeisureParametersData leisure = m_LeisureParameterQuery.GetSingleton<LeisureParametersData>();
+            ResourcePrefabs resourcePrefabs = m_ResourceSystem.GetPrefabs();
+
+            float marketPrice = EconomyUtils.GetMarketPrice(Resource.Lodging, resourcePrefabs, EntityManager);
+            float consumePerUpdate = (float)leisure.m_TouristLodgingConsumePerDay / kUpdatesPerDay;
+            float pricePerUpdate = consumePerUpdate * marketPrice;
+
+            // The native cast, reproduced. Below one unit of currency per update the truncation
+            // takes the whole charge and guests genuinely pay nothing.
+            int chargePerGuest = (int)pricePerUpdate;
+
+            m_ResourceSystem.AddPrefabsReader(default(JobHandle));
+
+            if (chargePerGuest <= 0)
+            {
+                return;
+            }
+
+            long charged = 0;
+
+            NativeArray<Entity> companies = m_ProviderQuery.ToEntityArray(Allocator.Temp);
+            try
+            {
+                for (int i = 0; i < companies.Length; i++)
+                {
+                    charged += (long)chargePerGuest * GuestsBilledThisUpdate(companies[i], updateFrame);
+                }
+            }
+            finally
+            {
+                companies.Dispose();
+            }
+
+            LodgingChargedSinceReset += charged;
+        }
+
+        /// <summary>
+        /// How many guests the native job will charge at this hotel on this update, or 0 if it is
+        /// not this hotel's turn. Read-only throughout.
+        /// </summary>
+        private int GuestsBilledThisUpdate(Entity company, uint updateFrame)
+        {
+            // UpdateFrame sharding, native :97. A hotel outside this frame's shard is untouched.
+            if (EntityManager.GetSharedComponent<UpdateFrame>(company).m_Index != updateFrame)
+            {
+                return 0;
+            }
+
+            // Native :166-173 — a lodging company with no property has its renters cleared and
+            // bills nobody.
+            if (!EntityManager.HasComponent<PropertyRenter>(company)
+                || !EntityManager.HasBuffer<Renter>(company))
+            {
+                return 0;
+            }
+
+            Entity property = EntityManager.GetComponentData<PropertyRenter>(company).m_Property;
+
+            if (!EntityManager.HasComponent<PrefabRef>(property))
+            {
+                return 0;
+            }
+
+            Entity prefab = EntityManager.GetComponentData<PrefabRef>(property).m_Prefab;
+
+            if (!EntityManager.HasComponent<BuildingData>(prefab)
+                || !EntityManager.HasComponent<BuildingPropertyData>(prefab)
+                || !EntityManager.HasComponent<SpawnableBuildingData>(prefab))
+            {
+                return 0;
+            }
+
+            // The vanilla room count, with no multiplier: the native system is the one running.
+            int roomCount = LodgingProviderSystem.GetRoomCount(
+                EntityManager.GetComponentData<BuildingData>(prefab).m_LotSize,
+                EntityManager.GetComponentData<SpawnableBuildingData>(prefab).m_Level,
+                EntityManager.GetComponentData<BuildingPropertyData>(prefab));
+
+            DynamicBuffer<Renter> renters = EntityManager.GetBuffer<Renter>(company, isReadOnly: true);
+
+            // Native :117-123 — only tourist households are guests.
+            int guests = 0;
+
+            for (int n = 0; n < renters.Length; n++)
+            {
+                if (EntityManager.HasComponent<TouristHousehold>(renters[n].m_Renter))
+                {
+                    guests++;
+                }
+            }
+
+            // Native :124-137 — the overflow above capacity is evicted before anyone is billed.
+            return math.min(guests, roomCount);
         }
 
         /// <summary>
@@ -405,7 +576,13 @@ namespace TourismOverhaul.Systems
             // hopeless: it samples each household only every few thousand frames, so the estimate
             // was a rounding error against the real drop and virtually everything fell through to
             // "other". Here the charge is known precisely, so it is simply reported.
-            LodgingChargedSinceReset += income;
+            //
+            // Not `income`, which is what the company receives. The two differ: each guest is
+            // charged the truncated (int)pricePerUpdate above, while the company is credited the
+            // rounded total of the untruncated price — a couple of percent apart at the shipped
+            // rate. The ledger measures money leaving tourists' wallets, so it takes the figure
+            // the wallets actually lost.
+            LodgingChargedSinceReset += (long)(int)pricePerUpdate * guests;
             int lodgingConsumed = Mathf.CeilToInt(consumePerUpdate * guests);
 
             if (EntityManager.HasBuffer<Game.Economy.Resources>(company))

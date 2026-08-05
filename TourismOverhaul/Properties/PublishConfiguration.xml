@@ -112,6 +112,20 @@ Mark a building as historical and it now adds to your city's appeal. One old hou
 very little; a whole preserved street or quarter is worth travelling for. Tourism becomes
 something a district can earn through its character, instead of something you place.
 
+## Visitors can afford their stay
+
+Leisure is where a visitor's money actually goes, and in the base game it goes fast. Visitors have
+no cooldown between outings, so they go out constantly, and at the game's own prices a visitor can
+run themselves broke in well under a day and leave long before their stay is up. Tourist numbers
+then collapse in waves for no visible reason.
+
+This mod lowers what a visit to a museum, park or bar costs, so a visitor's spending money lasts
+the length of stay they were given and the turnover you see is people going home rather than people
+going bankrupt. Your own citizens get cheaper days out too — the price belongs to the venue, not the
+customer — and the venues earn less per visit in exchange.
+
+Adjustable, and returnable to the base game's pricing if you prefer it.
+
 ## Optional extras
 
 - Hotel room multiplier, 1x to 10x, for zoned commercial hotels. Signature buildings keep their
@@ -133,7 +147,9 @@ tourism — so there is no way to tell whether your city could support more visi
 stopping it.
 
 This mod adds a seventh demand bar, in light red. It sits with the others in the City Information
-panel and in the toolbar, and it reads as how much more tourism your city could carry.
+panel and in the toolbar, and it reads as visitors who would come but have nowhere to stay — so it
+is highest when your city is appealing and every room is taken, and falls to nothing once there is
+a room waiting for everyone who wants one.
 
 Underneath it, the same kind of factor list the other six have, saying what is actually holding
 tourism back — not enough hotel rooms, rooms standing empty, attractiveness, visitors already here,
@@ -168,9 +184,10 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
   <Thumbnail Value="Properties/Thumbnail.png" />
 
   <!--
-    Ordered deliberately: the two zones lead because they are what is new in 1.1.0 and they read
-    instantly as a screenshot. The panel and markers show the simulation working, and the settings
-    go last because nobody installs a mod for its options screen.
+    Ordered deliberately: the demand page leads because it is the one image that reads instantly
+    against a screenshot of the base game. The two zones follow,
+    then the panel and markers showing the simulation working, and the settings go last because
+    nobody installs a mod for its options screen.
 
     Source images live in mod-page-images/ at the repository root; see PUBLISHING.md for the copy
     command that renames them into place.
@@ -179,6 +196,7 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
     that even downscaled. Optimize-Screenshots.ps1 does the conversion. The thumbnail stays PNG —
     it is flat colour, where PNG is both smaller and sharper.
   -->
+  <Screenshot Value="Properties/Screenshots/10-tourist-demand-page.jpg" />
   <Screenshot Value="Properties/Screenshots/01-hotel-zone.jpg" />
   <Screenshot Value="Properties/Screenshots/02-motel-zone.jpg" />
   <Screenshot Value="Properties/Screenshots/03-tourism-panel.jpg" />
@@ -192,7 +210,7 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
   <Tag Value="Code Mod" />
 
   <ForumLink Value="https://forum.paradoxplaza.com/forum/threads/mod-tourism-overhaul-fix-tourism.1937099/" />
-  <ModVersion Value="1.7.0" />
+  <ModVersion Value="1.7.1" />
   <GameVersion Value="1.6.*" />
 
   <!--
@@ -200,26 +218,34 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
     accumulating history here republishes every past release with every upload. The full record
     belongs in CHANGELOG.md.
   -->
-  <ChangeLog>1.7.0
+  <ChangeLog>1.7.1
 
-Tourism now has a demand bar, alongside the game's own six.
+Visitors were going broke and leaving early, which is why tourist numbers collapsed in waves.
 
-It appears in the City Information panel's Demand page with its own list of factors, and as a
-seventh bar in the toolbar stack, in light red.
+Leisure was the cause. Visitors have no cooldown between outings, so they go out constantly, and at
+the base game's prices they were spending roughly twenty times what they carried for the whole trip
+— emptying their wallets in under a day and departing long before their stay was up. There is a new
+Leisure venue cost setting, defaulting to 20% of the base game's price, which is what lets a visitor
+last the stay they were given. Residents get cheaper days out from it too, and venues earn less per
+visit in exchange. Set it back to 100% for the base game's pricing.
 
-The bar shows how much more tourism your city could carry — the gap between the visitors your
-attractiveness could support and the visitors you actually have. The factors underneath say what is
-holding it back: not enough rooms, rooms standing empty, attractiveness, visitors already here, or
-the ways into your city. Hovering the section explains it, the same as the other six.
+Arrivals now fill a shortfall twice as quickly, so your city recovers its visitor numbers at a pace
+you can actually see.
 
-Signs follow the game's convention, where a plus means the factor is pushing demand up. So a
-lodging shortage shows a plus, for the same reason unoccupied buildings show a minus under
-commercial demand.
+Fixed: hotel spending showed 0$ in the Tourism Finance view unless you had raised the hotel room
+multiplier. Hotels and motels were both missing entirely, and every other category's share was
+overstated to match. The figure is now counted where guests are actually billed.
 
-The bar itself is drawn by the game rather than the mod: tourism is registered as a seventh demand
-type, so its colours, arrow, icon and hover behaviour are the game's own.
+Fixed: the arrivals per month row reset every time you loaded a save, and climbed for an hour of
+play before it meant anything. It is now the visitors who arrived over the last in-game month, as a
+rolling figure, and it survives reloading.
 
-No simulation behaviour changed in this version. Saves are unaffected.</ChangeLog>
+Changed: the tourist demand bar now reads as visitors who would come but have nowhere to stay, so
+empty rooms bring it down directly instead of only appearing in the factor list. It used to read
+high while half the city's rooms stood empty, which told you to build when building was the one
+thing that would not help.
+
+Saves from earlier versions load unchanged.</ChangeLog>
 
   <ExternalLink Type="github" Url="https://github.com/Meapy/CS2-TourismOverhaul" />
 </Publish>

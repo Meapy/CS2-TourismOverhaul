@@ -55,6 +55,17 @@ namespace TourismOverhaul.Systems
         private uint m_LastFrameIndex;
 
         /// <summary>
+        /// Free and total hotel rooms, refreshed on the factor cadence rather than per frame.
+        ///
+        /// Demand advances every frame and now depends on the free-room count, but counting them
+        /// walks every lodging chunk — far too much to repeat at UI frequency. Rooms change on the
+        /// scale of buildings being built and guests checking in, so a value up to 256 ticks old is
+        /// well inside what the smoothing would absorb anyway.
+        /// </summary>
+        private int m_RoomsFree;
+        private int m_RoomsTotal;
+
+        /// <summary>
         /// Set on load so the first update snaps to the current value instead of animating up from
         /// zero. Native serializes the smoothed figure to achieve the same thing; we avoid adding a
         /// serialized field to a mod whose save format has already broken once, and the visible
@@ -106,6 +117,13 @@ namespace TourismOverhaul.Systems
 
             uint delta = m_SimulationSystem.frameIndex - m_LastFrameIndex;
 
+            // Refreshed before the first demand figure is computed, and thereafter on the factor
+            // cadence, so ComputeDemand never walks the lodging chunks itself.
+            if (m_SnapNext)
+            {
+                CountRooms(out m_RoomsFree, out m_RoomsTotal);
+            }
+
             if (delta != 0)
             {
                 m_LastFrameIndex = m_SimulationSystem.frameIndex;
@@ -125,6 +143,7 @@ namespace TourismOverhaul.Systems
 
             if (m_UpdateState.Advance())
             {
+                CountRooms(out m_RoomsFree, out m_RoomsTotal);
                 m_Factors.Update();
             }
         }
@@ -143,12 +162,19 @@ namespace TourismOverhaul.Systems
         }
 
         /// <summary>
-        /// How much more tourism the city could carry, as a percentage of what it could carry in
-        /// total.
+        /// Demand for more lodging: visitors who would come and have nowhere to sleep.
         ///
-        /// IntrinsicTarget rather than TargetTourists on purpose. TargetTourists is already capped
-        /// by lodging, so a city with full hotels would report no demand at exactly the moment the
-        /// player most needs to build more.
+        /// Rooms standing empty subtract from it directly. An earlier version measured unmet
+        /// appetite alone, which read high while over half the rooms in the city were vacant —
+        /// telling the player to build when building was the one thing that would not help. Free
+        /// rooms belonged in the number, not only in the factor list beside it.
+        ///
+        /// IntrinsicTarget rather than TargetTourists throughout, because TargetTourists is itself
+        /// capped by lodging: using it would make demand collapse the moment hotels filled, which
+        /// is the opposite error.
+        ///
+        /// So the bar is at its highest when appetite is high and every room is taken, and at zero
+        /// once there is a room waiting for everyone who would come.
         /// </summary>
         private int ComputeDemand()
         {
@@ -161,7 +187,9 @@ namespace TourismOverhaul.Systems
 
             int appetite = math.max(0, ceiling - m_DemandSystem.CurrentTourists);
 
-            return math.clamp(appetite * 100 / ceiling, 0, 100);
+            int unhoused = math.max(0, appetite - m_RoomsFree);
+
+            return math.clamp(unhoused * 100 / ceiling, 0, 100);
         }
 
         /// <summary>
@@ -216,7 +244,10 @@ namespace TourismOverhaul.Systems
             int current = math.max(0, m_DemandSystem.CurrentTourists);
             int appetite = math.max(0, ceiling - current);
 
-            CountRooms(out int roomsFree, out int roomsTotal);
+            // The same counts the demand figure was built from, so the bar and the factors beside
+            // it cannot describe different states.
+            int roomsFree = m_RoomsFree;
+            int roomsTotal = m_RoomsTotal;
 
             if (ceiling == 0)
             {
@@ -236,13 +267,19 @@ namespace TourismOverhaul.Systems
                     math.clamp(unhoused * 100 / math.max(1, appetite), 1, 100)));
             }
 
-            // Rooms standing empty with no appetite to fill them - lodging is not the constraint,
-            // and building more would not help.
-            if (roomsFree > appetite && roomsTotal > 0)
+            // Rooms standing empty, weighted by vacancy rate.
+            //
+            // This used to appear only when free rooms exceeded total appetite, which meant a city
+            // at 42% occupancy showed nothing at all — even though every one of those empty rooms
+            // was subtracting from the demand figure. Vacancy is a continuous pressure, so it is
+            // reported continuously, and it can now sit alongside a shortage rather than being
+            // mutually exclusive with it: some visitors having nowhere to stay and other rooms
+            // going unused are both true at once, and both worth seeing.
+            if (roomsFree > 0 && roomsTotal > 0)
             {
                 factors.Add(new KeyValuePair<string, int>(
                     kFactorEmptyRooms,
-                    -math.clamp((roomsFree - appetite) * 100 / roomsTotal, 1, 100)));
+                    -math.clamp(roomsFree * 100 / roomsTotal, 1, 100)));
             }
 
             // Headroom the city's appeal is generating, against how much of it is already taken up.
