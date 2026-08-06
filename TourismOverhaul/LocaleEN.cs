@@ -35,6 +35,26 @@ namespace TourismOverhaul
                     "longer built in ordinary commercial zones."
                 },
                 { "Assets.NAME[TourismOverhaul Motels]", "Motels" },
+
+                // A drawn line's name in the transport list. NameSystem:544 composes the key as
+                // RoutePrefab.m_LocaleID + "[" + prefab.name + "]" and passes the route number as a
+                // NUMBER argument, so the key is the shared "Assets.ROUTE_NAME" prefix with our
+                // prefab name, and the value needs the {NUMBER} token the stock lines use ("Ship
+                // line 3"). Without this entry the list shows the raw key.
+                //
+                // Note the space in the prefab name is part of the key.
+                {
+                    "Assets.ROUTE_NAME[TourismOverhaul PassengerCruiseLine]",
+                    "Cruise line {NUMBER}"
+                },
+
+                { "Assets.NAME[TourismOverhaul PassengerCruiseLine]", "Passenger Cruise Line" },
+                {
+                    "Assets.DESCRIPTION[TourismOverhaul PassengerCruiseLine]",
+                    "Connects navigation points and harbors to create a cruise ship route over a " +
+                    "seaway. Cruise ships arrive carrying their own passengers, who come ashore to " +
+                    "visit your city and reboard before the ship departs."
+                },
                 {
                     "Assets.DESCRIPTION[TourismOverhaul Motels]",
                     "A commercial zone for motels. Smaller and cheaper than hotels, and well suited " +
@@ -59,6 +79,10 @@ namespace TourismOverhaul
                 { "TourismOverhaul.PANEL[Fares]", "Fares" },
                 { "TourismOverhaul.PANEL[Leisure]", "Leisure" },
                 { "TourismOverhaul.PANEL[Unattributed]", "Unattributed" },
+
+                // Sailing time and shore party size on a docked cruise ship's panel.
+                { "TourismOverhaul.PANEL[CruiseDeparture]", "Departs" },
+                { "TourismOverhaul.PANEL[CruiseAshore]", "Passengers ashore" },
 
                 // The tourist demand bar and its +/- factor list. Factor keys are the mod's own
                 // rather than Game.Simulation.DemandFactor: that enum's TouristDemand member is
@@ -476,6 +500,37 @@ namespace TourismOverhaul
                     "This applies to residents as well as visitors — the price belongs to the " +
                     "venue, not the customer — so your own citizens get cheaper days out too, and " +
                     "the venues earn less per visit."
+                },
+                {
+                    m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.CruiseShoreLeaveHours)),
+                    "Cruise shore leave"
+                },
+                {
+                    m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.CruiseShoreLeaveHours)),
+                    "How long a cruise ship's passengers spend in your city before going back " +
+                    "aboard, in hours.\n\n" +
+                    "The ship waits at the quay for the whole time, so a long shore leave means " +
+                    "fewer sailings and other ships on the line queueing behind it. Passengers are " +
+                    "sent back to the quay for the last quarter of their stay, so give them enough " +
+                    "time to walk there and back.\n\n" +
+                    "Cruise passengers sleep on the ship, so they never need a hotel room and never " +
+                    "compete with your other visitors for one."
+                },
+                {
+                    m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.CruiseShipCapacity)),
+                    "Cruise ship passengers"
+                },
+                {
+                    m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.CruiseShipCapacity)),
+                    "How many passengers a cruise ship brings when it calls at your city.\n\n" +
+                    "A cruise arrives roughly full — its passengers booked the voyage long before " +
+                    "it reached you — so this is the figure the ship sails with. Your city then " +
+                    "swings it by up to 500 either way: an attractive port with room for more " +
+                    "visitors fills its ships, a dull or already-crowded one sees them arrive " +
+                    "half empty.\n\n" +
+                    "These visitors sleep aboard, so they never take a hotel room. They come " +
+                    "ashore to shop and to see the sights, and head back to the quay before the " +
+                    "ship sails."
                 },
                 {
                     m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.SpendingPerNightPercent)),

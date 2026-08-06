@@ -142,6 +142,29 @@ namespace TourismOverhaul
         public int LeisureCostPercent { get; set; } = 20;
 
         /// <summary>
+        /// How long a cruise ship's passengers stay ashore, in in-game hours.
+        ///
+        /// Hours rather than days because a day was too coarse to steer: one in-game day is over an
+        /// hour of real play, so the shortest possible visit was also a very long one. The ship is
+        /// held at the quay for the whole period, which is why the ceiling is low — a vessel parked
+        /// for days is a vessel doing nothing, and the line's other ships bunch up behind it.
+        /// </summary>
+        [SettingsUISlider(min = 2f, max = 48f, step = 1f, unit = "integer")]
+        [SettingsUISection(SectionMain, GroupDemand)]
+        public int CruiseShoreLeaveHours { get; set; } = 8;
+
+        /// <summary>
+        /// How many passengers a cruise ship carries when it calls.
+        ///
+        /// The ship arrives roughly full — its passenger list was sold where the voyage began, not
+        /// by the port it is calling at — so this is the figure, and the city's attractiveness and
+        /// spare capacity swing it by up to 500 either way.
+        /// </summary>
+        [SettingsUISlider(min = 100f, max = 5000f, step = 100f, unit = "integer")]
+        [SettingsUISection(SectionMain, GroupDemand)]
+        public int CruiseShipCapacity { get; set; } = 2000;
+
+        /// <summary>
         /// Service capacity given to leisure venues.
         ///
         /// Kept hidden and left at its default, because it is a much weaker lever than it looks —
@@ -411,6 +434,8 @@ namespace TourismOverhaul
             // most of the available travel rather than a cautious first step.
             LeisureCostPercent = 20;
             LeisureCapacityMultiplier = 5;
+            CruiseShoreLeaveHours = 8;
+            CruiseShipCapacity = 2000;
 
             ArrivalWeightRoad = 5;
             ArrivalWeightTrain = 20;

@@ -5,6 +5,35 @@ All notable changes to CS2 Tourism Overhaul.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [semantic](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Passenger Cruise Line.** A new line tool beside Passenger Ship Line. Draw it from a sea outside
+  connection to a harbour and a cruise ship works the route: it fills with visitors at the map edge,
+  sails in, holds at the quay while its passengers see the city, and leaves with them at the end of
+  shore leave. Cruise passengers sleep aboard, so they never take a hotel room and never compete with
+  your other visitors for one.
+
+  Nobody is teleported or placed by hand at any point. The mod creates visitors at the connection and
+  gives them a reason to travel; the game gives them bodies, routes them, boards them and lands them
+  through its own machinery. The cruise line's map-edge stop is made as attractive as the pathfinder
+  allows and its city pier as unattractive, which is what keeps the ship full of visitors and free of
+  commuters.
+
+- **Cruise shore leave** setting, in hours. How long the ship stays at the quay; passengers are sent
+  back for the last third of it. Defaults to 8.
+
+- **Cruise ship passengers** setting. An upper bound on how many a call brings — the vessel's own
+  authored capacity applies as well, and the smaller of the two wins.
+
+### Known limitations
+
+- Everything the mod writes to a stop applies to the stop rather than the line, so a harbour shared
+  between a cruise line and an ordinary passenger ship line is affected by both.
+- Removing the mod while a ship is alongside leaves a stand-in lodging component on the harbour. Do
+  it between voyages.
+
 ## [1.7.1] — 2026-08-05
 
 ### Fixed

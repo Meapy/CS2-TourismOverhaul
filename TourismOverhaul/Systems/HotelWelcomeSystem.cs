@@ -69,15 +69,23 @@ namespace TourismOverhaul.Systems
             // Nothing downstream needs either component — stocking reads PrefabRef and the
             // Resources buffer, both of which any company has — so the narrower query bought
             // nothing and cost the assets most likely to be a city's flagship hotel.
+            // CruiseTerminalLodging is excluded from both queries. CruiseVoyageSystem gives a
+            // cruise terminal a stand-in LodgingProvider so its passengers count as lodged for
+            // TouristLeaveSystem:68, and because bare LodgingProvider is what identifies a hotel
+            // here, that harbour otherwise reads as a hotel that has just opened — gets a welcome
+            // boost, gets stocked with lodging it cannot sell, and then throws in UpdateBonus
+            // because a harbour has no Renter buffer.
             m_HotelQuery = GetEntityQuery(
                 ComponentType.ReadOnly<LodgingProvider>(),
                 ComponentType.ReadOnly<HotelWelcome>(),
+                ComponentType.Exclude<Components.CruiseTerminalLodging>(),
                 ComponentType.Exclude<Deleted>(),
                 ComponentType.Exclude<Temp>());
 
             m_UnseenHotelQuery = GetEntityQuery(
                 ComponentType.ReadOnly<LodgingProvider>(),
                 ComponentType.Exclude<HotelWelcome>(),
+                ComponentType.Exclude<Components.CruiseTerminalLodging>(),
                 ComponentType.Exclude<Deleted>(),
                 ComponentType.Exclude<Temp>());
         }
@@ -285,7 +293,15 @@ namespace TourismOverhaul.Systems
                     ArchetypeChunk chunk = chunks[c];
                     NativeArray<HotelWelcome> welcomes = chunk.GetNativeArray(ref welcomeHandle);
                     NativeArray<LodgingProvider> providers = chunk.GetNativeArray(ref providerHandle);
-                    BufferAccessor<Renter> renters = chunk.GetBufferAccessor(ref renterHandle);
+
+                    // Renter is not part of the query, so a chunk need not have the buffer and
+                    // GetBufferAccessor returns a default accessor that throws on indexing. This is
+                    // the same guard CleanUpLeakedHouseholds uses, and it matters here for the very
+                    // reason the query was widened above: a signature hotel is placed rather than
+                    // zoned, so it can carry LodgingProvider without the renting components.
+                    bool hasRenters = chunk.Has(ref renterHandle);
+                    BufferAccessor<Renter> renters =
+                        hasRenters ? chunk.GetBufferAccessor(ref renterHandle) : default;
 
                     for (int i = 0; i < chunk.Count; i++)
                     {
@@ -294,7 +310,8 @@ namespace TourismOverhaul.Systems
                             continue;
                         }
 
-                        bonusRooms += math.max(0, providers[i].m_FreeRooms) + renters[i].Length;
+                        bonusRooms += math.max(0, providers[i].m_FreeRooms)
+                                      + (hasRenters ? renters[i].Length : 0);
                         opening++;
                     }
                 }

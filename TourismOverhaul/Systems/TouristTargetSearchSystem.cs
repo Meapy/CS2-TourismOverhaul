@@ -82,8 +82,16 @@ namespace TourismOverhaul.Systems
         /// <summary>Failed searches tolerated before the visitor gives up and leaves.</summary>
         private const int kMaxAttempts = 3;
 
-        /// <summary>Households processed per update, so a large backlog cannot stall a frame.</summary>
-        private const int kMaxPerUpdate = 512;
+        /// <summary>
+        /// Households processed per update, so a large backlog cannot stall a frame.
+        ///
+        /// Raised from 512 for the cruise line, which books a complement in one go: a full ship is
+        /// around seven hundred parties created on a single frame, and at 512 per update they were
+        /// competing with the city's ordinary arrivals for the same budget. The scan itself is what
+        /// costs — a ToEntityArray over every seeker — and that happens once per update either way,
+        /// so lifting the per-update cap adds pathfind requests without adding scans.
+        /// </summary>
+        private const int kMaxPerUpdate = 2048;
 
         private EntityQuery m_SeekerQuery;
         private ComponentTypeSet m_PathfindTypes;
@@ -113,6 +121,13 @@ namespace TourismOverhaul.Systems
         // 64 still clears 2,048 households per 256 frames, which is well above the arrival rate any
         // city sustains, and cuts the scan cost to a quarter. A tourist waits a few frames longer
         // for a destination and nothing else changes.
+        //
+        // Tried at 8 to make a cruise complement appear faster and measured as making no difference
+        // at all — the queue at the map edge read 164 before and 169 after. Target assignment was
+        // never the limiter, and the arithmetic agrees: 2048 per update every 64 frames is hundreds
+        // of thousands of slots across a load window against seven hundred parties. Reverted rather
+        // than left in, because it multiplies a full ToEntityArray over every seeker in the city by
+        // eight for no measured gain.
         public override int GetUpdateInterval(SystemUpdatePhase phase) => 64;
 
         protected override void OnCreate()

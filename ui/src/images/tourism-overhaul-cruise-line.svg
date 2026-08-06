@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+  <!--
+    Passenger Cruise Line tool icon.
+
+    Drawn to match the game's *route tool* icons rather than its zone icons — those are two
+    different families and mixing them looks wrong immediately. A route tool icon is a rounded
+    diamond badge in the transport blue with the vehicle sitting on a lighter water or ground
+    plate, flat-on. The zone icons (tourism-overhaul-hotels.svg and -motels.svg) are 2:1 isometric
+    plates instead; do not copy this one's construction into those or vice versa.
+
+    Palette is the stock one shared with the zone icons: cream #faf7ec for lit surfaces, #e4d8b3
+    for the shaded band, #0071a9 for deep blue, #03243e for windows and portholes, #73e0fc for
+    highlights and water.
+
+    Reads as a cruise liner rather than the stock passenger ferry through three cues, all of which
+    survive at 32px: a long hull that nearly spans the badge, stacked deck tiers stepping up to a
+    bridge, and a single warm funnel. The funnel is the only warm colour in the icon and is what
+    separates it from the all-blue passenger ship line tile at a glance in the toolbar.
+  -->
+  <g id="RouteTourismOverhaulPassengerCruiseLine">
+    <!-- Rounded diamond badge, the shape every route tool shares. -->
+    <path id="badge"
+          d="M16,1.6 Q17.35,1.6 18.25,2.5 L29.5,13.75 Q30.4,14.65 30.4,16 Q30.4,17.35 29.5,18.25
+             L18.25,29.5 Q17.35,30.4 16,30.4 Q14.65,30.4 13.75,29.5 L2.5,18.25 Q1.6,17.35 1.6,16
+             Q1.6,14.65 2.5,13.75 L13.75,2.5 Q14.65,1.6 16,1.6 Z"
+          fill="#2f7fc4"/>
+    <path id="badge-inner"
+          d="M16,3.9 Q16.8,3.9 17.35,4.45 L27.55,14.65 Q28.1,15.2 28.1,16 Q28.1,16.8 27.55,17.35
+             L17.35,27.55 Q16.8,28.1 16,28.1 Q15.2,28.1 14.65,27.55 L4.45,17.35 Q3.9,16.8 3.9,16
+             Q3.9,15.2 4.45,14.65 L14.65,4.45 Q15.2,3.9 16,3.9 Z"
+          fill="#4a97dd"/>
+
+    <!-- Water plate the liner sits on. -->
+    <path id="water"
+          d="M7.6,21.4 L24.4,21.4 Q25.1,21.4 24.7,22 L22.2,25.4 Q21.9,25.8 21.3,25.8
+             L10.7,25.8 Q10.1,25.8 9.8,25.4 L7.3,22 Q6.9,21.4 7.6,21.4 Z"
+          fill="#73e0fc"/>
+
+    <!-- Funnel, the one warm note. Drawn before the decks so the decks overlap its base. -->
+    <path id="funnel" d="M18.3,9.6 L20.6,9.6 L20.6,14.2 L18.3,14.2 Z" fill="#e2683c"/>
+    <path id="funnel-cap" d="M18.3,9.6 L20.6,9.6 L20.6,10.6 L18.3,10.6 Z" fill="#03243e"/>
+
+    <!-- Deck tiers, stepping up toward the bridge. -->
+    <path id="deck-upper" d="M13.2,11.4 L18.3,11.4 L18.3,14.4 L13.2,14.4 Z" fill="#faf7ec"/>
+    <path id="deck-lower" d="M10.4,14.4 L21.6,14.4 L21.6,17.6 L10.4,17.6 Z" fill="#faf7ec"/>
+
+    <!-- Hull: wide at the deck line, tapering to the waterline. -->
+    <path id="hull" d="M6.6,17.6 L25.4,17.6 L23.2,21.6 L8.8,21.6 Z" fill="#faf7ec"/>
+    <path id="hull-shade" d="M6.6,17.6 L25.4,17.6 L24.9,18.5 L7.1,18.5 Z" fill="#e4d8b3"/>
+    <path id="boot-top" d="M8.05,20.4 L23.95,20.4 L23.2,21.6 L8.8,21.6 Z" fill="#0071a9"/>
+
+    <!-- Portholes and bridge windows. -->
+    <g id="portholes" fill="#03243e">
+      <path d="M10.1,18.9 L11.5,18.9 L11.5,20 L10.1,20 Z"/>
+      <path d="M12.9,18.9 L14.3,18.9 L14.3,20 L12.9,20 Z"/>
+      <path d="M15.7,18.9 L17.1,18.9 L17.1,20 L15.7,20 Z"/>
+      <path d="M18.5,18.9 L19.9,18.9 L19.9,20 L18.5,20 Z"/>
+      <path d="M11.5,15.4 L20.5,15.4 L20.5,16.6 L11.5,16.6 Z"/>
+      <path d="M14.1,12.4 L17.4,12.4 L17.4,13.5 L14.1,13.5 Z"/>
+    </g>
+  </g>
+</svg>

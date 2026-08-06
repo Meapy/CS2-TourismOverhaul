@@ -1,6 +1,14 @@
 import { ModRegistrar } from "cs2/modding";
 import { bindValue, useValue } from "cs2/api";
-import { logInfoviewModules } from "mods/find-tourism-panel";
+import {
+  logInfoviewModules,
+  logSelectedVehicleModules,
+} from "mods/find-tourism-panel";
+import {
+  wrapVehiclePanel,
+  VEHICLE_PANEL_PATH,
+  VEHICLE_PANEL_EXPORT,
+} from "mods/cruise-departure";
 import { wrapTourismPanel, TourismFinancePanel } from "mods/tourism-panel";
 import {
   wrapDemandSection,
@@ -16,6 +24,7 @@ import {
 import hotelsIcon from "images/tourism-overhaul-hotels.svg";
 import motelsIcon from "images/tourism-overhaul-motels.svg";
 import financeIcon from "images/tourism-finance.svg";
+import cruiseLineIcon from "images/tourism-overhaul-cruise-line.svg";
 
 /**
  * Module path and export name of the native Tourism info view panel.
@@ -28,9 +37,38 @@ const TOURISM_PANEL_PATH =
   "game-ui/game/components/infoviews/active-infoview-panel/panels/tourism-infoview-panel.tsx";
 const TOURISM_PANEL_EXPORT = "TourismInfoviewPanel";
 
+/**
+ * Appends the cruise sailing time to the public transport vehicle panel.
+ *
+ * Path and export were discovered with ModuleRegistry.find and pinned from UI.log. find rather than
+ * get, because get throws when a module is absent and a moved panel should cost a log line rather
+ * than the whole interface.
+ */
+function registerCruiseDeparture(moduleRegistry: any): void {
+  const matches = moduleRegistry.find(VEHICLE_PANEL_PATH) ?? [];
+
+  const found = matches.some(
+    ([path, ...exports]: [string, ...string[]]) =>
+      path === VEHICLE_PANEL_PATH && exports.includes(VEHICLE_PANEL_EXPORT)
+  );
+
+  if (!found) {
+    console.warn(
+      `[TourismOverhaul] "${VEHICLE_PANEL_EXPORT}" not found at "${VEHICLE_PANEL_PATH}". ` +
+        `Cruise ships will not show a sailing time. Pick the correct path from the list below.`
+    );
+    logSelectedVehicleModules(moduleRegistry);
+    return;
+  }
+
+  moduleRegistry.extend(VEHICLE_PANEL_PATH, VEHICLE_PANEL_EXPORT, wrapVehiclePanel);
+  console.log("[TourismOverhaul] Cruise departure row registered.");
+}
+
 const register: ModRegistrar = (moduleRegistry) => {
   console.log(
-    `[TourismOverhaul] Icons emitted at ${hotelsIcon}, ${motelsIcon} and ${financeIcon}.`
+    `[TourismOverhaul] Icons emitted at ${hotelsIcon}, ${motelsIcon}, ${financeIcon} ` +
+      `and ${cruiseLineIcon}.`
   );
 
   // Note: moduleRegistry.get throws when the module is absent, so existence is checked with
@@ -53,6 +91,8 @@ const register: ModRegistrar = (moduleRegistry) => {
 
   moduleRegistry.extend(TOURISM_PANEL_PATH, TOURISM_PANEL_EXPORT, wrapTourismPanel);
   console.log("[TourismOverhaul] Tourism panel extended.");
+
+  registerCruiseDeparture(moduleRegistry);
 
   registerFinancePanel(moduleRegistry);
   registerDemand(moduleRegistry);

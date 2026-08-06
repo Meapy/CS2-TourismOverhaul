@@ -130,7 +130,9 @@ namespace TourismOverhaul
             // array below is positional, so inserting mid-list would silently shift all eleven of
             // them by one; appending leaves them correct and simply shorter than Keys, which For()
             // already handles by falling back to English.
-            nameof(TourismOverhaulSetting.LeisureCostPercent)
+            nameof(TourismOverhaulSetting.LeisureCostPercent),
+            nameof(TourismOverhaulSetting.CruiseShoreLeaveHours),
+            nameof(TourismOverhaulSetting.CruiseShipCapacity)
         };
 
         private static readonly Dictionary<string, string[]> Labels =
