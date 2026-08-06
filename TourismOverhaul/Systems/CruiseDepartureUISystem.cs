@@ -33,6 +33,9 @@ namespace TourismOverhaul.Systems
         private SelectedInfoUISystem m_SelectedInfoUISystem;
         private Game.Simulation.SimulationSystem m_SimulationSystem;
 
+        /// <summary>The game's clock, for turning a departure frame into a time the player reads.</summary>
+        private Game.Simulation.TimeSystem m_TimeSystem;
+
         private ValueBinding<bool> m_Docked;
         private ValueBinding<string> m_DepartureTime;
         private ValueBinding<int> m_MinutesRemaining;
@@ -49,6 +52,7 @@ namespace TourismOverhaul.Systems
 
             m_SelectedInfoUISystem = World.GetOrCreateSystemManaged<SelectedInfoUISystem>();
             m_SimulationSystem = World.GetOrCreateSystemManaged<Game.Simulation.SimulationSystem>();
+            m_TimeSystem = World.GetOrCreateSystemManaged<Game.Simulation.TimeSystem>();
 
             AddBinding(m_Docked = new ValueBinding<bool>(kGroup, "cruiseDocked", false));
             AddBinding(m_DepartureTime = new ValueBinding<string>(kGroup, "cruiseDeparture", string.Empty));
@@ -91,7 +95,7 @@ namespace TourismOverhaul.Systems
             uint frame = m_SimulationSystem.frameIndex;
 
             m_Docked.Update(true);
-            m_DepartureTime.Update(FormatTimeOfDay(call.m_ReboardFrame));
+            m_DepartureTime.Update(FormatTimeOfDay(call.m_ReboardFrame, frame));
             m_MinutesRemaining.Update(MinutesBetween(frame, call.m_ReboardFrame));
 
             // The native PASSENGERS row counts the ship's own buffer, which is correctly zero while
@@ -172,17 +176,43 @@ namespace TourismOverhaul.Systems
         /// game builds never leaves January and its Month is permanently 1. See the time section of
         /// docs/SESSION-NOTES.md.
         /// </summary>
-        private static string FormatTimeOfDay(uint frame)
+        /// <summary>
+        /// The clock time a future frame falls on, as the game itself would show it.
+        ///
+        /// Derived from the current time of day plus the gap, rather than from the frame index
+        /// alone. <c>frame % 262144</c> looks like it should give the time of day and does not:
+        /// TimeSystem.GetTicks:89-91 counts from <c>TimeData.m_FirstFrame</c> and adds the map's
+        /// authored time and date offsets before taking the remainder, so a raw frame index is out
+        /// by a constant that depends on when the city was founded. The displayed departure was
+        /// wrong by that constant in every save.
+        ///
+        /// Working from the delta sidesteps all of it. Ticks advance one per frame, so the gap
+        /// between now and the departure is the same in both, and TimeSystem.normalizedTime is
+        /// already the game's own fraction of the current day — offsets applied.
+        ///
+        /// Hours and minutes are floored rather than rounded, matching GetCurrentDateTime:191-192,
+        /// so this agrees with the clock in the corner rather than being a minute ahead of it.
+        /// </summary>
+        private string FormatTimeOfDay(uint targetFrame, uint currentFrame)
         {
-            float dayFraction = (float)(frame % kFramesPerDay) / kFramesPerDay;
+            if (m_TimeSystem == null)
+            {
+                return string.Empty;
+            }
 
-            int totalMinutes = (int)math.round(dayFraction * 24f * 60f);
+            float dayFraction = m_TimeSystem.normalizedTime;
 
-            // Rounding can land exactly on midnight of the next day.
-            totalMinutes %= 24 * 60;
+            if (targetFrame > currentFrame)
+            {
+                dayFraction += (targetFrame - currentFrame) / (float)kFramesPerDay;
+            }
 
-            int hours = totalMinutes / 60;
-            int minutes = totalMinutes % 60;
+            dayFraction = math.frac(dayFraction);
+
+            float hourOfDay = 24f * dayFraction;
+
+            int hours = (int)math.floor(hourOfDay);
+            int minutes = (int)math.floor(60f * (hourOfDay - hours));
 
             return $"{hours:00}:{minutes:00}";
         }

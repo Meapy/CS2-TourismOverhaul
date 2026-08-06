@@ -76,6 +76,21 @@ namespace TourismOverhaul.Systems
         /// </summary>
         private const float kLastCallFraction = 0.33f;
 
+        /// <summary>
+        /// Most of a stay a party may cut short, as a fraction. Some passengers have seen enough.
+        /// </summary>
+        private const float kEarlyReturnFraction = 0.33f;
+
+        /// <summary>
+        /// Share of a complement that stays aboard rather than going ashore at a call.
+        ///
+        /// Not everyone gets off at every port. These parties are simply not adopted: they keep no
+        /// component of this mod's, remain in the vessel's own passenger buffer, and sail on. The
+        /// ashore count and the recall therefore never see them, which is correct — they are the
+        /// ship's business and not the city's.
+        /// </summary>
+        private const float kStayAboardFraction = 0.1f;
+
         /// <summary>Ship arrivals are mode 3 in ArrivalMode's road/train/air/ship ordering.</summary>
         private const byte kArrivalModeShip = 3;
 
@@ -937,7 +952,7 @@ namespace TourismOverhaul.Systems
 
             int placed = m_DemandSystem.CreateTouristHouseholdsAt(
                 connection, math.min(shortfall, kTopUpBatch), kArrivalModeShip, commandBuffer,
-                created, out int expected);
+                created, out int expected) * 2;
 
             if (placed <= 0)
             {
@@ -1141,17 +1156,60 @@ namespace TourismOverhaul.Systems
                 // passenger does, since they are already aboard when they arrive.
                 bool atMapEdge = StopIsOutsideConnection(stop);
 
-                ushort wanted = atMapEdge ? (ushort)0 : kPierWaitingTime;
+                // The pier is expensive while the shore party is out, and cheap once they are
+                // coming back.
+                //
+                // Cost belongs to the stop and cannot tell one traveller from another, so a penalty
+                // heavy enough to keep the city's commuters off also refuses the cruise passengers
+                // their way home — they walked to the quay and then stood there, because boarding
+                // was priced out of reach. What the stop can distinguish is *when*.
+                //
+                // For most of a call the vessel is idle at the quay with its doors open and needs
+                // protecting from commuters, so the penalty stands. Inside last call the complement
+                // is walking back and needs to board, so it lifts. Locals get a window in which the
+                // line is attractive, but it is the window in which the ship is about to leave, so
+                // the ride they get is the one out of the city — which is the ship's own direction
+                // of travel and costs the player nothing.
+                bool boarding = !atMapEdge && ReturningToQuay(vehicle);
+
+                ushort wanted = (atMapEdge || boarding) ? (ushort)0 : kPierWaitingTime;
 
                 WaitingPassengers queue = EntityManager.GetComponentData<WaitingPassengers>(waypoint);
 
-                if (queue.m_AverageWaitingTime != wanted)
+                bool fresh = wanted == 0;
+
+                // Reset the history, not just the figure it produces.
+                //
+                // m_AverageWaitingTime is derived, not stored in isolation: ResidentAISystem
+                // accumulates into m_ConcludedAccumulation and m_SuccessAccumulation as passengers
+                // wait and board (:3795-3797, :3980-3993), and the average is recomputed from them.
+                // Writing the average alone is overwritten within seconds by a history that still
+                // remembers a stop nobody could use — which is why a cleared figure kept climbing
+                // back to 2500 and beyond.
+                //
+                // Clearing the accumulators as well makes the stop genuinely new: no remembered
+                // waits, no remembered failures, an average of zero that stays zero until real
+                // passengers give it a real one.
+                bool stale = queue.m_OngoingAccumulation != 0
+                             || queue.m_ConcludedAccumulation != 0
+                             || queue.m_SuccessAccumulation != 0;
+
+                if (queue.m_AverageWaitingTime != wanted || (fresh && stale))
                 {
                     queue.m_AverageWaitingTime = wanted;
+
+                    if (fresh)
+                    {
+                        // All three, because any one of them rebuilds the average on its own.
+                        queue.m_OngoingAccumulation = 0;
+                        queue.m_ConcludedAccumulation = 0;
+                        queue.m_SuccessAccumulation = 0;
+                    }
+
                     EntityManager.SetComponentData(waypoint, queue);
                 }
 
-                SetBoardable(stop, atMapEdge);
+                SetBoardable(stop, atMapEdge || boarding);
             }
         }
 
@@ -1204,7 +1262,24 @@ namespace TourismOverhaul.Systems
             // edge exists in both directions, an advertised wait of zero so the time term falls to
             // the vehicle interval alone, and no comfort penalty at all. There is nothing further
             // to give it short of the ticket price, which is charged to the passenger.
-            float comfort = boardable ? 1f : kPierComfortFactor;
+            // Comfort is never used as a penalty, and any penalty already written is repaired.
+            //
+            // It looked like a second axis to push against, and it is — but unlike
+            // m_AverageWaitingTime, which the game recomputes from live queue behaviour, this is
+            // authored prefab data that nothing recalculates. A value written here stays written:
+            // in the save, on that stop, for every line that uses it, after this mod is gone. The
+            // notes already record the rule it breaks — anything that scales serialized state must
+            // hold the authored figure and be able to put it back — and a stop left at -100 is a
+            // stop no citizen will ever board again, which is what "even the locals stopped
+            // boarding" is.
+            //
+            // So the map edge is given a genuine 1 (no comfort cost, a real and sane value), and
+            // anything negative found on a pier is a scar from the earlier version and is cleared
+            // back to neutral. Discouragement is left entirely to the waiting figure, which heals
+            // itself the moment this stops writing it.
+            float comfort = boardable
+                ? 1f
+                : math.max(0f, data.m_ComfortFactor);
 
             if (data.m_Flags == flags && data.m_ComfortFactor == comfort)
             {
@@ -1215,6 +1290,29 @@ namespace TourismOverhaul.Systems
             data.m_ComfortFactor = comfort;
 
             EntityManager.SetComponentData(stop, data);
+        }
+
+        /// <summary>
+        /// Whether this vessel's shore party is on its way back, so the pier should accept boarders.
+        ///
+        /// True inside the last-call window of an open call — the same window
+        /// <see cref="ReturnFinishedParties"/> uses to send parties to the quay — so the stop opens
+        /// exactly when there is somebody walking towards it and closes again as soon as the call
+        /// ends.
+        /// </summary>
+        private bool ReturningToQuay(Entity vehicle)
+        {
+            if (!EntityManager.HasComponent<Components.CruiseCall>(vehicle))
+            {
+                return false;
+            }
+
+            Components.CruiseCall call =
+                EntityManager.GetComponentData<Components.CruiseCall>(vehicle);
+
+            uint lastCall = (uint)math.max(1f, ShoreLeaveFrames() * kLastCallFraction);
+
+            return m_SimulationSystem.frameIndex + lastCall >= call.m_ReboardFrame;
         }
 
         /// <summary>Whether a stop, or anything that owns it, is an outside connection.</summary>
@@ -1385,6 +1483,14 @@ namespace TourismOverhaul.Systems
             NativeParallelHashSet<Entity> seen =
                 new NativeParallelHashSet<Entity>(64, Allocator.Temp);
 
+            // How much earlier than the ship a party may decide it has seen enough. A third of the
+            // stay, so the quayside fills across the whole of last call rather than in one wave.
+            uint earlyReturnSpread = (uint)math.max(
+                1f, (reboard - m_SimulationSystem.frameIndex) * kEarlyReturnFraction);
+
+            Random random = new Random(
+                math.max(1u, m_SimulationSystem.frameIndex * 2654435761u + 1013904223u));
+
             int adopted = 0;
 
             try
@@ -1406,11 +1512,31 @@ namespace TourismOverhaul.Systems
                         continue;
                     }
 
+                    // Some of them never get off, which is what a cruise looks like. Left untagged
+                    // and unlanded, so they stay in the vessel's passenger buffer, sail with it, and
+                    // are simply aboard for the next call — no state of ours describes them and none
+                    // has to.
+                    if (random.NextFloat() < kStayAboardFraction)
+                    {
+                        continue;
+                    }
+
+                    // Each party gets its own deadline, a little short of the ship's.
+                    //
+                    // A single shared frame means the entire complement turns for the quay on the
+                    // same update and arrives as one wave, which looks nothing like a cruise call
+                    // emptying out. Spreading them over the last part of the stay means some are
+                    // back early and some leave it late, and the quayside fills gradually.
+                    //
+                    // Only ever earlier than the ship's own reboard frame, never later, so no party
+                    // is given a deadline the vessel will not wait for.
+                    uint ownDeadline = reboard - (uint)random.NextInt(0, (int)earlyReturnSpread);
+
                     commandBuffer.AddComponent(household, new Components.CruisePassenger
                     {
                         m_Ship = vehicle,
                         m_Terminal = terminal,
-                        m_ReboardFrame = reboard
+                        m_ReboardFrame = ownDeadline
                     });
 
                     // The terminal is their lodging for the stay, which is what keeps them out of
@@ -2171,6 +2297,50 @@ namespace TourismOverhaul.Systems
                         // a citizen straight at the target and marks them Arrived when no path is
                         // needed — and that is acceptable precisely because it happens at the
                         // harbour they already walked to.
+                        // Away as soon as they are actually at the quay, rather than at the
+                        // deadline.
+                        //
+                        // A party that has walked back and is standing at the terminal should leave
+                        // on the ship that is sitting there — the departure trip's first leg is that
+                        // vessel, because it is the only route from this stop to the map edge. Made
+                        // to wait for the reboard frame instead, they stand about until the call
+                        // closes and are then removed wherever they happen to be, which is the
+                        // teleport the player notices.
+                        //
+                        // The deadline below is the backstop for anyone who never made it.
+                        bool atQuay = frame < passenger.m_ReboardFrame
+                                      && passenger.m_Recalled != 0
+                                      && PartyHasReached(entities[i], passenger.m_Terminal);
+
+                        // At the quay, send them on as travellers rather than as leavers.
+                        //
+                        // MovingAway is what a departing visitor gets, and it is the reason nobody
+                        // boards: TripNeededSystem:1583-1599 may satisfy that purpose by *placing*
+                        // the citizen at the target and marking them Arrived, with no journey and
+                        // therefore no vessel. Purpose.Leisure always travels, so the trip is real,
+                        // its destination is the map edge, and the only route there from this pier
+                        // is the ship — so they walk aboard and the counter moves.
+                        //
+                        // They stay tagged and marked homeward, which is what LandHomewardPassengers
+                        // uses to release them once the vessel reaches the connection. The tag is
+                        // also what keeps them out of the hotels for the crossing.
+                        if (atQuay)
+                        {
+                            TryGetOutsideConnection(passenger.m_Ship, out Entity port, out int _);
+
+                            if (port != Entity.Null)
+                            {
+                                SendOnTrip(entities[i], port, commandBuffer);
+
+                                passenger.m_Homeward = 1;
+                                passenger.m_Terminal = Entity.Null;
+                                passengers[i] = passenger;
+
+                                sailed++;
+                                continue;
+                            }
+                        }
+
                         if (frame >= passenger.m_ReboardFrame)
                         {
                             TryGetOutsideConnection(passenger.m_Ship, out Entity homePort, out int _);
@@ -2363,6 +2533,98 @@ namespace TourismOverhaul.Systems
         }
 
         /// <summary>
+        /// Issues one party a real journey to somewhere, replacing whatever it was doing.
+        ///
+        /// The trip goes on the citizens, because that is the only thing the game acts on — a
+        /// Target on the household is read by TouristHouseholdBehaviorSystem:59-66 and skipped.
+        /// Purpose.Leisure is used for every destination this mod chooses, including the map edge,
+        /// because it is the one purpose that always travels: MovingAway can be satisfied by
+        /// placing the citizen at the target instead (TripNeededSystem:1583-1599), which produces no
+        /// journey and no boarding.
+        /// </summary>
+        private void SendOnTrip(
+            Entity household, Entity destination, EntityCommandBuffer commandBuffer)
+        {
+            if (!EntityManager.HasBuffer<HouseholdCitizen>(household))
+            {
+                return;
+            }
+
+            DynamicBuffer<HouseholdCitizen> citizens =
+                EntityManager.GetBuffer<HouseholdCitizen>(household, isReadOnly: true);
+
+            for (int i = 0; i < citizens.Length; i++)
+            {
+                Entity citizen = citizens[i].m_Citizen;
+
+                if (citizen == Entity.Null
+                    || !EntityManager.Exists(citizen)
+                    || !EntityManager.HasBuffer<TripNeeded>(citizen))
+                {
+                    continue;
+                }
+
+                if (EntityManager.HasComponent<TravelPurpose>(citizen))
+                {
+                    commandBuffer.RemoveComponent<TravelPurpose>(citizen);
+                }
+
+                DynamicBuffer<TripNeeded> trips = commandBuffer.SetBuffer<TripNeeded>(citizen);
+
+                trips.Add(new TripNeeded
+                {
+                    m_TargetAgent = destination,
+                    m_Purpose = Purpose.Leisure,
+                    m_Resource = Resource.NoResource,
+                    m_Priority = byte.MaxValue
+                });
+            }
+        }
+
+        /// <summary>
+        /// Whether a recalled party has actually got to the quay.
+        ///
+        /// Any citizen standing in the terminal is enough. A party is not a unit once it is walking
+        /// — its members path separately and arrive apart — and holding the whole household until
+        /// the last straggler is inside means the early arrivals loiter at the quayside for no
+        /// reason the player can see.
+        ///
+        /// CurrentBuilding is the test because it is what "inside this building" means for a
+        /// citizen: it and CurrentTransport are alternatives (CitizenTravelPurposeSystem:631), so
+        /// holding the first is precisely not being out in the world walking.
+        /// </summary>
+        private bool PartyHasReached(Entity household, Entity terminal)
+        {
+            if (terminal == Entity.Null || !EntityManager.HasBuffer<HouseholdCitizen>(household))
+            {
+                return false;
+            }
+
+            DynamicBuffer<HouseholdCitizen> citizens =
+                EntityManager.GetBuffer<HouseholdCitizen>(household, isReadOnly: true);
+
+            for (int i = 0; i < citizens.Length; i++)
+            {
+                Entity citizen = citizens[i].m_Citizen;
+
+                if (citizen == Entity.Null
+                    || !EntityManager.Exists(citizen)
+                    || !EntityManager.HasComponent<CurrentBuilding>(citizen))
+                {
+                    continue;
+                }
+
+                if (EntityManager.GetComponentData<CurrentBuilding>(citizen).m_CurrentBuilding
+                    == terminal)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
         /// Gives the harbour trip back to any citizen of a recalled party that has gone idle.
         ///
         /// The recall cannot be a single write. A citizen is re-evaluated only on its own
@@ -2451,6 +2713,32 @@ namespace TourismOverhaul.Systems
             if (EntityManager.HasComponent<LodgingSeeker>(household))
             {
                 commandBuffer.RemoveComponent<LodgingSeeker>(household);
+            }
+
+            // Cancel a journey to a hotel, not just the marker that asked for one.
+            //
+            // The marker keeps coming back and there is nothing here that can stop it:
+            // TouristHouseholdBehaviorSystem:74 nulls m_Hotel whenever the anchor building has no
+            // Renter buffer, and a harbour has not got one, so every pass of that system decides
+            // this household is unhoused and re-marks it. Stripping LodgingSeeker on our next
+            // update is too late — TouristTargetSearchSystem has already run in between, found a
+            // hotel and sent them walking to it, which is what "they all go to a hotel first" is.
+            //
+            // So the target is cancelled as well. A cruise passenger has no business travelling to
+            // a building that provides lodging, and the terminal is excluded because that is their
+            // own anchor. Everything else they might be heading for — a shop, a venue, an
+            // attraction — is left strictly alone, so this cannot interrupt sightseeing.
+            if (EntityManager.HasComponent<Target>(household))
+            {
+                Entity going = EntityManager.GetComponentData<Target>(household).m_Target;
+
+                if (going != terminal
+                    && going != Entity.Null
+                    && EntityManager.HasComponent<LodgingProvider>(going))
+                {
+                    commandBuffer.RemoveComponent<Target>(household);
+                    CancelHotelTrip(household, commandBuffer);
+                }
             }
 
             if (terminal == Entity.Null || !EntityManager.Exists(terminal))
