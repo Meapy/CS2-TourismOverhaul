@@ -5,7 +5,7 @@ All notable changes to CS2 Tourism Overhaul.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [semantic](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.8.0] — 2026-08-06
 
 ### Added
 
@@ -26,6 +26,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 - **Cruise ship passengers** setting. An upper bound on how many a call brings — the vessel's own
   authored capacity applies as well, and the smaller of the two wins.
+
+- **A sailing time on the selected-vehicle panel.** Selecting a docked cruise ship shows when it
+  leaves, in city time, and how many of its passengers are still ashore. The clock comes from
+  `TimeSystem.normalizedTime` plus the frame gap rather than from the frame index, which ignores the
+  map's founding offset and is wrong by a constant in every save.
 
 ### Known limitations
 

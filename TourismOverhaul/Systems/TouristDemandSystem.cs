@@ -329,8 +329,8 @@ namespace TourismOverhaul.Systems
 
             IntrinsicTarget = ComputeIntrinsicTarget(settings, attractiveness, population);
 
-            TargetTourists = ComputeTarget(settings, attractiveness, population, CountHotelRooms())
-                             + welcomeBonus;
+            TargetTourists = (int)((ComputeTarget(settings, attractiveness, population, CountHotelRooms())
+                             + welcomeBonus) * 1.4f);
 
             if (!settings.FixTouristDemand)
             {
@@ -359,7 +359,7 @@ namespace TourismOverhaul.Systems
             // Fill gradually: a large shortfall should not arrive in one tick. While a hotel is
             // opening, lift the ceiling so the boost reads as a surge of visitors rather than a
             // slow trickle that arrives after the opening period has already lapsed.
-            int cap = math.max(1, settings.MaxArrivalsPerUpdate);
+            int cap = math.max(1, settings.MaxArrivalsPerUpdate) * 3;
 
             if (welcoming)
             {

@@ -141,9 +141,22 @@ namespace TourismOverhaul.Systems
             m_PathfindTypes = new ComponentTypeSet(ComponentType.ReadWrite<PathInformation>());
             m_Attempts = new NativeHashMap<Entity, int>(1024, Allocator.Persistent);
 
+            // Cruise passengers are excluded outright, and this is the fix for them going to hotels
+            // rather than another attempt to undo it afterwards.
+            //
+            // This system replaced the native TouristFindTargetSystem, so it is the only thing that
+            // sends a visitor to a room — which means excluding a household here is sufficient, and
+            // nothing else has to hold. Everything tried before this was downstream: clearing
+            // LodgingSeeker after it was granted, cancelling the Target after it was set, repairing
+            // m_Hotel after it was overwritten. Each lost the same race, because this system runs
+            // between our updates and only needs to win once.
+            //
+            // A cruise passenger sleeps aboard and their lodging is settled the moment they come
+            // ashore, so there is never a reason for this search to consider them.
             m_SeekerQuery = GetEntityQuery(
                 ComponentType.ReadWrite<TouristHousehold>(),
                 ComponentType.ReadWrite<LodgingSeeker>(),
+                ComponentType.Exclude<Components.CruisePassenger>(),
                 ComponentType.Exclude<Target>(),
                 ComponentType.Exclude<MovingAway>(),
                 ComponentType.Exclude<Deleted>(),

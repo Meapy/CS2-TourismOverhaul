@@ -75,6 +75,39 @@ export function logSelectedVehicleModules(moduleRegistry: ModuleRegistry): void 
   }
 }
 
+/**
+ * Lists the selected-info panel's own modules, excluding the individual sections.
+ *
+ * Wrapping the section's export registered cleanly and its component was never invoked — no render
+ * line at all — which means whatever draws the panel does not take the section from that export.
+ * The C# side labels each section with a `group` string (InfoSectionBase.group), so the panel almost
+ * certainly maps group to component through a table, and that table is what has to be extended.
+ *
+ * The individual sections are filtered out because they are already known and there are well over a
+ * hundred of them. What is left is the panel's own scaffolding, which is small enough to read: look
+ * for an export that is a map, a record, or a list of sections rather than a component.
+ */
+export function logSelectedInfoRegistry(moduleRegistry: ModuleRegistry): void {
+  try {
+    const matches = moduleRegistry.find(/selected-info/i) ?? [];
+
+    const scaffolding = matches.filter(
+      ([path]) => !/selected-info-sections\//i.test(path) && !/\.module\.scss$/i.test(path)
+    );
+
+    console.log(
+      `${LOG_PREFIX} selected-info scaffolding (${scaffolding.length} of ${matches.length}) — ` +
+        `looking for whatever maps a section group to a component:`
+    );
+
+    for (const [path, ...exports] of scaffolding) {
+      console.log(`${LOG_PREFIX}   ${path}  ->  [${exports.join(", ")}]`);
+    }
+  } catch (error) {
+    console.warn(`${LOG_PREFIX} failed to search the module registry:`, error);
+  }
+}
+
 /** Broader sweep, for when the tourism search comes back empty. */
 export function logInfoviewModules(moduleRegistry: ModuleRegistry): void {
   try {

@@ -22,10 +22,24 @@ import * as CS2UI from "cs2/ui";
 
 const LOG_PREFIX = "[TourismOverhaul]";
 
+/**
+ * The selected-info panel's content area, not the vehicle section.
+ *
+ * Wrapping the section itself registered cleanly and was never invoked — not once, no render line at
+ * all. The reason is in the module dump: `selected-info-bindings.ts` exports `topSections`,
+ * `middleSections`, `bottomSections` and a `SectionType` enum, so the panel builds its sections from
+ * *data* published by C# and resolves each one's group to a component internally. Extending the
+ * section's export therefore changes a module the panel never reads from.
+ *
+ * PanelSpace is the content container, and the same shape already works elsewhere in this mod:
+ * InfoviewPanelSpace is what the Tourism Finance view appends into, for exactly the same reason.
+ * Wrapping the frame instead would render our row outside the window, floating over the map — the
+ * mistake the notes record for CityInfoDemand.
+ */
 export const VEHICLE_PANEL_PATH =
-  "game-ui/game/components/selected-info-panel/selected-info-sections/vehicle-sections/public-transport-vehicle-section.tsx";
+  "game-ui/game/components/selected-info-panel/shared-components/info-section/info-section.tsx";
 
-export const VEHICLE_PANEL_EXPORT = "PublicTransportVehicleSection";
+export const VEHICLE_PANEL_EXPORT = "InfoSection";
 
 const cruiseDocked$ = bindValue<boolean>("tourismOverhaul", "cruiseDocked", false);
 const cruiseDeparture$ = bindValue<string>("tourismOverhaul", "cruiseDeparture", "");
@@ -41,15 +55,31 @@ const ui = CS2UI as any;
 
 const FallbackRow = ({ left, right }: { left?: ReactNode; right?: ReactNode }) => (
   <div
-    className="infoRow_QQ9 left_Cmg"
-    style={{ display: "flex", justifyContent: "space-between" }}
+    style={{
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      padding: "4rem 12rem",
+    }}
   >
-    <div className="left_Cmg">{left}</div>
-    <div className="right_ZUb">{right}</div>
+    <div>{left}</div>
+    <div>{right}</div>
   </div>
 );
 
-const Row: any = ui?.InfoRow ?? ui?.PanelSectionRow ?? FallbackRow;
+/**
+ * Plain markup, deliberately, rather than cs2/ui's InfoRow.
+ *
+ * InfoRow is a native component whose prop shape is not documented and cannot be read from disk, so
+ * handing it {left, right, subRow} is a guess — and a component that receives props it does not
+ * understand renders nothing rather than complaining. That is indistinguishable from the row not
+ * being there, which is exactly the symptom this has had.
+ *
+ * The fallback is styled with inline flex rather than the game's class names for the same reason:
+ * the class map values are multi-class hashed strings that change between builds, and a stale one
+ * silently styles nothing. Plain markup is uglier and it appears.
+ */
+const Row: any = FallbackRow;
 
 const useRowText = () => {
   const { translate } = useLocalization();
@@ -57,12 +87,30 @@ const useRowText = () => {
     translate(`TourismOverhaul.PANEL[${key}]`, english) ?? english;
 };
 
+/** Last reported value signature, so the log is written on change rather than every render. */
+let loggedRender = "";
+
 const CruiseDepartureRow = () => {
   const docked = useValue(cruiseDocked$);
   const departure = useValue(cruiseDeparture$);
   const minutesLeft = useValue(cruiseMinutesLeft$);
   const ashore = useValue(cruiseAshore$);
   const text = useRowText();
+
+  // Logged whenever the values change, not once.
+  //
+  // Once was not enough: the first render happens the first time any selection panel opens, which
+  // is almost never a docked cruise ship, so it reported docked=false and said nothing about the
+  // case in question. Keyed on the values themselves, this stays quiet while nothing moves and
+  // speaks exactly when a selection changes what the row is handed.
+  const signature = `${docked}|${departure}|${ashore}`;
+
+  if (signature !== loggedRender) {
+    loggedRender = signature;
+    console.log(
+      `${LOG_PREFIX} cruise row: docked=${docked}, departure="${departure}", ashore=${ashore}.`
+    );
+  }
 
   if (!docked || !departure) {
     return null;
@@ -99,16 +147,66 @@ const CruiseDepartureRow = () => {
  * Wrapping rather than replacing, so every other public transport vehicle is untouched and a
  * future change to the native section carries through.
  */
-export const wrapVehiclePanel = (Native: any) => (props: any) => {
-  try {
-    return (
-      <>
-        <Native {...props} />
-        <CruiseDepartureRow />
-      </>
-    );
-  } catch (error) {
-    console.warn(`${LOG_PREFIX} cruise departure row failed to render:`, error);
-    return <Native {...props} />;
+/** Stable marker, so a second registration cannot nest the component inside itself. */
+const WRAPPED = Symbol.for("TourismOverhaul.infoSectionWrapped");
+
+/**
+ * True while a render pass has already placed our row, so only one section carries it.
+ *
+ * InfoSection is the shared component every section in the panel is built from, which is why it is
+ * the wrap target — it is certainly rendered, where the vehicle section's own module and the panel's
+ * content area both turned out not to be. The cost of that certainty is that it renders many times
+ * per panel, so appending unconditionally would repeat the row once per section.
+ *
+ * React renders a panel's children synchronously, so a flag set during the first section and cleared
+ * on the next microtask covers exactly one pass. It cannot leak between panels: the clear is queued
+ * before anything else can run.
+ */
+let placedThisPass = false;
+
+const claimPass = (): boolean => {
+  if (placedThisPass) {
+    return false;
   }
+
+  placedThisPass = true;
+  Promise.resolve().then(() => {
+    placedThisPass = false;
+  });
+
+  return true;
+};
+
+/** Logged once, so the props InfoSection receives can be read rather than guessed at. */
+let loggedSectionProps = false;
+
+export const wrapVehiclePanel = (Native: any) => {
+  if (Native == null || Native[WRAPPED]) {
+    return Native;
+  }
+
+  const Wrapped = (props: any) => {
+    try {
+      if (!loggedSectionProps) {
+        loggedSectionProps = true;
+        console.log(
+          `${LOG_PREFIX} InfoSection props: [${Object.keys(props ?? {}).join(", ")}].`
+        );
+      }
+
+      return (
+        <>
+          <Native {...props} />
+          {claimPass() ? <CruiseDepartureRow /> : null}
+        </>
+      );
+    } catch (error) {
+      console.warn(`${LOG_PREFIX} cruise departure row failed to render:`, error);
+      return <Native {...props} />;
+    }
+  };
+
+  (Wrapped as any)[WRAPPED] = true;
+
+  return Wrapped;
 };

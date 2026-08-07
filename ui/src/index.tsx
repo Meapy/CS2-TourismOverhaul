@@ -2,6 +2,7 @@ import { ModRegistrar } from "cs2/modding";
 import { bindValue, useValue } from "cs2/api";
 import {
   logInfoviewModules,
+  logSelectedInfoRegistry,
   logSelectedVehicleModules,
 } from "mods/find-tourism-panel";
 import {
@@ -63,6 +64,32 @@ function registerCruiseDeparture(moduleRegistry: any): void {
 
   moduleRegistry.extend(VEHICLE_PANEL_PATH, VEHICLE_PANEL_EXPORT, wrapVehiclePanel);
   console.log("[TourismOverhaul] Cruise departure row registered.");
+
+  // Wrapping InfoSection, the shared component every section in the panel is built from.
+  //
+  // Two better-looking targets registered cleanly and were never invoked: the vehicle section's own
+  // module, and the panel's content area. The dump below explains both — selected-info-bindings.ts
+  // exports topSections, middleSections and bottomSections, so the panel assembles its sections from
+  // data C# publishes and resolves each group to a component internally, never reading the exports
+  // we were extending.
+  //
+  // InfoSection is different in the one way that matters: it is a shared component, so whatever
+  // renders a section renders it. If a wrapper here is not invoked either, nothing in this panel is
+  // reachable from a mod and the row belongs on another surface.
+  //
+  // Registered and never rendered, so dump the neighbourhood.
+  //
+  // The wrapper installs cleanly and its component is never invoked — no render line reaches the
+  // log at all. That rules out the bindings and the markup and leaves one explanation: whatever
+  // draws the selected-info sections does not obtain them from this module's export. The C# side
+  // gives each section a `group` string (InfoSectionBase.group, "PublicTransportVehicleSection"
+  // here), so the panel most likely resolves group → component through a registry, and extending
+  // the export changes something nothing renders.
+  //
+  // The registry cannot be read from disk — the interface ships packed in .cok archives — so it has
+  // to be found by listing what is there. This prints every selected-info module and its exports;
+  // the one to pin is whichever exports a map or a lookup rather than a section component.
+  logSelectedInfoRegistry(moduleRegistry);
 }
 
 const register: ModRegistrar = (moduleRegistry) => {
@@ -73,24 +100,30 @@ const register: ModRegistrar = (moduleRegistry) => {
 
   // Note: moduleRegistry.get throws when the module is absent, so existence is checked with
   // find, which returns an empty list instead.
+  // Every surface registers independently, and a miss on one must not skip the rest.
+  //
+  // This used to return outright when the Tourism panel was not found, and the three registrations
+  // below it — the cruise departure row, the finance panel, tourist demand — are all after that
+  // point. So one moved path took out four features and only complained about one of them. The
+  // symptom is the worst kind: a row that never appears, with a log line about something else
+  // entirely.
   const matches = moduleRegistry.find(TOURISM_PANEL_PATH) ?? [];
 
   const found = matches.some(
     ([path, ...exports]) => path === TOURISM_PANEL_PATH && exports.includes(TOURISM_PANEL_EXPORT)
   );
 
-  if (!found) {
+  if (found) {
+    moduleRegistry.extend(TOURISM_PANEL_PATH, TOURISM_PANEL_EXPORT, wrapTourismPanel);
+    console.log("[TourismOverhaul] Tourism panel extended.");
+  } else {
     console.error(
       `[TourismOverhaul] Tourism panel not found at "${TOURISM_PANEL_PATH}" ` +
         `export "${TOURISM_PANEL_EXPORT}". It has probably moved in a game update — ` +
         `pick the correct path from the list below and update src/index.tsx.`
     );
     logInfoviewModules(moduleRegistry);
-    return;
   }
-
-  moduleRegistry.extend(TOURISM_PANEL_PATH, TOURISM_PANEL_EXPORT, wrapTourismPanel);
-  console.log("[TourismOverhaul] Tourism panel extended.");
 
   registerCruiseDeparture(moduleRegistry);
 

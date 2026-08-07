@@ -199,8 +199,7 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
   <Screenshot Value="Properties/Screenshots/10-tourist-demand-page.jpg" />
   <Screenshot Value="Properties/Screenshots/01-hotel-zone.jpg" />
   <Screenshot Value="Properties/Screenshots/02-motel-zone.jpg" />
-  <Screenshot Value="Properties/Screenshots/03-tourism-panel.jpg" />
-  <Screenshot Value="Properties/Screenshots/04-tourist-markers.jpg" />
+  <Screenshot Value="Properties/Screenshots/03-cruise-ship.jpg" />
   <Screenshot Value="Properties/Screenshots/05-transport-usage.jpg" />
   <Screenshot Value="Properties/Screenshots/06-tourism-overlay.jpg" />
   <Screenshot Value="Properties/Screenshots/07-settings-arrivals.jpg" />
@@ -210,7 +209,7 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
   <Tag Value="Code Mod" />
 
   <ForumLink Value="https://forum.paradoxplaza.com/forum/threads/mod-tourism-overhaul-fix-tourism.1937099/" />
-  <ModVersion Value="1.7.1" />
+  <ModVersion Value="1.8.0" />
   <GameVersion Value="1.6.*" />
 
   <!--
@@ -218,32 +217,35 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
     accumulating history here republishes every past release with every upload. The full record
     belongs in CHANGELOG.md.
   -->
-  <ChangeLog>1.7.1
+  <ChangeLog>1.8.0
 
-Visitors were going broke and leaving early, which is why tourist numbers collapsed in waves.
+Cruise ships.
 
-Leisure was the cause. Visitors have no cooldown between outings, so they go out constantly, and at
-the base game's prices they were spending roughly twenty times what they carried for the whole trip
-— emptying their wallets in under a day and departing long before their stay was up. There is a new
-Leisure venue cost setting, defaulting to 20% of the base game's price, which is what lets a visitor
-last the stay they were given. Residents get cheaper days out from it too, and venues earn less per
-visit in exchange. Set it back to 100% for the base game's pricing.
+There is a new Passenger Cruise Line tool beside the passenger ship line. Draw it from a sea outside
+connection to a harbour and a cruise ship works the route: it fills with visitors at the map edge,
+sails in, ties up at your quay while its passengers spend the day in your city, and leaves with them
+at the end of shore leave. Cruise passengers sleep aboard, so they never take a hotel room and never
+compete with your other visitors for one — they go shopping, to your attractions and to your leisure
+venues instead.
 
-Arrivals now fill a shortfall twice as quickly, so your city recovers its visitor numbers at a pace
-you can actually see.
+Nobody is teleported or placed by hand at any point. The mod creates visitors at the connection and
+gives them a reason to travel; the game gives them bodies, routes them, boards them and lands them
+through its own machinery. Passengers walk off the pier, wander the city, and run back to the quay
+when last call goes out.
 
-Fixed: hotel spending showed 0$ in the Tourism Finance view unless you had raised the hotel room
-multiplier. Hotels and motels were both missing entirely, and every other category's share was
-overstated to match. The figure is now counted where guests are actually billed.
+Select a docked cruise ship and the panel tells you when it sails and how many of its passengers are
+still out in the city, so you can see a call running down rather than guessing at it.
 
-Fixed: the arrivals per month row reset every time you loaded a save, and climbed for an hour of
-play before it meant anything. It is now the visitors who arrived over the last in-game month, as a
-rolling figure, and it survives reloading.
+Two settings: cruise shore leave in hours, defaulting to 8, and how many passengers a call brings.
+The ship's own capacity applies as well, and the smaller of the two wins.
 
-Changed: the tourist demand bar now reads as visitors who would come but have nowhere to stay, so
-empty rooms bring it down directly instead of only appearing in the factor list. It used to read
-high while half the city's rooms stood empty, which told you to build when building was the one
-thing that would not help.
+One cruise line per city, from a sea outside connection to a single harbour. The tool disappears once
+a line exists and returns if you delete it. Everything the feature does is written to the harbour and
+the map-edge stop rather than to the line, so two of them would overwrite each other.
+
+Known limitation: a harbour shared between a cruise line and an ordinary passenger ship line is
+affected by both. Give the cruise line its own terminal if you can. Removing the mod while a ship is
+alongside leaves a lodging marker on the harbour — do it between voyages.
 
 Saves from earlier versions load unchanged.</ChangeLog>
 

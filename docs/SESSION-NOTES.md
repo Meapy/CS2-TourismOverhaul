@@ -102,6 +102,50 @@ Together these say the same thing: **passengers get onto a vehicle by needing to
 There is no shortcut that puts a body on a ship, and the field that lets the game do it properly was
 switched off.
 
+## The selected-info panel builds its sections from bindings, not from module exports
+
+Adding a row to a vehicle's panel took four attempts, three of which registered cleanly through
+`moduleRegistry.extend` and were never invoked — no error, no render, nothing. The dump that
+explained it:
+
+```
+game-ui/game/data-binding/selected-info-bindings.ts
+  -> selectedEntity, …, topSections, middleSections, bottomSections, titleSection, …, SectionType
+```
+
+The panel assembles its sections from **data C# publishes** and resolves each section's `group`
+string — `InfoSectionBase.group`, e.g. `"PublicTransportVehicleSection"` — to a component
+internally. Extending `public-transport-vehicle-section.tsx` therefore modifies a module the panel
+never reads. So does extending `PanelSpace` from `selected-info-panel.tsx`.
+
+What works is `InfoSection` from
+`shared-components/info-section/info-section.tsx`: it is the shared component every section is built
+from, so whatever renders a section renders it. The cost is that it renders many times per panel, so
+a row appended there needs a guard — a module-level flag claimed during the first section and
+cleared on the next microtask covers exactly one render pass.
+
+Two smaller traps from the same hunt:
+
+- **`cs2/ui`'s `InfoRow` renders nothing if handed props it does not expect.** Its shape cannot be
+  read from disk, so passing `{left, right, subRow}` is a guess, and a wrong guess is
+  indistinguishable from the row not existing. Plain markup with inline styles is uglier and it
+  appears.
+- **Registration succeeding says nothing about rendering.** Log from inside the component, on value
+  *change* rather than once — logging once fires on the first panel opened, which is almost never
+  the case being investigated.
+
+## Frame index is not the time of day
+
+`frame % 262144` looks like it should give the clock time and does not. `TimeSystem.GetTicks:89-91`
+counts from `TimeData.m_FirstFrame` and adds the map's authored time and date offsets before taking
+the remainder, so a raw frame index is out by a constant that depends on when the city was founded —
+wrong in every save, by a different amount in each.
+
+Work from the delta instead: ticks advance one per frame, so `TimeSystem.normalizedTime` plus
+`(target - now) / 262144` is exact, with the offsets already applied. Floor the hours and minutes to
+match `GetCurrentDateTime:191-192` rather than rounding, or the figure sits a minute ahead of the
+clock in the corner.
+
 ## What a stop actually costs, and the one thing that is not a cost
 
 `PathUtils.GetTransportStopSpecification:1527-1568` builds the whole of a stop's contribution to a

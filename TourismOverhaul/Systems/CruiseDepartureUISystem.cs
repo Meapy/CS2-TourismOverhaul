@@ -136,7 +136,30 @@ namespace TourismOverhaul.Systems
 
                 if (controller != Entity.Null && EntityManager.Exists(controller))
                 {
-                    return controller;
+                    if (EntityManager.HasComponent<Components.CruiseCall>(controller))
+                    {
+                        return controller;
+                    }
+
+                    selected = controller;
+                }
+            }
+
+            // Last resort: match by route.
+            //
+            // The Controller hop only resolves upwards, so a click that lands on the controller
+            // while the call sits on some other part of the same vessel finds nothing — measured as
+            // "Selected transport vehicle 275382 has no cruise call" with a call open and its
+            // passengers ashore. Every part of a vessel shares CurrentRoute and a cruise line runs
+            // one vessel, so a call on the same route is this ship's call whichever entity the
+            // click happened to resolve to.
+            if (m_VoyageSystem != null)
+            {
+                Entity onRoute = m_VoyageSystem.FindCallOnSameRoute(selected);
+
+                if (onRoute != Entity.Null)
+                {
+                    return onRoute;
                 }
             }
 
@@ -195,12 +218,12 @@ namespace TourismOverhaul.Systems
         /// </summary>
         private string FormatTimeOfDay(uint targetFrame, uint currentFrame)
         {
-            if (m_TimeSystem == null)
-            {
-                return string.Empty;
-            }
-
-            float dayFraction = m_TimeSystem.normalizedTime;
+            // Never returns empty. The row is hidden when this string is blank, so a missing clock
+            // would read as "no cruise ship selected" rather than as the fault it is — and a wrong
+            // hour is a far smaller problem than a row that silently does not exist.
+            float dayFraction = m_TimeSystem != null
+                ? m_TimeSystem.normalizedTime
+                : (currentFrame % kFramesPerDay) / (float)kFramesPerDay;
 
             if (targetFrame > currentFrame)
             {

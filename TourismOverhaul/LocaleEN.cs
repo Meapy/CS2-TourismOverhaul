@@ -53,7 +53,9 @@ namespace TourismOverhaul
                     "Assets.DESCRIPTION[TourismOverhaul PassengerCruiseLine]",
                     "Connects navigation points and harbors to create a cruise ship route over a " +
                     "seaway. Cruise ships arrive carrying their own passengers, who come ashore to " +
-                    "visit your city and reboard before the ship departs."
+                    "visit your city and reboard before the ship departs.\n\n" +
+                    "Draw one line only, from a sea outside connection to a single harbor. The " +
+                    "tool disappears once a cruise line exists, and returns if you delete it."
                 },
                 {
                     "Assets.DESCRIPTION[TourismOverhaul Motels]",

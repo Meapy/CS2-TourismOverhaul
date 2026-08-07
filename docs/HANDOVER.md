@@ -10,8 +10,13 @@ diverged from it in one fundamental way, described below.
 
 ## Where the repo stands
 
-`PublishConfiguration.xml` says **1.7.1**. The working tree carries unreleased **1.8.0** cruise-line
-work on top of it. Nothing has been published.
+Stamped **1.8.0** — `PublishConfiguration.xml`, its `ChangeLog` field and `CHANGELOG.md` all agree.
+Not yet published, and not yet pushed.
+
+Before uploading: the mod has not had a clean end-to-end playthrough since the last few changes to
+the return leg, and `GameVersion` in `PublishConfiguration.xml` still reads `1.6.*` — check it
+against the build shown on the main menu, because Paradox rejects the package on a mismatch. The
+verb is `NewVersion`, run from the managed project directory so the media paths resolve.
 
 ## How the feature actually works
 
@@ -45,6 +50,8 @@ The cycle as built:
 - The shore party comes ashore, stays out of hotels, and wanders the city.
 - Recalled parties walk back to the harbour.
 - Locals are heavily discouraged from the pier by cost.
+- Recalled parties walk back, run, and board; the ashore count falls as the vessel's rises.
+- The selected-vehicle panel shows the sailing time and the ashore count, and the time is accurate.
 
 ## Open issues, roughly by value
 
