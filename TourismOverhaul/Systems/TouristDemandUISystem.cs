@@ -42,6 +42,15 @@ namespace TourismOverhaul.Systems
         private const string kFactorAtCeiling = "AtCeiling";
         private const string kFactorConnections = "Connections";
 
+        /// <summary>
+        /// People a free hotel room can sleep.
+        ///
+        /// Rooms are booked per household, not per person (HotelReserveJob:182-189), so this is the
+        /// average party size — measured at roughly 2.3 across a mature city, and a property of how
+        /// the game composes tourist households rather than anything this mod chooses.
+        /// </summary>
+        private const float kPeoplePerRoom = 2.3f;
+
         private ValueBinding<float> m_Demand;
         private RawValueBinding m_Factors;
 
@@ -187,9 +196,30 @@ namespace TourismOverhaul.Systems
 
             int appetite = math.max(0, ceiling - m_DemandSystem.CurrentTourists);
 
-            int unhoused = math.max(0, appetite - m_RoomsFree);
+            int unhoused = math.max(0, appetite - SleepingSpaceFree());
 
             return math.clamp(unhoused * 100 / ceiling, 0, 100);
+        }
+
+        /// <summary>
+        /// Free rooms expressed as the people they can sleep, which is what the demand is in.
+        ///
+        /// A room is not a person. HotelReserveJob:182-189 decrements m_FreeRooms once per
+        /// *household*, so a family of four occupies one room — the trap the notes already record
+        /// for hotel occupancy and for HotelRoomsPerTourist, and the demand figure was making it a
+        /// third time. Appetite is a head count; subtracting a room count straight off it
+        /// undercounted vacancy by the average party size, which is why the bar still read high with
+        /// half the city's rooms standing empty.
+        ///
+        /// The conversion is the same ratio those notes measured — tourists divided by occupied
+        /// rooms lands around 2.3, and it is a property of how the game builds households rather
+        /// than anything this mod sets. Deliberately not derived live from current occupancy: that
+        /// figure is undefined when nothing is occupied, and would make the bar jitter with party
+        /// size rather than with vacancy.
+        /// </summary>
+        private int SleepingSpaceFree()
+        {
+            return (int)math.round(m_RoomsFree * kPeoplePerRoom);
         }
 
         /// <summary>
@@ -258,7 +288,7 @@ namespace TourismOverhaul.Systems
 
             // Visitors who would come and have nowhere to sleep. The actionable one: this is what
             // painting a Hotels or Motels zone fixes.
-            int unhoused = math.max(0, appetite - roomsFree);
+            int unhoused = math.max(0, appetite - SleepingSpaceFree());
 
             if (unhoused > 0)
             {
