@@ -97,7 +97,7 @@ namespace TourismOverhaul
         /// </summary>
         [SettingsUISlider(min = 10f, max = 200f, step = 5f, unit = "percentage")]
         [SettingsUISection(SectionMain, GroupDemand)]
-        public int LodgingCostPercent { get; set; } = 100;
+        public int LodgingCostPercent { get; set; } = 75;
 
         /// <summary>
         /// Money a visitor carries for shopping, leisure and fares each night, as a percentage of
@@ -109,7 +109,7 @@ namespace TourismOverhaul
         /// </summary>
         [SettingsUISlider(min = 0f, max = 400f, step = 10f, unit = "percentage")]
         [SettingsUISection(SectionMain, GroupDemand)]
-        public int SpendingPerNightPercent { get; set; } = 100;
+        public int SpendingPerNightPercent { get; set; } = 150;
 
         /// <summary>
         /// How much visitors differ in how much money they bring, as a percentage of the budget.
@@ -118,7 +118,7 @@ namespace TourismOverhaul
         /// 0 every visitor carries exactly the same amount.
         /// </summary>
         [SettingsUIHidden]
-        public int WealthVariationPercent { get; set; } = 100;
+        public int WealthVariationPercent { get; set; } = 200;
 
         /// <summary>
         /// What a visit to a leisure venue costs, as a percentage of the game's own price.
@@ -140,6 +140,29 @@ namespace TourismOverhaul
         [SettingsUISlider(min = 5f, max = 200f, step = 5f, unit = "percentage")]
         [SettingsUISection(SectionMain, GroupDemand)]
         public int LeisureCostPercent { get; set; } = 20;
+
+        /// <summary>
+        /// How long a cruise ship's passengers stay ashore, in in-game hours.
+        ///
+        /// Hours rather than days because a day was too coarse to steer: one in-game day is over an
+        /// hour of real play, so the shortest possible visit was also a very long one. The ship is
+        /// held at the quay for the whole period, which is why the ceiling is low — a vessel parked
+        /// for days is a vessel doing nothing, and the line's other ships bunch up behind it.
+        /// </summary>
+        [SettingsUISlider(min = 8f, max = 48f, step = 1f, unit = "integer")]
+        [SettingsUISection(SectionMain, GroupDemand)]
+        public int CruiseShoreLeaveHours { get; set; } = 12;
+
+        /// <summary>
+        /// How many passengers a cruise ship carries when it calls.
+        ///
+        /// The ship arrives roughly full — its passenger list was sold where the voyage began, not
+        /// by the port it is calling at — so this is the figure, and the city's attractiveness and
+        /// spare capacity swing it by up to 500 either way.
+        /// </summary>
+        [SettingsUISlider(min = 100f, max = 5000f, step = 100f, unit = "integer")]
+        [SettingsUISection(SectionMain, GroupDemand)]
+        public int CruiseShipCapacity { get; set; } = 1500;
 
         /// <summary>
         /// Service capacity given to leisure venues.
@@ -288,9 +311,9 @@ namespace TourismOverhaul
         /// How many tourist households may arrive per update. Caps how quickly a shortfall against
         /// the target is filled.
         /// </summary>
-        [SettingsUISlider(min = 1f, max = 256f, step = 1f, unit = "integer")]
+        [SettingsUISlider(min = 128f, max = 512f, step = 1f, unit = "integer")]
         [SettingsUISection(SectionMain, GroupDemand)]
-        public int MaxArrivalsPerUpdate { get; set; } = 128;
+        public int MaxArrivalsPerUpdate { get; set; } = 256;
 
         /// <summary>Occupancy the city sizes demand against.</summary>
         [SettingsUIHidden]
@@ -399,18 +422,20 @@ namespace TourismOverhaul
         public override void SetDefaults()
         {
             // Shown
-            TouristsPerThousandCitizens = 60;
+            TouristsPerThousandCitizens = 100;
             MaximumTourists = 60000;
             PreferLargerTouristGroups = 50;
-            LodgingCostPercent = 100;
-            SpendingPerNightPercent = 75;
-            WealthVariationPercent = 100;
+            LodgingCostPercent = 75;
+            SpendingPerNightPercent = 125;
+            WealthVariationPercent = 200;
 
             // 20% of the authored price. Measured burn was ~23x the budgeted allowance, and the
             // consumption floor at LeisureSystem:102 caps how far this can usefully go, so this is
             // most of the available travel rather than a cautious first step.
             LeisureCostPercent = 20;
             LeisureCapacityMultiplier = 5;
+            CruiseShoreLeaveHours = 12;
+            CruiseShipCapacity = 1500;
 
             ArrivalWeightRoad = 5;
             ArrivalWeightTrain = 20;
@@ -444,11 +469,11 @@ namespace TourismOverhaul
             ArrivalBacklogSensitivity = 15;
 
             FixTouristDemand = true;
-            MaxArrivalsPerUpdate = 128;
+            MaxArrivalsPerUpdate = 256;
             TouristShoppingChance = 40;
             HistoricBuildingAttractiveness = 3;
             EnableAttractionCrowding = true;
-            AttractionCrowdTolerance = 2;
+            AttractionCrowdTolerance = 3;
             HotelRoomDemandOccupancy = 80;
             ReplaceNativeSpawner = true;
 

@@ -49,6 +49,16 @@ namespace TourismOverhaul.Systems
         private const int kMinimumShoppingMoney = 200;
 
         /// <summary>
+        /// How much more keenly a cruise passenger shops than an ordinary visitor.
+        ///
+        /// They have a single day ashore instead of a week, and no room to go back to — the whole
+        /// visit is the outing. Multiplying the player's setting rather than replacing it keeps the
+        /// dial meaningful: turn tourist shopping down and cruise passengers ease off with everyone
+        /// else.
+        /// </summary>
+        private const int kCruiseShoppingMultiplier = 3;
+
+        /// <summary>
         /// Upper bound on a single shopping trip, in resource units.
         ///
         /// A sanity bound, not a balance lever: it stops one visitor clearing a shop's entire stock
@@ -152,6 +162,8 @@ namespace TourismOverhaul.Systems
         {
             EntityTypeHandle entityHandle = GetEntityTypeHandle();
             ComponentTypeHandle<HouseholdNeed> needHandle = GetComponentTypeHandle<HouseholdNeed>();
+            ComponentTypeHandle<Components.CruisePassenger> cruiseHandle =
+                GetComponentTypeHandle<Components.CruisePassenger>(isReadOnly: true);
             ComponentTypeHandle<Household> householdHandle =
                 GetComponentTypeHandle<Household>(isReadOnly: true);
             BufferTypeHandle<Game.Economy.Resources> resourceHandle =
@@ -178,10 +190,34 @@ namespace TourismOverhaul.Systems
                     BufferAccessor<HouseholdCitizen> citizens =
                         hasCitizens ? chunk.GetBufferAccessor(ref citizenHandle) : default;
 
+                    // Cruise passengers. Whole chunks of them, since they share an archetype, so
+                    // this is one test per chunk rather than per household.
+                    bool isCruise = chunk.Has(ref cruiseHandle);
+                    NativeArray<Components.CruisePassenger> cruisePassengers =
+                        isCruise ? chunk.GetNativeArray(ref cruiseHandle) : default;
+
+                    // A cruise passenger has one day ashore and no hotel room to retreat to, so
+                    // they shop far more keenly than a visitor with a week and a bed. Raising the
+                    // chance rather than forcing it is what keeps the mix: a household that fails
+                    // the roll has no need, and CitizenBehaviorSystem then sends it to leisure
+                    // instead — so the same dial produces both shopping and sightseeing.
+                    int chunkChance = isCruise
+                        ? math.min(100, chance * kCruiseShoppingMultiplier)
+                        : chance;
+
                     for (int i = 0; i < chunk.Count; i++)
                     {
                         // Already shopping for something; leave it alone.
                         if (needs[i].m_Resource != Resource.NoResource)
+                        {
+                            continue;
+                        }
+
+                        // Recalled to the ship. Giving this household a reason to visit a shop now
+                        // would send it away from the quay, because the need is checked before
+                        // anything else — see CruiseVoyageSystem.RecallToShip, which clears it for
+                        // exactly this reason.
+                        if (isCruise && cruisePassengers[i].m_Recalled != 0)
                         {
                             continue;
                         }
@@ -201,7 +237,7 @@ namespace TourismOverhaul.Systems
                             continue;
                         }
 
-                        if (random.NextInt(100) >= chance)
+                        if (random.NextInt(100) >= chunkChance)
                         {
                             continue;
                         }

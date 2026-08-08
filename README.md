@@ -146,6 +146,28 @@ whole toolbar integration. `docs/DEMAND-UI-PLAN.md` has the full trace.
 Two strings the game does not supply for an unregistered type — the section title and the detail
 pane text — are written into the elements it renders empty. See `docs/SESSION-NOTES.md`.
 
+## Cruise line
+
+A `TransportLinePrefab` created at runtime from the passenger ship line, appearing in the ship tab.
+Drawn from a sea outside connection to a harbour, one per city — `Game.Prefabs.Locked` is toggled on
+the prefab so the tool disappears while a line exists.
+
+**Nothing is moved by hand.** Three attempts to place bodies directly all failed, each more loudly
+than the last, and the rule they establish is in `docs/SESSION-NOTES.md`: bodies and routes belong to
+the game, and a mod's job is to give citizens reasons. So the cycle is built out of the game's own
+mechanisms — `LodgingSeeker` to earn a destination, `TripNeeded` to earn a body and a journey,
+`MovingAway` to leave.
+
+The two stops are deliberately priced against each other through
+`PathUtils.GetTransportStopSpecification`. The map edge is held maximally attractive so the
+complement chooses the ship; the pier is priced out so the city's commuters do not fill a vessel that
+sits with its doors open for hours, and opened again during last call so the shore party can board.
+`WaitingPassengers` is self-healing and safe to write; `m_ComfortFactor` is authored data and is not.
+
+Passengers ashore are anchored to the terminal by a zero-price `LodgingProvider` and an empty
+`Renter` buffer — the buffer is what makes `TouristHouseholdBehaviorSystem:74` believe the anchor,
+and it stays empty because a building's utility demand follows its renters.
+
 ## Translations
 
 Labels are translated into all eleven other locales the game ships with. `Translations.cs` holds one

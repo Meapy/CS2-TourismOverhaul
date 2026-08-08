@@ -130,7 +130,14 @@ namespace TourismOverhaul
             // array below is positional, so inserting mid-list would silently shift all eleven of
             // them by one; appending leaves them correct and simply shorter than Keys, which For()
             // already handles by falling back to English.
-            nameof(TourismOverhaulSetting.LeisureCostPercent)
+            //
+            // All eleven now carry these three, so the arrays are the same length as Keys again.
+            // Anything added from here has to be appended in the same way and given to every locale
+            // at once, or filled with an empty string where a translation is not available — For()
+            // skips empties, so a gap falls back to English rather than shifting the rest.
+            nameof(TourismOverhaulSetting.LeisureCostPercent),
+            nameof(TourismOverhaulSetting.CruiseShoreLeaveHours),
+            nameof(TourismOverhaulSetting.CruiseShipCapacity)
         };
 
         private static readonly Dictionary<string, string[]> Labels =
@@ -161,6 +168,8 @@ namespace TourismOverhaul
                 "Unterkunft finden. Sie steigt mit der Attraktivität und je voller Ihre Hotels " +
                 "sind, und fällt auf null, sobald für jeden ein Zimmer bereitsteht. Weisen Sie " +
                 "Hotel- und Motelzonen aus, solange sie hoch ist."
+,
+                "Freizeitkosten", "Landgang der Kreuzfahrt", "Kreuzfahrtpassagiere"
             },
             ["es-ES"] = new[]
             {
@@ -188,6 +197,8 @@ namespace TourismOverhaul
                 "alojarse. Sube con el atractivo y a medida que se llenan tus hoteles, y baja a " +
                 "cero cuando hay una habitación libre para todo el que quiera una. Designa zonas " +
                 "de hoteles y moteles mientras sea alta."
+,
+                "Coste del ocio", "Escala del crucero", "Pasajeros del crucero"
             },
             ["fr-FR"] = new[]
             {
@@ -215,6 +226,8 @@ namespace TourismOverhaul
                 "n'ont nulle part où loger. Elle augmente avec l'attrait et à mesure que vos " +
                 "hôtels se remplissent, et tombe à zéro dès qu'une chambre attend chaque " +
                 "personne qui en veut une. Zonez des hôtels et des motels tant qu'elle est élevée."
+,
+                "Coût des loisirs", "Escale de croisière", "Passagers de la croisière"
             },
             ["it-IT"] = new[]
             {
@@ -242,6 +255,8 @@ namespace TourismOverhaul
                 "alloggiare. Cresce con l'attrattiva e man mano che gli hotel si riempiono, e " +
                 "scende a zero quando c'è una camera libera per chiunque ne voglia una. Designa " +
                 "zone per hotel e motel finché è alta."
+,
+                "Costo dello svago", "Sosta della crociera", "Passeggeri della crociera"
             },
             ["ja-JP"] = new[]
             {
@@ -261,6 +276,8 @@ namespace TourismOverhaul
                 "観光需要は、訪れたくても泊まる場所がない観光客の数です。魅力度が高いほど、" +
                 "またホテルが埋まるほど上昇し、希望者全員に空室が行き渡ると0になります。" +
                 "需要が高いうちにホテル・モーテル地区を指定しましょう。"
+,
+                "レジャーの費用", "クルーズ船の停泊時間", "クルーズ船の乗客数"
             },
             ["ko-KR"] = new[]
             {
@@ -280,6 +297,8 @@ namespace TourismOverhaul
                 "관광 수요는 방문하고 싶지만 묵을 곳이 없는 관광객의 수입니다. 매력도가 높을수록, " +
                 "호텔이 찰수록 올라가며, 원하는 모든 사람에게 객실이 돌아가면 0이 됩니다. " +
                 "수요가 높을 때 호텔과 모텔 구역을 지정하세요."
+,
+                "여가 비용", "크루즈 정박 시간", "크루즈 승객 수"
             },
             ["pl-PL"] = new[]
             {
@@ -307,6 +326,8 @@ namespace TourismOverhaul
                 "zatrzymać. Rośnie wraz z atrakcyjnością i zapełnianiem się hoteli, a spada do " +
                 "zera, gdy dla każdego chętnego czeka pokój. Wyznaczaj strefy hoteli i moteli, " +
                 "póki jest wysoki."
+,
+                "Koszt rozrywki", "Postój wycieczkowca", "Pasażerowie wycieczkowca"
             },
             ["pt-BR"] = new[]
             {
@@ -334,6 +355,8 @@ namespace TourismOverhaul
                 "a atratividade e conforme seus hotéis lotam, e cai a zero quando há um quarto " +
                 "esperando por todos que queiram um. Zoneie hotéis e motéis enquanto ela estiver " +
                 "alta."
+,
+                "Custo de lazer", "Escala do cruzeiro", "Passageiros do cruzeiro"
             },
             ["ru-RU"] = new[]
             {
@@ -362,6 +385,8 @@ namespace TourismOverhaul
                 "Он растёт с привлекательностью и по мере заполнения отелей и падает до нуля, " +
                 "когда номер найдётся для каждого желающего. Отводите зоны под отели и мотели, " +
                 "пока он высок."
+,
+                "Стоимость досуга", "Стоянка круизного лайнера", "Пассажиры круизного лайнера"
             },
             ["zh-HANS"] = new[]
             {
@@ -379,6 +404,8 @@ namespace TourismOverhaul
                 "旅游需求", "住宿供给不足", "吸引力", "客房空置", "已在城中的游客", "进城通道",
                 "旅游需求是指想来但无处住宿的游客数量。城市吸引力越高、酒店越满，需求就越高；" +
                 "当每位想住宿的游客都有房间时，需求降为零。需求高时请规划酒店和汽车旅馆区。"
+,
+                "休闲消费", "邮轮靠港时间", "邮轮乘客数"
             },
             ["zh-HANT"] = new[]
             {
@@ -395,7 +422,8 @@ namespace TourismOverhaul
                 "遊客消費", "飯店", "商店", "票價", "休閒", "未分類",
                 "旅遊需求", "住宿供給不足", "吸引力", "客房閒置", "已在城中的遊客", "進城通道",
                 "旅遊需求是指想來但無處住宿的遊客數量。城市吸引力越高、飯店越滿，需求就越高；" +
-                "當每位想住宿的遊客都有房間時，需求降為零。需求高時請規劃飯店與汽車旅館區。"
+                "當每位想住宿的遊客都有房間時，需求降為零。需求高時請規劃飯店與汽車旅館區。",
+                "休閒消費", "郵輪靠港時間", "郵輪乘客數"
             }
         };
     }

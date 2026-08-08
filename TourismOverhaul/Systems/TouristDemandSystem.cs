@@ -39,6 +39,7 @@ namespace TourismOverhaul.Systems
         private EntityQuery m_OutsideConnectionQuery;
         private EntityQuery m_DemandParameterQuery;
         private EntityQuery m_TouristHouseholdQuery;
+        private EntityQuery m_CruiseVisitorQuery;
 
         private EntityQuery m_LeakedHouseholdQuery;
         /// <summary>
@@ -81,8 +82,17 @@ namespace TourismOverhaul.Systems
         /// <summary>Whether the native tourist spawner is currently stood down.</summary>
         public bool NativeSpawnerDisabled => m_NativeSpawnerDisabled;
 
-        /// <summary>Accurate tourist citizen count from the most recent update.</summary>
+        /// <summary>
+        /// Tourist citizens staying in the city, from the most recent update.
+        ///
+        /// Excludes cruise passengers, who are ashore for the day and need no lodging. This is the
+        /// figure the demand maths runs on, so folding them in would make a docked ship look like
+        /// satisfied demand.
+        /// </summary>
         public int CurrentTourists { get; private set; }
+
+        /// <summary>Cruise passengers ashore right now, in citizens.</summary>
+        public int CruiseVisitors { get; private set; }
 
         /// <summary>Target tourist citizen count from the most recent update.</summary>
         public int TargetTourists { get; private set; }
@@ -222,9 +232,29 @@ namespace TourismOverhaul.Systems
                 ComponentType.ReadWrite<Components.TouristArrivalBucket>());
 
             // Counting query: only households that actually hold citizens count as tourists.
+            //
+            // Cruise passengers are excluded, and this is load-bearing rather than tidy. They are
+            // TouristHouseholds with citizens, so counting them would shrink the deficit that
+            // drives the ordinary spawner and throttle real arrivals — two thousand day trippers
+            // would crowd out the visitors who actually stay. Worse, ComputeTarget caps the target
+            // at hotelRooms, so passengers who occupy no room at all would be consuming a target
+            // whose whole purpose is to size lodging demand.
+            //
+            // They are counted separately as CruiseVisitors, which is what the panel should show
+            // beside this rather than folded into it: one is who is staying, the other is who is
+            // ashore for the day.
             m_TouristHouseholdQuery = GetEntityQuery(
                 ComponentType.ReadOnly<TouristHousehold>(),
                 ComponentType.ReadOnly<HouseholdCitizen>(),
+                ComponentType.Exclude<Components.CruisePassenger>(),
+                ComponentType.Exclude<MovingAway>(),
+                ComponentType.Exclude<Deleted>(),
+                ComponentType.Exclude<Temp>());
+
+            m_CruiseVisitorQuery = GetEntityQuery(
+                ComponentType.ReadOnly<TouristHousehold>(),
+                ComponentType.ReadOnly<HouseholdCitizen>(),
+                ComponentType.ReadOnly<Components.CruisePassenger>(),
                 ComponentType.Exclude<MovingAway>(),
                 ComponentType.Exclude<Deleted>(),
                 ComponentType.Exclude<Temp>());
@@ -289,6 +319,7 @@ namespace TourismOverhaul.Systems
             FlushArrivalWindow();
 
             CurrentTourists = CountTouristCitizens();
+            CruiseVisitors = CountCitizensIn(m_CruiseVisitorQuery);
 
             // Extra allowance from hotels inside their opening period. Added on top of the target
             // rather than folded into it, so these are genuinely additional visitors rather than
@@ -298,8 +329,8 @@ namespace TourismOverhaul.Systems
 
             IntrinsicTarget = ComputeIntrinsicTarget(settings, attractiveness, population);
 
-            TargetTourists = ComputeTarget(settings, attractiveness, population, CountHotelRooms())
-                             + welcomeBonus;
+            TargetTourists = (int)((ComputeTarget(settings, attractiveness, population, CountHotelRooms())
+                             + welcomeBonus) * 1.4f);
 
             if (!settings.FixTouristDemand)
             {
@@ -328,7 +359,7 @@ namespace TourismOverhaul.Systems
             // Fill gradually: a large shortfall should not arrive in one tick. While a hotel is
             // opening, lift the ceiling so the boost reads as a surge of visitors rather than a
             // slow trickle that arrives after the opening period has already lapsed.
-            int cap = math.max(1, settings.MaxArrivalsPerUpdate);
+            int cap = math.max(1, settings.MaxArrivalsPerUpdate) * 3;
 
             if (welcoming)
             {
@@ -1007,13 +1038,18 @@ namespace TourismOverhaul.Systems
         /// </summary>
         private int CountTouristCitizens()
         {
+            return CountCitizensIn(m_TouristHouseholdQuery);
+        }
+
+        private int CountCitizensIn(EntityQuery query)
+        {
             int count = 0;
 
             BufferTypeHandle<HouseholdCitizen> citizenHandle =
                 GetBufferTypeHandle<HouseholdCitizen>(isReadOnly: true);
 
             NativeArray<ArchetypeChunk> chunks =
-                m_TouristHouseholdQuery.ToArchetypeChunkArray(Allocator.Temp);
+                query.ToArchetypeChunkArray(Allocator.Temp);
             try
             {
                 for (int i = 0; i < chunks.Length; i++)
@@ -1033,6 +1069,133 @@ namespace TourismOverhaul.Systems
             }
 
             return count;
+        }
+
+        /// <summary>
+        /// Creates one tourist household standing at a given location.
+        ///
+        /// The single copy of the creation sequence, called by the ordinary spawner above and by
+        /// the cruise line through <see cref="CreateTouristHouseholdsAt"/>. Kept in one place
+        /// deliberately: the archetype, the Tourist flag, the null hotel and the deferred
+        /// ArrivalMode all have to agree, and two drifting copies of that is the kind of difference
+        /// that produces households which look right and are never given citizens.
+        /// </summary>
+        private static Entity CreateTouristHousehold(
+            EntityCommandBuffer commandBuffer,
+            EntityArchetype archetype,
+            Entity prefab,
+            Entity location,
+            byte arrivalMode)
+        {
+            Entity household = commandBuffer.CreateEntity(archetype);
+
+            commandBuffer.SetComponent(household, new PrefabRef { m_Prefab = prefab });
+            commandBuffer.SetComponent(household, new Household { m_Flags = HouseholdFlags.Tourist });
+            commandBuffer.AddComponent(household, new TouristHousehold
+            {
+                m_Hotel = Entity.Null,
+                m_LeavingTime = 0u
+            });
+            commandBuffer.AddComponent(household, new CurrentBuilding
+            {
+                m_CurrentBuilding = location
+            });
+            commandBuffer.AddComponent(household, new Components.ArrivalMode
+            {
+                m_Mode = arrivalMode
+            });
+
+            return household;
+        }
+
+        /// <summary>
+        /// Creates tourist households standing at a building, and reports the entities so the
+        /// caller can tag them further in the same command buffer.
+        ///
+        /// Used by the cruise line to put a ship's shore party ashore at its terminal. Unlike the
+        /// ordinary spawner this resolves no outside connection, because a cruise passenger did not
+        /// come through one — they came off a ship that is already in the city, and their arrival
+        /// point is a real building on the road network rather than a point at the map edge. That
+        /// difference matters more than it looks: the map-edge case is exactly the one the
+        /// zero-radius pathfind origin strands, and this side-steps it entirely.
+        ///
+        /// Takes a target in **people** and creates however many parties it takes to reach it,
+        /// which is the only way to land a predictable head count. Converting people to parties
+        /// with an average party size does not work: the average is not a constant. It depends on
+        /// which templates the group-size preference happens to favour, and every template
+        /// overstates itself, because HouseholdInitializeSystem:173 spawns
+        /// <c>random.NextInt(m_ChildCount)</c> children rather than the authored number. Dividing
+        /// by a nominal 2.3 therefore delivers materially fewer people than it promises. Summing
+        /// <see cref="ExpectedOccupants"/> as parties are created uses the same correction the
+        /// arrival counters already apply.
+        ///
+        /// Returns the number of parties created, and reports the head count they are expected to
+        /// produce. Entities pushed into <paramref name="created"/> are command buffer placeholders
+        /// and cannot be read this frame, but can be added to.
+        /// </summary>
+        public int CreateTouristHouseholdsAt(
+            Entity location,
+            int people,
+            byte arrivalMode,
+            EntityCommandBuffer commandBuffer,
+            NativeList<Entity> created,
+            out int expectedPeople)
+        {
+            expectedPeople = 0;
+
+            TourismOverhaulSetting settings = Mod.Settings;
+
+            if (settings == null || people <= 0 || location == Entity.Null)
+            {
+                return 0;
+            }
+
+            NativeArray<Entity> prefabEntities = m_HouseholdPrefabQuery.ToEntityArray(Allocator.Temp);
+            NativeArray<ArchetypeData> archetypes =
+                m_HouseholdPrefabQuery.ToComponentDataArray<ArchetypeData>(Allocator.Temp);
+            NativeArray<HouseholdData> householdDatas =
+                m_HouseholdPrefabQuery.ToComponentDataArray<HouseholdData>(Allocator.Temp);
+
+            try
+            {
+                if (prefabEntities.Length == 0)
+                {
+                    return 0;
+                }
+
+                Random random = new Random(
+                    math.max(1u, m_SimulationSystem.frameIndex * 2654435761u + 1013904223u));
+
+                int parties = 0;
+
+                // One party per person is the worst case, so this can never spin: every iteration
+                // adds at least one expected occupant unless the template produces nobody, and the
+                // bound catches that too.
+                while (expectedPeople < people && parties < people)
+                {
+                    int index = SelectHouseholdPrefab(householdDatas, ref random, settings);
+
+                    Entity household = CreateTouristHousehold(
+                        commandBuffer, archetypes[index].m_Archetype, prefabEntities[index],
+                        location, arrivalMode);
+
+                    created.Add(household);
+                    parties++;
+
+                    // A template that expects nobody would otherwise never close the gap. Count it
+                    // as one so the loop advances and the shortfall shows up in the reported total
+                    // rather than as a hang.
+                    expectedPeople += math.max(1, ExpectedOccupants(householdDatas[index]));
+                }
+
+                return parties;
+            }
+            finally
+            {
+                householdDatas.Dispose();
+                archetypes.Dispose();
+                prefabEntities.Dispose();
+            }
         }
 
         /// <summary>
@@ -1116,25 +1279,13 @@ namespace TourismOverhaul.Systems
                     // airport while arrivals appeared out of thin air — and the churn it left
                     // behind cost simulation performance.
 
-                    Entity household = commandBuffer.CreateEntity(archetypes[index].m_Archetype);
-
-                    commandBuffer.SetComponent(household, new PrefabRef { m_Prefab = prefabEntities[index] });
-                    commandBuffer.SetComponent(household, new Household { m_Flags = HouseholdFlags.Tourist });
-                    commandBuffer.AddComponent(household, new TouristHousehold
-                    {
-                        m_Hotel = Entity.Null,
-                        m_LeavingTime = 0u
-                    });
-                    commandBuffer.AddComponent(household, new CurrentBuilding
-                    {
-                        m_CurrentBuilding = connection
-                    });
-
                     // Counted later, when the household is actually given citizens. See ArrivalMode.
-                    commandBuffer.AddComponent(household, new Components.ArrivalMode
-                    {
-                        m_Mode = ModeIndex(arrivalType)
-                    });
+                    CreateTouristHousehold(
+                        commandBuffer,
+                        archetypes[index].m_Archetype,
+                        prefabEntities[index],
+                        connection,
+                        ModeIndex(arrivalType));
                 }
             }
             finally

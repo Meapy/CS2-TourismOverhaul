@@ -75,11 +75,25 @@ namespace TourismOverhaul
             // Dedicated hotel and motel zones, built from the game's own lodging assets.
             updateSystem.UpdateAt<HotelZoneSystem>(SystemUpdatePhase.GameSimulation);
 
+            // The Passenger Cruise Line tool. Creates its prefab at preload, like the zones above,
+            // because prefabs must exist before they are baked into entities.
+            updateSystem.UpdateAt<CruiseLineSystem>(SystemUpdatePhase.GameSimulation);
+
+            // Puts a docked cruise ship's passengers ashore and sends them back aboard. Must run
+            // before TouristStaySystem, which owns m_LeavingTime for ordinary visitors — a cruise
+            // passenger's leaving time is the ship's departure, not a random stay length.
+            updateSystem.UpdateBefore<CruiseVoyageSystem, TouristStaySystem>(
+                SystemUpdatePhase.GameSimulation);
+
             // Opening surge for newly built hotels. Must run before TouristDemandSystem reads it.
             updateSystem.UpdateBefore<HotelWelcomeSystem, TouristDemandSystem>(SystemUpdatePhase.GameSimulation);
 
             // Publishes our tourism figures to the UI layer for the frontend module.
             updateSystem.UpdateAt<TourismPanelUISystem>(SystemUpdatePhase.UIUpdate);
+
+            // Sailing time for a selected docked cruise ship. The managed half only — the panel row
+            // waits on the module path being pinned from the frontend's discovery log.
+            updateSystem.UpdateAt<CruiseDepartureUISystem>(SystemUpdatePhase.UIUpdate);
 
             // The tourist demand bar. Separate from the panel system because that one runs at
             // interval 512 — around eight seconds of real play — and a demand bar that steps every

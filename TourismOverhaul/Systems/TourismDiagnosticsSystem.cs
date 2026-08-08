@@ -109,8 +109,12 @@ namespace TourismOverhaul.Systems
                 ComponentType.Exclude<Deleted>(),
                 ComponentType.Exclude<Temp>());
 
+            // A cruise terminal carries a stand-in LodgingProvider while a ship is in port, so that
+            // its passengers count as lodged. It is not a hotel and must not be counted as room
+            // capacity here, or the occupancy figures move every time a ship docks.
             m_HotelQuery = GetEntityQuery(
                 ComponentType.ReadOnly<LodgingProvider>(),
+                ComponentType.Exclude<Components.CruiseTerminalLodging>(),
                 ComponentType.Exclude<Deleted>(),
                 ComponentType.Exclude<Temp>());
 
