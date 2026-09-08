@@ -5,6 +5,76 @@ All notable changes to CS2 Tourism Overhaul.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [semantic](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.2] — 2026-09-08
+
+### Fixed
+
+- **Cruise passengers now actually get back on the ship.** A call could end with most of the
+  complement still ashore, sent out of the city on foot instead of sailing.
+
+  The return was a relay in two steps: walk to the harbour building, and then — only once a sweep
+  happened to catch a citizen standing inside it — issue a second trip to the ship's map-edge
+  connection, which is the one that actually boards anyone. Step two was the only step that put a
+  passenger aboard, and it was gated on a state the game had no reason to give them: a trip to a
+  harbour, which provides no leisure, need not park anyone inside it, and the sweep only looked every
+  sixty-four frames. Miss that window and the party walked to the quay, stood there, and was written
+  off when the vessel left.
+
+  Last call is now one journey to the connection. A citizen routed there is routed over the transport
+  network, and from a city pier the only way to a sea connection is the vessel serving it — so the
+  legs come out as walk across the city, wait at the terminal, board, under the game's own power. The
+  walk back is still the visible half of a cruise call; it is now the first leg of the journey that
+  boards them rather than a separate errand that had to be noticed.
+
+  Two supporting changes. A party is now due back a short grace before the ship sails rather than on
+  the same frame, so there is time to walk aboard and not merely to arrive. And "aboard" is read from
+  the citizen's body carrying the vessel — the same thing the game rebuilds a manifest from — so a
+  party that boards between two sweeps is no longer pulled back off the ship and marched out of the
+  city when the deadline passes.
+
+  The shore leave log line now reports parties recalled, aboard, and left behind, so a call that goes
+  wrong says so.
+
+- **Maximum tourists is now actually a maximum.** The setting was applied inside the demand
+  calculation and then the finished figure was multiplied by 1.4, so the real ceiling sat forty per
+  cent above whatever the slider said — a limit of 20,000 targeted 28,000 — and the hotel opening
+  allowance was added after the clamp as well. The 1.4 is arrival headroom, and it now lives inside
+  the demand figure where it belongs; the player's ceiling is applied once, last, after everything
+  else. Nothing else about the numbers moves.
+
+  Two related things went with it. The ceiling was `max(vanillaTarget, MaximumTourists)`, so a limit
+  below what the base game would have produced could never bind and the bottom of the slider's range
+  did nothing; it is now a hard bound. And a ceiling of zero disables the limit rather than emptying
+  the city.
+
+  Two known reasons the count can still read above the limit, both by design: cruise passengers are
+  counted separately from staying visitors, so a docked ship adds up to its complement on top; and
+  the limit throttles arrivals rather than evicting anyone, so lowering it takes effect as visitors
+  leave rather than at once.
+
+- **A cruise port no longer draws a thousand megawatts when a ship ties up.** A building's
+  electricity and water demand stops being its rated figure once it has renters: the game multiplies
+  the prefab's consumption by `5 x citizens / (level + 0.5 x average education)`, with level fixed at
+  5 for anything that is not a zoned building. A shore party of several hundred therefore multiplied
+  a harbour's demand by two or three hundred, which a 50 MW low-voltage connection cannot carry and a
+  400 MW high-voltage one would not have carried either.
+
+  The terminal is now tagged `StorageProperty` for the length of a call — the game's own switch,
+  read by nothing but the two consumption systems, for "do not scale this building's utilities by its
+  renters". The shore party stays in the renter list, which is what holds the lodging anchor and what
+  brings them back to the ship; the port draws what it is rated for.
+
+  The previous fix emptied the renter list instead, and only when a tagged passenger happened to be
+  listed at that exact terminal — so it healed the stock harbour and left every other one spiking.
+  This one is keyed off the mod's own terminal marker rather than a prefab, so it covers Bridges &
+  Ports terminals, asset-mod harbours, and harbours that do not exist yet. A call already open when
+  you install this is repaired on the next sweep rather than waiting for the ship to sail.
+
+- **Equipping a terminal no longer damages harbours that come with their own fittings.** Release used
+  to strip the `LodgingProvider` and the `Renter` buffer unconditionally, which is correct for the
+  stock harbour — it has neither — and would have taken a DLC port's renters, and with them its
+  company, the first time a cruise ship sailed. The mod now marks what it adds and removes only that.
+
 ## [1.8.0] — 2026-08-06
 
 ### Added

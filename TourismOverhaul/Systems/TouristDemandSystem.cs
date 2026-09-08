@@ -64,6 +64,29 @@ namespace TourismOverhaul.Systems
         /// </summary>
         private const int kFillUpdates = 128;
 
+        /// <summary>
+        /// Headroom on the target, so the city settles at the figure rather than short of it.
+        ///
+        /// Arrivals are paced against the gap — <c>deficit / (partySize x kFillUpdates)</c> — and
+        /// visitors leave on their own schedule while that gap is being closed, so aiming exactly
+        /// at the target means arriving at it only asymptotically and sitting below it in practice.
+        /// Aiming a little past it is what makes the settled population land on the number.
+        ///
+        /// It is applied inside ComputeTarget, after the bed ceiling and before the player's — and
+        /// that ordering is the whole point. It used to be applied last, in OnUpdate, to a figure
+        /// that had already been clamped to MaximumTourists, so the setting behaved as a ceiling
+        /// forty per cent above its own label. Moving it one step earlier leaves every other number
+        /// exactly where it was and makes the ceiling the last word, which is what a ceiling is.
+        ///
+        /// Deliberately still after the bed ceiling, rather than the tidier position before it.
+        /// That ceiling compares a target counted in citizens against a room count that is closer
+        /// to households — a room holds a party of two or three — so it already bites harder than
+        /// its comment claims, and this factor is part of what offsets it. Correcting the units is
+        /// worth doing and is not this change: doing it here would cut visitor numbers in every
+        /// bed-limited city while fixing a setting.
+        /// </summary>
+        private const float kTargetHeadroom = 1.4f;
+
         private EntityQuery m_HotelQuery;
         private EntityQuery m_ArrivedQuery;
 
@@ -329,8 +352,15 @@ namespace TourismOverhaul.Systems
 
             IntrinsicTarget = ComputeIntrinsicTarget(settings, attractiveness, population);
 
-            TargetTourists = (int)((ComputeTarget(settings, attractiveness, population, CountHotelRooms())
-                             + welcomeBonus) * 1.4f);
+            // Demand, then the opening allowance, then the player's ceiling — in that order.
+            //
+            // ComputeTarget already carries the headroom and the bed ceiling. The welcome bonus is
+            // deliberately outside it, because an opening is extra visitors rather than a larger
+            // steady state, and ApplyMaximum is deliberately outside both: MaximumTourists is an
+            // upper bound on tourist citizens, so nothing may be added after it.
+            TargetTourists = ApplyMaximum(
+                ComputeTarget(settings, attractiveness, population, CountHotelRooms()) + welcomeBonus,
+                settings);
 
             if (!settings.FixTouristDemand)
             {
@@ -511,10 +541,27 @@ namespace TourismOverhaul.Systems
                            * settings.TouristsPerThousandCitizens
                            * attractivenessFactor;
 
-            return math.clamp(
-                (int)math.round(math.max(vanillaTarget, scaled)),
-                0,
-                math.max(vanillaTarget, settings.MaximumTourists));
+            return ApplyMaximum((int)math.round(math.max(vanillaTarget, scaled)), settings);
+        }
+
+        /// <summary>
+        /// The player's ceiling, and the only place it is applied.
+        ///
+        /// A hard minimum against the setting, not <c>max(vanillaTarget, MaximumTourists)</c> as
+        /// this used to be. That form meant a ceiling below what the base game would have produced
+        /// could never bind — TourismSystem.GetTargetTourists reaches 1500 at attractiveness 100 and
+        /// around 1800 beyond it, against a slider that starts at 1500 — so the bottom of the
+        /// range did nothing. If the player asks for fewer visitors than vanilla would send, that
+        /// is the answer they get.
+        ///
+        /// Zero or below disables the ceiling rather than emptying the city, which is what a
+        /// player who drags a limit to nothing means by it.
+        /// </summary>
+        private static int ApplyMaximum(int target, TourismOverhaulSetting settings)
+        {
+            return settings.MaximumTourists > 0
+                ? math.min(target, settings.MaximumTourists)
+                : target;
         }
 
         private static int ComputeTarget(
@@ -549,8 +596,6 @@ namespace TourismOverhaul.Systems
 
             int target = (int)math.round(math.max(vanillaTarget, math.max(scaled, roomDriven)));
 
-            target = math.clamp(target, 0, math.max(vanillaTarget, settings.MaximumTourists));
-
             // Never ask for more tourists than there are beds.
             //
             // A tourist who cannot book a room is evicted the same evening as TouristNoHotel, so
@@ -569,7 +614,11 @@ namespace TourismOverhaul.Systems
                 target = 1;
             }
 
-            return target;
+            // Headroom last, so the settled population lands on the figure rather than short of
+            // it — see kTargetHeadroom for why it sits here and not before the bed ceiling. The
+            // player's own ceiling is applied by the caller, after the opening allowance, and is
+            // the only thing that comes after this.
+            return (int)math.round(target * kTargetHeadroom);
         }
 
         /// <summary>
