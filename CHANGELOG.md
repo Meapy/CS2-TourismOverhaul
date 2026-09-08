@@ -5,7 +5,7 @@ All notable changes to CS2 Tourism Overhaul.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [semantic](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.8.2] — 2026-09-08
 
 ### Fixed
 

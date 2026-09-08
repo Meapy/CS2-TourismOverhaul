@@ -233,7 +233,7 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
   <Tag Value="Code Mod" />
 
   <ForumLink Value="https://forum.paradoxplaza.com/forum/threads/mod-tourism-overhaul-fix-tourism.1937099/" />
-  <ModVersion Value="1.8.1" />
+  <ModVersion Value="1.8.2" />
   <GameVersion Value="1.6.*" />
 
   <!--
@@ -241,8 +241,12 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
     accumulating history here republishes every past release with every upload. The full record
     belongs in CHANGELOG.md.
   -->
-  <ChangeLog>1.8.1
-Free hotel rooms did not effectivly reduce demand, so the demand bar could be misleading. Now it does.
+  <ChangeLog>1.8.2
+Cruise passengers now get back aboard before the ship sails. They walked to the quay and were left there, because only the last leg of the return actually boarded anyone and it rarely ran.
+
+Maximum tourists is now genuinely a maximum. The setting was applied and the result then raised by 40%, so a limit of 20,000 was really 28,000.
+
+A cruise port no longer draws enormous power the moment a ship ties up. The fix now covers every harbour, including the ones from Bridges &amp; Ports and from asset mods, rather than only the base game's.
   </ChangeLog>
 
   <ExternalLink Type="github" Url="https://github.com/Meapy/CS2-TourismOverhaul" />
