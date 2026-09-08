@@ -91,13 +91,30 @@ namespace TourismOverhaul.Systems
         /// costs — a ToEntityArray over every seeker — and that happens once per update either way,
         /// so lifting the per-update cap adds pathfind requests without adding scans.
         /// </summary>
-        private const int kMaxPerUpdate = 2048;
+        /// Put back to 512. Raising it made no measurable difference to how fast a cruise complement
+        /// reached the dock — the queue read 164 before and 169 after — and the reasoning was wrong:
+        /// the scan is cheap next to what it queues, because every household admitted issues a
+        /// pathfind request. Quadrupling the cap quadruples the pathfinding, which is the expensive
+        /// part and a plausible source of simulation speed cycling.
+        private const int kMaxPerUpdate = 1024;
 
-        /// <summary>Maximum pending pathfind requests before throttling new submissions.</summary>
-        private const int kMaxPendingRequests = 8192;
-
-        /// <summary>How many frames to tolerate a pending pathfind request before treating it as timed out.</summary>
-        private const int kPendingTimeoutFrames = 4096;
+        /// <summary>
+        /// How long a pathfind request may stay pending before it is treated as lost.
+        ///
+        /// A household with a pending search is skipped by ProcessSeeker and consumes no slot, so
+        /// one whose result never arrives is never accepted, never failed, and never evicted — it
+        /// simply stays in the seeker query and is walked again on every update for the life of the
+        /// save. Nothing else in this system can end that state, because every other exit reads a
+        /// path that has finished.
+        ///
+        /// 4,096 frames is about a sixty-fourth of an in-game day, which is far longer than a
+        /// search takes and short enough that a lost one does not sit there for a visit's worth of
+        /// updates. A timeout counts as a failed attempt rather than an eviction, so a household
+        /// still gets its kMaxAttempts tries before it is moved away.
+        ///
+        /// From PR #10 by lkirev, whose diagnosis of the stuck-request leak this is.
+        /// </summary>
+        private const uint kPendingTimeoutFrames = 4096u;
 
         private EntityQuery m_SeekerQuery;
         private ComponentTypeSet m_PathfindTypes;
@@ -109,9 +126,18 @@ namespace TourismOverhaul.Systems
         /// <summary>Attempts made per household, so retries can be bounded.</summary>
         private NativeHashMap<Entity, int> m_Attempts;
 
-        /// <summary>Frame index when a pending path request was issued for a household.</summary>
-        private NativeHashMap<Entity, int> m_PendingRequests;
+        /// <summary>
+        /// The frame each outstanding pathfind request was issued on, so a lost one can be noticed.
+        ///
+        /// Kept in step with <see cref="m_Attempts"/> entry for entry: every path out of
+        /// ProcessSeeker that stops a household waiting on a result removes it here too. That is
+        /// not tidiness — an entry left behind after a successful search is a household this map
+        /// claims is still waiting, and the next request for it would inherit the old frame and be
+        /// declared timed out immediately.
+        /// </summary>
+        private NativeHashMap<Entity, uint> m_PendingRequests;
 
+        /// <summary>The frame counter, for ageing pending requests.</summary>
         private SimulationSystem m_SimulationSystem;
 
         private bool m_NativeDisabled;
@@ -152,7 +178,7 @@ namespace TourismOverhaul.Systems
 
             m_PathfindTypes = new ComponentTypeSet(ComponentType.ReadWrite<PathInformation>());
             m_Attempts = new NativeHashMap<Entity, int>(1024, Allocator.Persistent);
-            m_PendingRequests = new NativeHashMap<Entity, int>(1024, Allocator.Persistent);
+            m_PendingRequests = new NativeHashMap<Entity, uint>(1024, Allocator.Persistent);
 
             // Cruise passengers are excluded outright, and this is the fix for them going to hotels
             // rather than another attempt to undo it afterwards.
@@ -174,6 +200,29 @@ namespace TourismOverhaul.Systems
                 ComponentType.Exclude<MovingAway>(),
                 ComponentType.Exclude<Deleted>(),
                 ComponentType.Exclude<Temp>());
+        }
+
+        /// <summary>
+        /// Drops the per-household bookkeeping when a save is loaded.
+        ///
+        /// Both maps are keyed by Entity, and an entity index means nothing across a load — the
+        /// household it named is gone and the same index will be handed to something else. Carrying
+        /// the old keys over means attributing one household's attempts, or one household's pending
+        /// request, to an unrelated one.
+        /// </summary>
+        protected override void OnGameLoadingComplete(Colossal.Serialization.Entities.Purpose purpose, GameMode mode)
+        {
+            base.OnGameLoadingComplete(purpose, mode);
+
+            if (m_Attempts.IsCreated)
+            {
+                m_Attempts.Clear();
+            }
+
+            if (m_PendingRequests.IsCreated)
+            {
+                m_PendingRequests.Clear();
+            }
         }
 
         protected override void OnDestroy()
@@ -284,42 +333,27 @@ namespace TourismOverhaul.Systems
             // Still searching.
             if ((path.m_State & PathFlags.Pending) != 0)
             {
-                // Check for a timed-out pending request and treat it as a failure so it can retry.
-                if (m_PendingRequests.IsCreated && m_PendingRequests.TryGetValue(household, out int startFrame))
+                // Unless it has been searching for too long to still be searching.
+                //
+                // See kPendingTimeoutFrames: a result that never arrives leaves a household in this
+                // branch permanently, and this branch is the one exit that neither resolves nor
+                // counts against the household. Ageing the request turns a stuck search into an
+                // ordinary failed attempt, which the retry path below already knows how to handle.
+                if (!m_PendingRequests.TryGetValue(household, out uint issued)
+                    || m_SimulationSystem.frameIndex - issued <= kPendingTimeoutFrames)
                 {
-                    int currentFrame = (int)m_SimulationSystem.frameIndex;
-
-                    if (currentFrame - startFrame > kPendingTimeoutFrames)
-                    {
-                        m_Attempts.TryGetValue(household, out int currentAttempt);
-                        Mod.Log.Warn(
-                            $"TouristTargetSearchSystem: path request for household {GetEntityDebugName(household)} " +
-                            $"timed out after {kPendingTimeoutFrames} frames, attempt {currentAttempt + 1} of {kMaxAttempts}");
-                        // Timed out: remove pending tracking and the stale PathInformation and count an attempt.
-                        m_PendingRequests.Remove(household);
-
-                        commandBuffer.RemoveComponent<PathInformation>(household);
-
-                        currentAttempt++;
-
-                        if (currentAttempt < kMaxAttempts)
-                        {
-                            m_Attempts[household] = currentAttempt;
-                        }
-                        else
-                        {
-                            m_Attempts.Remove(household);
-                            Evictions++;
-
-                            CitizenUtils.HouseholdMoveAway(commandBuffer, household, MoveAwayReason.TouristNoTarget);
-                        }
-
-                        return true;
-                    }
+                    return false;
                 }
 
-                return false;
+                Mod.Log.Warn(
+                    $"Tourist path request for household {household.Index} was still pending after "
+                    + $"{kPendingTimeoutFrames} frames; counting it as a failed attempt.");
+
+                return FailAttempt(household, commandBuffer);
             }
+
+            // The search is over either way, so it is no longer outstanding.
+            m_PendingRequests.Remove(household);
 
             if (path.m_Destination != Entity.Null)
             {
@@ -328,6 +362,21 @@ namespace TourismOverhaul.Systems
             }
 
             // No destination. Unlike the native system this is not immediately fatal.
+            return FailAttempt(household, commandBuffer);
+        }
+
+        /// <summary>
+        /// Counts one failed search against a household, and moves it away once they run out.
+        ///
+        /// Shared by the two ways a search can fail — it came back with nowhere to go, or it never
+        /// came back at all — because the response is the same and having it in one place is what
+        /// keeps the attempt count and the pending record from drifting apart.
+        /// </summary>
+        /// <returns>True: a failure consumes a slot, the same as an acceptance.</returns>
+        private bool FailAttempt(Entity household, EntityCommandBuffer commandBuffer)
+        {
+            m_PendingRequests.Remove(household);
+
             m_Attempts.TryGetValue(household, out int attempts);
             attempts++;
 
@@ -405,23 +454,14 @@ namespace TourismOverhaul.Systems
             PathUtils.UpdateOwnedVehicleMethods(
                 household, ref m_OwnedVehicles, ref parameters, ref origin, ref destination);
 
-            // Throttle new submissions if the pending queue is already large.
-            if (m_PendingRequests.IsCreated && m_PendingRequests.Count >= kMaxPendingRequests)
-            {
-                // Skip enqueueing for now; the household will be retried on the next update.
-                Mod.Log.Info(
-                    $"TouristTargetSearchSystem: throttled path request for household {GetEntityDebugName(household)}, " +
-                    $"pending queue at {m_PendingRequests.Count}/{kMaxPendingRequests}");
-                return;
-            }
-
             queue.Enqueue(new SetupQueueItem(household, parameters, origin, destination));
 
-            // Record when the request was issued so we can time out stuck requests.
-            if (m_PendingRequests.IsCreated)
-            {
-                m_PendingRequests.TryAdd(household, (int)m_SimulationSystem.frameIndex);
-            }
+            // The indexer, not TryAdd. A household that failed and is retrying still has its old
+            // entry here, and TryAdd would leave the first request's frame in place — so the retry
+            // would inherit an age it never had and be declared lost on the update after it was
+            // issued. Overwriting is the only correct thing: this records when the request that is
+            // outstanding *now* went out.
+            m_PendingRequests[household] = m_SimulationSystem.frameIndex;
         }
 
         /// <summary>
@@ -430,47 +470,35 @@ namespace TourismOverhaul.Systems
         /// </summary>
         private void AcceptTarget(Entity household, Entity destination, EntityCommandBuffer commandBuffer)
         {
+            // Nothing below tolerates a destination that is not there any more, and the pathfinder
+            // is under no obligation to hand back one that is: a building can be demolished, or
+            // marked Deleted, between the search being answered and this reading the answer. The
+            // reads that follow — a Renter buffer, a LodgingProvider — would then be made against a
+            // dead entity, and the household would be given a Target naming a building the player
+            // has knocked down.
+            //
+            // Treated as a failed search rather than as an error, so the household gets another of
+            // its attempts and is moved away only if they all go the same way.
+            //
+            // From PR #10 by lkirev.
+            if (destination == Entity.Null
+                || !EntityManager.Exists(destination)
+                || EntityManager.HasComponent<Deleted>(destination)
+                || EntityManager.HasComponent<Temp>(destination))
+            {
+                Mod.Log.Warn(
+                    $"Tourist search for household {household.Index} came back with a destination "
+                    + "that no longer exists; retrying.");
+
+                FailAttempt(household, commandBuffer);
+                return;
+            }
+
             m_Attempts.Remove(household);
+            m_PendingRequests.Remove(household);
             TargetsFound++;
 
             Entity hotel = Entity.Null;
-
-            // Defensive check: destination must exist and not be deleted/temp before accepting.
-            if (destination == Entity.Null || !EntityManager.Exists(destination) ||
-                EntityManager.HasComponent<Deleted>(destination) || EntityManager.HasComponent<Temp>(destination))
-            {
-                string reason = "unknown";
-                if (destination == Entity.Null)
-                {
-                    reason = "null destination";
-                }
-                else if (!EntityManager.Exists(destination))
-                {
-                    reason = "entity does not exist";
-                }
-                else if (EntityManager.HasComponent<Deleted>(destination))
-                {
-                    reason = "entity marked for deletion";
-                }
-                else if (EntityManager.HasComponent<Temp>(destination))
-                {
-                    reason = "entity is temporary";
-                }
-
-                Mod.Log.Warn(
-                    $"TouristTargetSearchSystem: rejected invalid destination {GetBuildingName(destination)} " +
-                    $"for household {GetEntityDebugName(household)} ({reason})");
-
-                // Clean up any stale pending record and PathInformation so the seeker can retry.
-                if (m_PendingRequests.IsCreated && m_PendingRequests.TryGetValue(household, out _))
-                {
-                    m_PendingRequests.Remove(household);
-                }
-
-                commandBuffer.RemoveComponent<PathInformation>(household);
-                // Let the retry logic in ProcessSeeker handle attempts/eviction on the next pass.
-                return;
-            }
 
             if (EntityManager.HasBuffer<Renter>(destination))
             {
@@ -503,51 +531,6 @@ namespace TourismOverhaul.Systems
             }
 
             commandBuffer.AddComponent(household, new Target(destination));
-        }
-
-        /// <summary>
-        /// Builds a debug string for an entity, including its prefab name if available.
-        /// </summary>
-        private string GetEntityDebugName(Entity entity)
-        {
-            if (entity == Entity.Null)
-            {
-                return "Entity.Null";
-            }
-
-            string baseName = entity.ToString();
-
-            try
-            {
-                if (EntityManager.HasComponent<PrefabRef>(entity))
-                {
-                    Entity prefabRef = EntityManager.GetComponentData<PrefabRef>(entity).m_Prefab;
-                    if (prefabRef != Entity.Null)
-                    {
-                        baseName = $"{entity} (prefab:{prefabRef})";
-                    }
-                }
-            }
-            catch
-            {
-                // If anything fails, just return the entity ID
-            }
-
-            return baseName;
-        }
-
-        /// <summary>
-        /// Extracts human-readable building name from entity if available.
-        /// </summary>
-        private string GetBuildingName(Entity entity)
-        {
-            if (!EntityManager.HasComponent<Building>(entity))
-            {
-                return GetEntityDebugName(entity);
-            }
-
-            string prefabName = GetEntityDebugName(entity);
-            return $"{prefabName} (building)";
         }
     }
 }
