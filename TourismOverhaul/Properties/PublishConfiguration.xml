@@ -12,7 +12,7 @@
   <ModId Value="153543" />
   <DisplayName Value="Tourism Overhaul" />
   <!-- Paradox rejects anything over 200 characters. This is 171. -->
-  <ShortDescription Value="Fixes the tourism simulation: tourists arrive by plane and ferry, spend money in your shops, hotels and motels get their own zones, and the numbers finally mean something." />
+  <ShortDescription Value="Fixes the tourism simulation: tourists arrive by plane, ferry and cruise ship, spend money in your shops, hotels and motels get their own zones, and the numbers finally mean something." />
 
   <LongDescription># Tourism Overhaul
 
@@ -43,6 +43,46 @@ rerouted.
 
 This mod watches how many tourists are still waiting at each entrance and shifts arrivals toward
 routes that are moving. Build a harbour and it starts carrying real traffic.
+
+## Tourism has a demand bar
+
+The base game shows you demand for residential, commercial, industrial and office, and nothing for
+tourism — so there is no way to tell whether your city could support more visitors, or what is
+stopping it.
+
+This mod adds a seventh demand bar, in light red. It sits with the others in the City Information
+panel and in the toolbar, and it reads as visitors who would come but have nowhere to stay — so it
+is highest when your city is appealing and every room is taken, and falls to nothing once there is
+a room waiting for everyone who wants one.
+
+Underneath it, the same kind of factor list the other six have, saying what is actually holding
+tourism back — not enough hotel rooms, rooms standing empty, attractiveness, visitors already here,
+or the ways into your city. Hover it and the panel explains it, exactly as it does for the rest.
+
+The bar is drawn by the game rather than by the mod, so it matches the others precisely.
+
+## Cruise ships call at your city
+
+A new Passenger Cruise Line tool sits beside the passenger ship line. Draw it from a sea outside
+connection to a harbour and a cruise ship works the route: it fills with visitors out at the map
+edge, sails in, ties up at your quay for the day, and leaves with them when shore leave ends.
+
+Cruise passengers sleep aboard. They never take a hotel room and never compete with your other
+visitors for one — they come ashore to shop, to visit your attractions and to spend an evening in
+your leisure venues, then walk back to the ship when last call goes out. If your harbour is a long
+way from the sights, some of them will be running.
+
+Select a docked ship and the panel tells you when it sails and how many of its passengers are still
+out in the city.
+
+Nobody is teleported. The passengers are ordinary visitors who happen to arrive by ship — the game
+gives them bodies, routes them, boards them and lands them with its own machinery, exactly as it does
+for everyone else. Shore leave and how many a call brings are both adjustable, though the ship's own
+capacity has the final say.
+
+One cruise line per city, from a sea connection to a single harbour. The tool disappears once you
+have drawn one and comes back if you delete it. A harbour shared with an ordinary passenger ship line
+works, but the two will affect each other — give the cruise line its own terminal if you can.
 
 ## Tourism scales with your city
 
@@ -76,8 +116,9 @@ across the map.
 Both come with their own icons, drawn to match the game's existing zone art.
 
 A note on removal: zone painting is stored as a plain number in your save, so hotel zoning won't
-mean anything if you later uninstall the mod. That's true of any mod that adds a zone. Everything
-else here is safe to add and remove freely.
+mean anything if you later uninstall the mod. That's true of any mod that adds a zone. The one other
+thing to know is that removing the mod while a cruise ship is alongside leaves a lodging marker on
+that harbour — do it between voyages. Everything else is safe to add and remove freely.
 
 ## The numbers finally mean something
 
@@ -126,37 +167,6 @@ customer — and the venues earn less per visit in exchange.
 
 Adjustable, and returnable to the base game's pricing if you prefer it.
 
-## Optional extras
-
-- Hotel room multiplier, 1x to 10x, for zoned commercial hotels. Signature buildings keep their
-  authored capacity. The city's sense of how many rooms it needs scales with this, so raising it
-  makes hotels bigger without making the city think it has enough of them.
-- Residents take holidays. The base game suppresses out-of-town travel to roughly 1-3% of
-  leisure trips and blocks it entirely for households with no spare money. Turn this up and your
-  citizens will use your airport too.
-- A coloured ring marker under tourists so you can pick them out of a crowd, with adjustable
-  colour and size.
-
-Everything is individually toggleable, and everything is off or at vanilla values by default
-except the arrival fixes.
-
-## Tourism has a demand bar
-
-The base game shows you demand for residential, commercial, industrial and office, and nothing for
-tourism — so there is no way to tell whether your city could support more visitors, or what is
-stopping it.
-
-This mod adds a seventh demand bar, in light red. It sits with the others in the City Information
-panel and in the toolbar, and it reads as visitors who would come but have nowhere to stay — so it
-is highest when your city is appealing and every room is taken, and falls to nothing once there is
-a room waiting for everyone who wants one.
-
-Underneath it, the same kind of factor list the other six have, saying what is actually holding
-tourism back — not enough hotel rooms, rooms standing empty, attractiveness, visitors already here,
-or the ways into your city. Hover it and the panel explains it, exactly as it does for the rest.
-
-The bar is drawn by the game rather than by the mod, so it matches the others precisely.
-
 ## In your language
 
 The zones, the info views, the panel rows and every setting are translated into all eleven other
@@ -178,6 +188,20 @@ The optional hotel room multiplier replaces the game's lodging system with a cop
 the multiplier — this is unavoidable, because room count is computed inside a compiled job from
 values that also control rent and workplaces. Turning the setting off restores the original
 system immediately. Leave it off if you'd rather nothing native is replaced.
+
+## Optional extras
+
+- Hotel room multiplier, 1x to 10x, for zoned commercial hotels. Signature buildings keep their
+  authored capacity. The city's sense of how many rooms it needs scales with this, so raising it
+  makes hotels bigger without making the city think it has enough of them.
+- Residents take holidays. The base game suppresses out-of-town travel to roughly 1-3% of
+  leisure trips and blocks it entirely for households with no spare money. Turn this up and your
+  citizens will use your airport too.
+- A coloured ring marker under tourists so you can pick them out of a crowd, with adjustable
+  colour and size.
+
+Everything is individually toggleable, and everything is off or at vanilla values by default
+except the arrival fixes.
 
 Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-TourismOverhaul</LongDescription>
 
@@ -209,7 +233,7 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
   <Tag Value="Code Mod" />
 
   <ForumLink Value="https://forum.paradoxplaza.com/forum/threads/mod-tourism-overhaul-fix-tourism.1937099/" />
-  <ModVersion Value="1.8.0" />
+  <ModVersion Value="1.8.1" />
   <GameVersion Value="1.6.*" />
 
   <!--
@@ -217,37 +241,9 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
     accumulating history here republishes every past release with every upload. The full record
     belongs in CHANGELOG.md.
   -->
-  <ChangeLog>1.8.0
-
-Cruise ships.
-
-There is a new Passenger Cruise Line tool beside the passenger ship line. Draw it from a sea outside
-connection to a harbour and a cruise ship works the route: it fills with visitors at the map edge,
-sails in, ties up at your quay while its passengers spend the day in your city, and leaves with them
-at the end of shore leave. Cruise passengers sleep aboard, so they never take a hotel room and never
-compete with your other visitors for one — they go shopping, to your attractions and to your leisure
-venues instead.
-
-Nobody is teleported or placed by hand at any point. The mod creates visitors at the connection and
-gives them a reason to travel; the game gives them bodies, routes them, boards them and lands them
-through its own machinery. Passengers walk off the pier, wander the city, and run back to the quay
-when last call goes out.
-
-Select a docked cruise ship and the panel tells you when it sails and how many of its passengers are
-still out in the city, so you can see a call running down rather than guessing at it.
-
-Two settings: cruise shore leave in hours, defaulting to 8, and how many passengers a call brings.
-The ship's own capacity applies as well, and the smaller of the two wins.
-
-One cruise line per city, from a sea outside connection to a single harbour. The tool disappears once
-a line exists and returns if you delete it. Everything the feature does is written to the harbour and
-the map-edge stop rather than to the line, so two of them would overwrite each other.
-
-Known limitation: a harbour shared between a cruise line and an ordinary passenger ship line is
-affected by both. Give the cruise line its own terminal if you can. Removing the mod while a ship is
-alongside leaves a lodging marker on the harbour — do it between voyages.
-
-Saves from earlier versions load unchanged.</ChangeLog>
+  <ChangeLog>1.8.1
+Free hotel rooms did not effectivly reduce demand, so the demand bar could be misleading. Now it does.
+  </ChangeLog>
 
   <ExternalLink Type="github" Url="https://github.com/Meapy/CS2-TourismOverhaul" />
 </Publish>

@@ -103,6 +103,16 @@ namespace TourismOverhaul.Systems
         private const uint kRecallRefreshFrames = 2048u;
 
         /// <summary>
+        /// Frames between shore-party sweeps. Four times the vessel's own cadence.
+        ///
+        /// The vessel needs sixteen because a hold has to be written inside the sixty-frame window
+        /// TransportBoardingHelpers:368 gives it. A party ashore has no such deadline, so sweeping
+        /// it at the same rate was walking two thousand households sixteen times a second to check
+        /// state measured in in-game hours.
+        /// </summary>
+        private const uint kShorePartyInterval = 64u;
+
+        /// <summary>
         /// Share of a complement that stays aboard rather than going ashore at a call.
         ///
         /// Not everyone gets off at every port. These parties are simply not adopted: they keep no
@@ -111,6 +121,20 @@ namespace TourismOverhaul.Systems
         /// ship's business and not the city's.
         /// </summary>
         private const float kStayAboardFraction = 0.1f;
+
+        /// <summary>
+        /// The share of shore leave reserved for actually getting aboard.
+        ///
+        /// A party's own deadline used to be the same frame the ship sailed, which left no time at
+        /// all for the last leg — a party that reached the quay on its deadline had to path to the
+        /// map-edge connection, walk to the stop and board, all within the frame the vessel was
+        /// already leaving on. Holding their deadline this far short of the vessel's turns "be back
+        /// by the time it goes" into "be back in time to board it", which is what a last call means.
+        ///
+        /// The vessel's own departure is unchanged, and so is the frame after which anyone still
+        /// ashore is written off — this only moves when the shore party is expected back.
+        /// </summary>
+        private const float kBoardingGraceFraction = 0.15f;
 
         /// <summary>Ship arrivals are mode 3 in ArrivalMode's road/train/air/ship ordering.</summary>
         private const byte kArrivalModeShip = 3;
@@ -174,7 +198,7 @@ namespace TourismOverhaul.Systems
         /// visits rarely, and the lever is the line — more sailings, or a shorter dwell — not more
         /// people.
         /// </summary>
-        private const uint kBatchIntervalFrames = 1024u;
+        private const uint kBatchIntervalFrames = 512u;
 
         /// <summary>
         /// Longest a ship waits at the map edge for its complement to board.
@@ -319,8 +343,24 @@ namespace TourismOverhaul.Systems
 
             EnforceOneCruiseLine(cruiseLinePrefab);
             ServeDockedShips(cruiseLinePrefab);
-            ReturnFinishedParties();
-            SweepOrphanedTerminals();
+
+            // The shore party is swept on its own, slower cadence.
+            //
+            // Only the vessel needs sixteen frames — TransportBoardingHelpers:368 gives a ship that
+            // was not already EnRoute a departure sixty frames out, so a hold has to be written
+            // inside that window. Nothing about a party ashore moves that fast: a lodging anchor,
+            // a recall and a deadline are all measured in in-game hours.
+            //
+            // Running the sweep at the vessel's rate meant walking every ashore household — two
+            // thousand of them on a full call, several EntityManager lookups each — sixteen times a
+            // second for state that changes over hours. At a quarter of the rate the behaviour is
+            // indistinguishable and three quarters of the work is gone.
+            if (m_SimulationSystem.frameIndex % kShorePartyInterval
+                < (uint)GetUpdateInterval(SystemUpdatePhase.GameSimulation))
+            {
+                ReturnFinishedParties();
+                SweepOrphanedTerminals();
+            }
         }
 
         /// <summary>
@@ -568,12 +608,29 @@ namespace TourismOverhaul.Systems
                 {
                     if (live.Contains(terminals[i]))
                     {
+                        // Still in use, so nothing is stripped — but this is also the one place
+                        // that sees every equipped terminal every update, which makes it where the
+                        // utility guard is repaired.
+                        //
+                        // A call that was already open when this build was installed was equipped
+                        // by code that did not know about StorageProperty, and StartCall will not
+                        // run again for it, so without this the port keeps drawing renter-scaled
+                        // power until the ship sails. Cheap: the component test fails immediately
+                        // in the ordinary case, and there are never many terminals.
+                        if (!EntityManager.HasComponent<Game.Buildings.StorageProperty>(terminals[i]))
+                        {
+                            commandBuffer.AddComponent<Game.Buildings.StorageProperty>(terminals[i]);
+                            commandBuffer.AddComponent<Components.CruiseTerminalUtilityGuard>(terminals[i]);
+
+                            Mod.Log.Info(
+                                $"Cruise terminal {terminals[i].Index} guarded; its utility demand "
+                                + "no longer scales with the shore party.");
+                        }
+
                         continue;
                     }
 
-                    commandBuffer.RemoveComponent<LodgingProvider>(terminals[i]);
-                    commandBuffer.RemoveComponent<Game.Buildings.Renter>(terminals[i]);
-                    commandBuffer.RemoveComponent<Components.CruiseTerminalLodging>(terminals[i]);
+                    StripTerminalEquipment(terminals[i], commandBuffer);
 
                     Mod.Log.Info(
                         $"Cruise terminal {terminals[i].Index} released; no call is using it.");
@@ -890,7 +947,12 @@ namespace TourismOverhaul.Systems
             // Whoever the ship carried in is this call's shore party. That is the only thing that
             // starts a call: a cruise call exists because passengers arrived on the vessel, not
             // because a vessel touched a quay.
-            int placed = AdoptCarriedPassengers(vehicle, terminal, reboard, commandBuffer);
+            // Back before the ship goes, not as it goes — see kBoardingGraceFraction. The vessel
+            // still sails at `reboard`; this is only when the party is due at the quay.
+            uint ashoreUntil = reboard - (uint)math.max(1f, shoreLeave * kBoardingGraceFraction);
+
+            int placed = AdoptCarriedPassengers(
+                vehicle, terminal, ashoreUntil, reboard, commandBuffer);
 
             if (placed == 0)
             {
@@ -1150,6 +1212,20 @@ namespace TourismOverhaul.Systems
             EntityCommandBuffer commandBuffer,
             NativeList<Entity> created)
         {
+            // Nothing is ordered while the vessel is alongside a city quay.
+            //
+            // A call runs for hours, and this was ordering a batch every few hundred frames through
+            // all of it — a backlog built at the map edge with no ship there to collect it, and by
+            // the time one arrived most of it had given up waiting or wandered inland. Visitors are
+            // created for a sailing that is coming, so the sailing has to be the thing that starts
+            // them: once the call closes and the vessel leaves, the queue builds through the
+            // crossing and is standing on the dock when it ties up.
+            if (EntityManager.HasComponent<Components.CruiseCall>(vehicle))
+            {
+                ClearOutsideConnectionWait(vehicle);
+                return;
+            }
+
             if (frame < m_NextBatchFrame)
             {
                 return;
@@ -1174,7 +1250,7 @@ namespace TourismOverhaul.Systems
 
             m_NextBatchFrame = frame + kBatchIntervalFrames;
 
-            // Make the stop cheap before anyone is created, not after.
+            // Make the stop as attractive as it can be, immediately before anyone is created.
             //
             // A visitor picks a route the moment they exist and does not reconsider, so the price of
             // this stop at the instant of creation is the only one that matters to them. The
@@ -1710,7 +1786,11 @@ namespace TourismOverhaul.Systems
         /// one household ashore, and the notes already record this class of error twice.
         /// </summary>
         private int AdoptCarriedPassengers(
-            Entity vehicle, Entity terminal, uint reboard, EntityCommandBuffer commandBuffer)
+            Entity vehicle,
+            Entity terminal,
+            uint ashoreUntil,
+            uint reboard,
+            EntityCommandBuffer commandBuffer)
         {
             if (!EntityManager.HasBuffer<Passenger>(vehicle))
             {
@@ -1726,7 +1806,7 @@ namespace TourismOverhaul.Systems
             // How much earlier than the ship a party may decide it has seen enough. A third of the
             // stay, so the quayside fills across the whole of last call rather than in one wave.
             uint earlyReturnSpread = (uint)math.max(
-                1f, (reboard - m_SimulationSystem.frameIndex) * kEarlyReturnFraction);
+                1f, (ashoreUntil - m_SimulationSystem.frameIndex) * kEarlyReturnFraction);
 
             Random random = new Random(
                 math.max(1u, m_SimulationSystem.frameIndex * 2654435761u + 1013904223u));
@@ -1770,7 +1850,7 @@ namespace TourismOverhaul.Systems
                     //
                     // Only ever earlier than the ship's own reboard frame, never later, so no party
                     // is given a deadline the vessel will not wait for.
-                    uint ownDeadline = reboard - (uint)random.NextInt(0, (int)earlyReturnSpread);
+                    uint ownDeadline = ashoreUntil - (uint)random.NextInt(0, (int)earlyReturnSpread);
 
                     commandBuffer.AddComponent(household, new Components.CruisePassenger
                     {
@@ -2608,7 +2688,15 @@ namespace TourismOverhaul.Systems
             NativeArray<ArchetypeChunk> chunks = m_AshoreQuery.ToArchetypeChunkArray(Allocator.Temp);
 
             int recalled = 0;
-            int sailed = 0;
+            int boarded = 0;
+            int stranded = 0;
+
+            // Where the parties that have been called back but are not aboard have got to. One of
+            // these three is always the answer to "why is the ship leaving without them", and the
+            // three need different fixes, so they are counted rather than guessed at.
+            int walking = 0;
+            int queued = 0;
+            int idle = 0;
 
             try
             {
@@ -2640,92 +2728,89 @@ namespace TourismOverhaul.Systems
 
                         KeepOffTheHotels(entities[i], passenger.m_Terminal, commandBuffer);
 
-                        // Already heading out on the ship. They keep the lodging protection above,
-                        // which is why this test sits after it, but nothing below applies: they
-                        // have been recalled, they have arrived, and their trip is issued. Calling
-                        // them again would replace the walk onto the vessel with another walk to
-                        // the quay they are already standing on.
+                        // Aboard already. They keep the lodging protection above, which is why
+                        // this test sits after it, but nothing below applies: handing a passenger
+                        // on the ship another trip would take them back off it.
                         if (passenger.m_Homeward != 0)
                         {
                             continue;
                         }
 
-                        // Sailing time. They are at or near the quay by now, having been walking
-                        // back since last call, so ending the visit here is not something the
-                        // player watches happen in the middle of the city.
+                        // Two deadlines, and they are deliberately different frames.
                         //
-                        // The departure is a MovingAway naming this ship's own connection. It may
-                        // resolve by placement rather than travel — TripNeededSystem:1583-1599 puts
-                        // a citizen straight at the target and marks them Arrived when no path is
-                        // needed — and that is acceptable precisely because it happens at the
-                        // harbour they already walked to.
-                        // Away as soon as they are actually at the quay, rather than at the
-                        // deadline.
+                        // The party's own — m_ReboardFrame, staggered a little for each — is when
+                        // it is due back, and it now falls a boarding grace short of the vessel's
+                        // departure so there is time to walk aboard rather than merely to arrive.
+                        // The ship's is when it is too late, and that is what this reads.
                         //
-                        // A party that has walked back and is standing at the terminal should leave
-                        // on the ship that is sitting there — the departure trip's first leg is that
-                        // vessel, because it is the only route from this stop to the map edge. Made
-                        // to wait for the reboard frame instead, they stand about until the call
-                        // closes and are then removed wherever they happen to be, which is the
-                        // teleport the player notices.
-                        //
-                        // The deadline below is the backstop for anyone who never made it.
-                        // The party's own deadline says when to start walking back. Only the ship's
-                        // says when it is too late.
-                        //
-                        // Using the party's figure for both is why so few boarded: a deadline a
-                        // third early meant a party that had not yet reached the quay was removed
-                        // and sent out of the city on foot, long before the vessel was going to
-                        // leave. The ones seen boarding were simply the ones that walked fast
-                        // enough. Staggering was meant to spread the return, not to shorten the
-                        // stay.
-                        uint sailingFrame = SailingFrameFor(passenger.m_Ship, passenger.m_ReboardFrame);
+                        // Using the party's figure for both is an old bug worth not repeating: a
+                        // deadline a third early meant a party that had not yet reached the quay
+                        // was written off and sent out of the city on foot long before the vessel
+                        // was going to leave. Staggering was meant to spread the return, not to
+                        // shorten the stay.
+                                                uint sailingFrame = SailingFrameFor(passenger.m_Ship, passenger.m_ReboardFrame);
 
-                        bool atQuay = frame < sailingFrame
-                                      && passenger.m_Recalled != 0
-                                      && PartyHasReached(entities[i], passenger.m_Terminal);
-
-                        // At the quay, send them on as travellers rather than as leavers.
+                        // Aboard. Nothing more to do for them, and nothing more may be done to
+                        // them: a party on the vessel must not be handed another trip, and must not
+                        // be written off when the deadline passes.
                         //
-                        // MovingAway is what a departing visitor gets, and it is the reason nobody
-                        // boards: TripNeededSystem:1583-1599 may satisfy that purpose by *placing*
-                        // the citizen at the target and marking them Arrived, with no journey and
-                        // therefore no vessel. Purpose.Leisure always travels, so the trip is real,
-                        // its destination is the map edge, and the only route there from this pier
-                        // is the ship — so they walk aboard and the counter moves.
+                        // This is the only thing that now ends a party's shore leave, and it is a
+                        // fact about the world rather than an inference from one — the citizen's
+                        // body carries Game.Creatures.CurrentVehicle naming this ship, which is
+                        // what "boarded" means to the game and what PassengerSystem rebuilds the
+                        // vessel's manifest from after a load.
                         //
-                        // They stay tagged and marked homeward, which is what LandHomewardPassengers
-                        // uses to release them once the vessel reaches the connection. The tag is
-                        // also what keeps them out of the hotels for the crossing.
-                        if (atQuay)
+                        // It replaces a test for the party standing inside the terminal building,
+                        // which was doing a job it could not do — see RecallToHarbour.
+                        if (passenger.m_Recalled != 0 && PartyIsAboard(entities[i], passenger.m_Ship))
                         {
-                            TryGetOutsideConnection(passenger.m_Ship, out Entity port, out int _);
+                            // m_Terminal stays set, and that matters: clearing it takes the party
+                            // out of KeepOffTheHotels, which is the only thing holding their lodging
+                            // anchor for the crossing. m_Homeward is what distinguishes them.
+                            passenger.m_Homeward = 1;
+                            passengers[i] = passenger;
 
-                            if (port != Entity.Null)
+                            boarded++;
+                            continue;
+                        }
+
+                        // Called back, not aboard: say where they actually are.
+                        if (passenger.m_Recalled != 0)
+                        {
+                            ClassifyRecalledParty(
+                                entities[i], out bool hasBody, out bool hasTrip);
+
+                            if (hasBody)
                             {
-                                SendOnTrip(entities[i], port, commandBuffer);
-
-                                // m_Terminal stays set, and that matters.
-                                //
-                                // Clearing it here took the party out of every shore-side sweep —
-                                // including KeepOffTheHotels, which is the only thing holding their
-                                // lodging anchor against TouristHouseholdBehaviorSystem. So a party
-                                // that had just walked all the way back promptly lost its anchor,
-                                // was marked LodgingSeeker and went looking for a hotel while
-                                // standing at the quay waiting to board.
-                                //
-                                // m_Homeward is what distinguishes them now: still protected, no
-                                // longer recalled.
-                                passenger.m_Homeward = 1;
-                                passengers[i] = passenger;
-
-                                sailed++;
-                                continue;
+                                walking++;
+                            }
+                            else if (hasTrip)
+                            {
+                                queued++;
+                            }
+                            else
+                            {
+                                idle++;
                             }
                         }
 
                         if (frame >= sailingFrame)
                         {
+                            // Last look for the gangway before anyone is written off.
+                            //
+                            // Boarding and this deadline can land on the same sweep, and the sweep
+                            // runs every sixty-four frames — so a party that walked aboard between
+                            // two passes would otherwise be pulled off the ship and marched out of
+                            // the city on foot, which is both wrong and visible.
+                            if (PartyIsAboard(entities[i], passenger.m_Ship))
+                            {
+                                passenger.m_Homeward = 1;
+                                passengers[i] = passenger;
+
+                                boarded++;
+                                continue;
+                            }
+
                             TryGetOutsideConnection(passenger.m_Ship, out Entity homePort, out int _);
 
                             commandBuffer.RemoveComponent<Components.CruisePassenger>(entities[i]);
@@ -2736,7 +2821,7 @@ namespace TourismOverhaul.Systems
                                 m_Reason = Game.Agents.MoveAwayReason.None
                             });
 
-                            sailed++;
+                            stranded++;
                             continue;
                         }
 
@@ -2802,8 +2887,17 @@ namespace TourismOverhaul.Systems
                                         || frame % kRecallRefreshFrames < (uint)GetUpdateInterval(
                                             SystemUpdatePhase.GameSimulation);
 
+                        // Where they are actually going is the ship's own map-edge connection,
+                        // not the quay — see RecallToHarbour. The terminal is the fallback for the
+                        // case where the connection cannot be resolved, which leaves the old
+                        // behaviour rather than leaving them standing where they are.
+                        TryGetOutsideConnection(passenger.m_Ship, out Entity seaward, out int _);
+
                         RecallToHarbour(
-                            entities[i], passenger.m_Terminal, commandBuffer, reassert);
+                            entities[i],
+                            seaward != Entity.Null ? seaward : passenger.m_Terminal,
+                            commandBuffer,
+                            reassert);
 
                         if (passenger.m_Recalled == 0)
                         {
@@ -2820,21 +2914,45 @@ namespace TourismOverhaul.Systems
                 chunks.Dispose();
             }
 
-            if (recalled > 5 || sailed > 5)
+            if (recalled > 5 || boarded > 5 || stranded > 0)
             {
+                // Stranded is the number that says the return is not working: a party that was
+                // called back, never got aboard, and was sent out of the city on foot when the
+                // vessel sailed. The three figures after it say which stage lost them — walking
+                // means the journey exists and is not finishing in time, queued means it is issued
+                // and the pathfinder has not answered, idle means the trip was dropped and nothing
+                // is bringing them back at all.
                 Mod.Log.Info(
-                    $"Cruise shore leave: {recalled} parties recalled to the quay, "
-                    + $"{sailed} reboarded.");
+                    $"Cruise shore leave: {recalled} recalled, {boarded} aboard, "
+                    + $"{stranded} left behind; still ashore: {walking} walking, "
+                    + $"{queued} queued, {idle} idle.");
             }
         }
 
         /// <summary>
-        /// Points one party at the harbour and takes away its reasons to stop on the way.
+        /// Points one party at the ship's map-edge connection and takes away its reasons to stop.
         ///
-        /// An ordinary trip, deliberately. The walk back is the visible half of a cruise call, so it
-        /// has to be a real journey rather than a departure — a departure can be satisfied by
-        /// placing the citizen at the destination (TripNeededSystem:1583-1599), which is what made
-        /// an earlier version of this look like the whole shore party vanishing at once.
+        /// THE DESTINATION IS THE CONNECTION, NOT THE QUAY, and that is the fix for a ship sailing
+        /// with most of its complement still ashore.
+        ///
+        /// The return used to be a relay in two steps: walk to the terminal building, and then —
+        /// only once a sweep happened to catch a citizen standing inside it — issue a second trip to
+        /// the connection, which is the one that actually boards anyone. Step two was the only step
+        /// that put a passenger on the ship, and it was gated on a state the game had no reason to
+        /// give them: a Leisure trip to a harbour, which provides no leisure, need not park anyone
+        /// inside it, and the sweep only looks every sixty-four frames. Miss that window and the
+        /// party walked to the quay, stood there, and was written off when the vessel left.
+        ///
+        /// One trip does the whole thing. A citizen routed to an outside connection is routed over
+        /// the transport network, and from a city pier the only way to a sea connection is the
+        /// vessel serving it — so the legs come out as walk across the city, wait at the terminal,
+        /// board. The walk back is still the visible half of a cruise call; it is now the first leg
+        /// of the journey that boards them rather than a separate errand that has to be noticed.
+        ///
+        /// An ordinary trip, deliberately. It has to be a real journey rather than a departure — a
+        /// departure can be satisfied by placing the citizen at the destination
+        /// (TripNeededSystem:1583-1599), which is what made an earlier version of this look like the
+        /// whole shore party vanishing at once.
         ///
         /// Everything that could divert them on the way is cleared at the same moment.
         /// CitizenBehaviorSystem checks the household's need before leisure and before anything
@@ -2844,16 +2962,16 @@ namespace TourismOverhaul.Systems
         /// guards: a second Target would replace the walk already in progress.
         /// </summary>
         private void RecallToHarbour(
-            Entity household, Entity terminal, EntityCommandBuffer commandBuffer, bool firstCall)
+            Entity household, Entity destination, EntityCommandBuffer commandBuffer, bool firstCall)
         {
-            if (terminal == Entity.Null || !EntityManager.Exists(terminal))
+            if (destination == Entity.Null || !EntityManager.Exists(destination))
             {
                 return;
             }
 
             if (!firstCall)
             {
-                NudgeIdleCitizens(household, terminal, commandBuffer);
+                NudgeIdleCitizens(household, destination, commandBuffer);
                 return;
             }
 
@@ -2900,6 +3018,7 @@ namespace TourismOverhaul.Systems
                 {
                     commandBuffer.RemoveComponent<TravelPurpose>(citizen);
                 }
+                ClearCitizenPathState(citizen, commandBuffer);
 
                 // The trip is issued to the citizen, not to the household, and that is the fix.
                 //
@@ -2922,7 +3041,7 @@ namespace TourismOverhaul.Systems
 
                 trips.Add(new TripNeeded
                 {
-                    m_TargetAgent = terminal,
+                    m_TargetAgent = destination,
                     m_Purpose = Purpose.Leisure,
                     m_Resource = Resource.NoResource,
                     m_Priority = byte.MaxValue
@@ -2974,69 +3093,27 @@ namespace TourismOverhaul.Systems
         }
 
         /// <summary>
-        /// Issues one party a real journey to somewhere, replacing whatever it was doing.
+        /// Whether any of a party's citizens is on this vessel.
         ///
-        /// The trip goes on the citizens, because that is the only thing the game acts on — a
-        /// Target on the household is read by TouristHouseholdBehaviorSystem:59-66 and skipped.
-        /// Purpose.Leisure is used for every destination this mod chooses, including the map edge,
-        /// because it is the one purpose that always travels: MovingAway can be satisfied by
-        /// placing the citizen at the target instead (TripNeededSystem:1583-1599), which produces no
-        /// journey and no boarding.
+        /// The citizen holds CurrentTransport, its link to a body; the body holds
+        /// Game.Creatures.CurrentVehicle, naming the vehicle it is riding. That pair is what the
+        /// game itself means by "aboard" — Game.Serialization.PassengerSystem:36-53 rebuilds a
+        /// vessel's whole manifest after a load by walking exactly those two components — so it is
+        /// a fact read back from the world rather than a guess about where somebody is standing.
+        ///
+        /// This replaces a test for a citizen holding CurrentBuilding equal to the terminal, which
+        /// was asked to mean "has got back and can now be sent aboard". It could not carry that:
+        /// arriving at a building the game has no reason to keep you in need not set CurrentBuilding
+        /// at all, and the sweep that read it runs once every sixty-four frames. A party is a party
+        /// once one of its members is on the ship — they path separately and board apart, and
+        /// holding the household until the last straggler is aboard would strand the ones already on
+        /// it.
         /// </summary>
-        private void SendOnTrip(
-            Entity household, Entity destination, EntityCommandBuffer commandBuffer)
+        private bool PartyIsAboard(Entity household, Entity ship)
         {
-            if (!EntityManager.HasBuffer<HouseholdCitizen>(household))
-            {
-                return;
-            }
-
-            DynamicBuffer<HouseholdCitizen> citizens =
-                EntityManager.GetBuffer<HouseholdCitizen>(household, isReadOnly: true);
-
-            for (int i = 0; i < citizens.Length; i++)
-            {
-                Entity citizen = citizens[i].m_Citizen;
-
-                if (citizen == Entity.Null
-                    || !EntityManager.Exists(citizen)
-                    || !EntityManager.HasBuffer<TripNeeded>(citizen))
-                {
-                    continue;
-                }
-
-                if (EntityManager.HasComponent<TravelPurpose>(citizen))
-                {
-                    commandBuffer.RemoveComponent<TravelPurpose>(citizen);
-                }
-
-                DynamicBuffer<TripNeeded> trips = commandBuffer.SetBuffer<TripNeeded>(citizen);
-
-                trips.Add(new TripNeeded
-                {
-                    m_TargetAgent = destination,
-                    m_Purpose = Purpose.Leisure,
-                    m_Resource = Resource.NoResource,
-                    m_Priority = byte.MaxValue
-                });
-            }
-        }
-
-        /// <summary>
-        /// Whether a recalled party has actually got to the quay.
-        ///
-        /// Any citizen standing in the terminal is enough. A party is not a unit once it is walking
-        /// — its members path separately and arrive apart — and holding the whole household until
-        /// the last straggler is inside means the early arrivals loiter at the quayside for no
-        /// reason the player can see.
-        ///
-        /// CurrentBuilding is the test because it is what "inside this building" means for a
-        /// citizen: it and CurrentTransport are alternatives (CitizenTravelPurposeSystem:631), so
-        /// holding the first is precisely not being out in the world walking.
-        /// </summary>
-        private bool PartyHasReached(Entity household, Entity terminal)
-        {
-            if (terminal == Entity.Null || !EntityManager.HasBuffer<HouseholdCitizen>(household))
+            if (ship == Entity.Null
+                || !EntityManager.Exists(ship)
+                || !EntityManager.HasBuffer<HouseholdCitizen>(household))
             {
                 return false;
             }
@@ -3050,13 +3127,23 @@ namespace TourismOverhaul.Systems
 
                 if (citizen == Entity.Null
                     || !EntityManager.Exists(citizen)
-                    || !EntityManager.HasComponent<CurrentBuilding>(citizen))
+                    || !EntityManager.HasComponent<CurrentTransport>(citizen))
                 {
                     continue;
                 }
 
-                if (EntityManager.GetComponentData<CurrentBuilding>(citizen).m_CurrentBuilding
-                    == terminal)
+                Entity creature =
+                    EntityManager.GetComponentData<CurrentTransport>(citizen).m_CurrentTransport;
+
+                if (creature == Entity.Null
+                    || !EntityManager.Exists(creature)
+                    || !EntityManager.HasComponent<Game.Creatures.CurrentVehicle>(creature))
+                {
+                    continue;
+                }
+
+                if (EntityManager.GetComponentData<Game.Creatures.CurrentVehicle>(creature).m_Vehicle
+                    == ship)
                 {
                     return true;
                 }
@@ -3079,7 +3166,7 @@ namespace TourismOverhaul.Systems
         /// old once-only m_Recalled guard was protecting against.
         /// </summary>
         private void NudgeIdleCitizens(
-            Entity household, Entity terminal, EntityCommandBuffer commandBuffer)
+            Entity household, Entity destination, EntityCommandBuffer commandBuffer)
         {
             if (!EntityManager.HasBuffer<HouseholdCitizen>(household))
             {
@@ -3121,12 +3208,13 @@ namespace TourismOverhaul.Systems
                 {
                     commandBuffer.RemoveComponent<TravelPurpose>(citizen);
                 }
+                ClearCitizenPathState(citizen, commandBuffer);
 
                 DynamicBuffer<TripNeeded> trips = commandBuffer.SetBuffer<TripNeeded>(citizen);
 
                 trips.Add(new TripNeeded
                 {
-                    m_TargetAgent = terminal,
+                    m_TargetAgent = destination,
                     m_Purpose = Purpose.Leisure,
                     m_Resource = Resource.NoResource,
                     m_Priority = byte.MaxValue
@@ -3196,18 +3284,22 @@ namespace TourismOverhaul.Systems
                 EquipTerminalWithLodging(terminal, commandBuffer);
             }
 
-            // Any renter this mod listed on a terminal is taken back off.
+            // The terminal's renter list is deliberately left alone here.
             //
-            // An earlier version added the shore party to the harbour's Renter buffer, and a
-            // building's utility demand follows its renters — so the harbour drew power, water and
-            // the rest for several hundred households that sleep on a ship. The buffer stays,
-            // because TouristHouseholdBehaviorSystem:74 wants it to exist, but it stays empty. This
-            // clears the entries already written into saves by that version.
-            if (EntityManager.HasBuffer<Game.Buildings.Renter>(terminal)
-                && IsListedAsRenter(terminal, household))
-            {
-                commandBuffer.SetBuffer<Game.Buildings.Renter>(terminal);
-            }
+            // This used to empty the whole buffer the moment a shore party turned up in it, because
+            // a building's utility demand follows its renters and a harbour holding several hundred
+            // households drew power and water for all of them. That was the right symptom and the
+            // wrong cure twice over. It only fired when a party carrying our own tag happened to be
+            // listed at that exact terminal, so it healed the stock harbour and left every other
+            // one — a Bridges & Ports terminal, an asset mod's quay — drawing a thousand megawatts.
+            // And it threw away the renter entries that make the lodging anchor believable in the
+            // first place: TouristHouseholdBehaviorSystem:74-92 nulls a tourist's hotel unless the
+            // household is actually in that building's Renter buffer.
+            //
+            // EquipTerminalWithLodging now tags the terminal StorageProperty for the length of the
+            // call, which is the game's own switch for "do not scale this building's utilities by
+            // its renters". The renters can stay, the anchor holds, and the port draws what it is
+            // rated for on every harbour rather than only the one this code was written against.
 
             if (!EntityManager.HasComponent<TouristHousehold>(household))
             {
@@ -3292,11 +3384,62 @@ namespace TourismOverhaul.Systems
         /// </summary>
         private void EquipTerminalWithLodging(Entity terminal, EntityCommandBuffer commandBuffer)
         {
+            // The utility guard goes on first, and it goes on for every harbour.
+            //
+            // This is the fix for the cruise port drawing a thousand megawatts the moment a ship
+            // ties up, and it is the whole reason this method no longer returns early.
+            //
+            // A building's electricity and water demand stops being its rated figure the moment it
+            // has renters. AdjustElectricityConsumptionSystem:155-160 (and the water system at
+            // :138-146) take the prefab's ConsumptionData and multiply it by
+            // FlowUtils.GetRenterConsumptionMultiplier, which is
+            //
+            //     5 x citizens / (buildingLevel + 0.5 x averageEducation)
+            //
+            // with buildingLevel fixed at 5 for anything that is not a zoned building — which a
+            // harbour never is. A shore party of several hundred citizens therefore multiplies the
+            // port's demand by two or three hundred, and a port rated in the low megawatts asks the
+            // grid for a thousand. That is not a mistake in the arithmetic; it is what the formula
+            // is for, and it is why the low-voltage connection trips instantly.
+            //
+            // The two systems that apply that multiplier are also the only two places in the whole
+            // game that read Game.Buildings.StorageProperty, and all it does there
+            // (AdjustElectricityConsumptionSystem:121, AdjustWaterConsumptionSystem:135) is switch
+            // the multiplier off, leaving the building on its authored consumption. It is an empty
+            // serializable tag with no other reader anywhere — no system, no prefab, no job — so
+            // putting it on a terminal for the length of a call changes exactly one thing.
+            //
+            // Which is what makes it the right lever rather than the clever one. The alternative
+            // was to keep the harbour's renter list empty, and that only ever worked on the stock
+            // harbour by accident: it depended on a tagged passenger happening to be listed at that
+            // exact terminal for the sweep to fire, so a port from Bridges & Ports — or any asset
+            // mod's harbour — kept its renters and kept the spike. Keying off the mod's own
+            // terminal marker instead of a prefab means every harbour is covered, including ones
+            // that do not exist yet. It also lets the shore party stay in the renter list, which is
+            // what holds the lodging anchor and what gets them back to the ship.
+            //
+            // The cost, stated plainly: while a call is open, a port that has real renters of its
+            // own draws its rated consumption rather than its renter-scaled one. That is a small
+            // difference on a building the player is not charged per-head for anyway, it lasts only
+            // as long as the ship is alongside, and release puts it back.
+            if (!EntityManager.HasComponent<Game.Buildings.StorageProperty>(terminal))
+            {
+                commandBuffer.AddComponent<Game.Buildings.StorageProperty>(terminal);
+                commandBuffer.AddComponent<Components.CruiseTerminalUtilityGuard>(terminal);
+            }
+
             if (EntityManager.HasComponent<LodgingProvider>(terminal))
             {
                 // Something already provides lodging here. Leave it alone — overwriting a real
                 // provider would misprice a genuine hotel, and the passengers are covered either
                 // way because all TouristLeaveSystem asks is that the component exists.
+                //
+                // Still marked as an equipped terminal, so the sweep and the release path can find
+                // it and take the utility guard back off. Deliberately without
+                // CruiseTerminalProvider: that marker means "the provider here is ours", and here
+                // it is not.
+                commandBuffer.AddComponent<Components.CruiseTerminalEquipped>(terminal);
+                commandBuffer.AddComponent<Components.CruiseTerminalLodging>(terminal);
                 return;
             }
 
@@ -3326,11 +3469,17 @@ namespace TourismOverhaul.Systems
             // it removes that hazard rather than creating one. Nothing bills these renters: every
             // query that charges for lodging additionally requires PropertyRenter and
             // ProcessingCompany, which a harbour has not got.
+            //
+            // Marked when we create it, because a harbour that came with one — a DLC port that
+            // houses a company, say — must keep it and keep its own renters when the ship leaves.
             if (!EntityManager.HasBuffer<Game.Buildings.Renter>(terminal))
             {
                 commandBuffer.AddBuffer<Game.Buildings.Renter>(terminal);
+                commandBuffer.AddComponent<Components.CruiseTerminalRenters>(terminal);
             }
 
+            commandBuffer.AddComponent<Components.CruiseTerminalProvider>(terminal);
+            commandBuffer.AddComponent<Components.CruiseTerminalEquipped>(terminal);
             commandBuffer.AddComponent<Components.CruiseTerminalLodging>(terminal);
         }
 
@@ -3343,12 +3492,144 @@ namespace TourismOverhaul.Systems
                 return;
             }
 
-            // The Renter buffer goes back with the provider. Both were added by this mod and both
-            // are serialized, so both have to be taken off on every path that ends a call — the
-            // same rule the notes record for AttractivenessProvider.
-            commandBuffer.RemoveComponent<LodgingProvider>(terminal);
-            commandBuffer.RemoveComponent<Game.Buildings.Renter>(terminal);
+            StripTerminalEquipment(terminal, commandBuffer);
+        }
+
+        /// <summary>
+        /// Takes back everything the mod put on a terminal, and nothing else.
+        ///
+        /// Every component here is native, serialized, and written to a player-owned building, so
+        /// the rule the notes record for AttractivenessProvider applies to all of them: whatever
+        /// was added has to come off on every path that ends a call, including the ones that are
+        /// not clean shutdowns.
+        ///
+        /// What changed is the "and nothing else". This used to remove the LodgingProvider and the
+        /// Renter buffer unconditionally, which is correct for the stock harbour — it has neither —
+        /// and destructive for any harbour that does. A DLC port that houses a company would have
+        /// lost its renters, and with them the company, the first time a cruise ship sailed. The
+        /// markers written at equip time say which of these are ours; anything without its marker
+        /// belonged to the building before we arrived and is left alone.
+        ///
+        /// A terminal saved by an earlier build carries CruiseTerminalLodging and none of the
+        /// markers. There is no way to ask that save what we added, so it is treated the way that
+        /// build behaved: the provider and the buffer were ours, because on the harbours that build
+        /// could equip they always were.
+        /// </summary>
+        private void StripTerminalEquipment(Entity terminal, EntityCommandBuffer commandBuffer)
+        {
+            // Deliberately keyed off the equip marker rather than "has no per-component markers".
+            // The sweep repairs a legacy terminal's utility guard in place, which would otherwise
+            // give it a marker and make it look like one of ours — and then its old provider and
+            // renter buffer would never come off.
+            bool legacy = !EntityManager.HasComponent<Components.CruiseTerminalEquipped>(terminal);
+
+            if (legacy || EntityManager.HasComponent<Components.CruiseTerminalProvider>(terminal))
+            {
+                commandBuffer.RemoveComponent<LodgingProvider>(terminal);
+                commandBuffer.RemoveComponent<Components.CruiseTerminalProvider>(terminal);
+            }
+
+            if (legacy || EntityManager.HasComponent<Components.CruiseTerminalRenters>(terminal))
+            {
+                commandBuffer.RemoveComponent<Game.Buildings.Renter>(terminal);
+                commandBuffer.RemoveComponent<Components.CruiseTerminalRenters>(terminal);
+            }
+
+            if (EntityManager.HasComponent<Components.CruiseTerminalUtilityGuard>(terminal))
+            {
+                commandBuffer.RemoveComponent<Game.Buildings.StorageProperty>(terminal);
+                commandBuffer.RemoveComponent<Components.CruiseTerminalUtilityGuard>(terminal);
+            }
+
+            commandBuffer.RemoveComponent<Components.CruiseTerminalEquipped>(terminal);
             commandBuffer.RemoveComponent<Components.CruiseTerminalLodging>(terminal);
         }
+
+        /// <summary>
+        /// Clears a citizen's own destination and path before a new trip is written on top.
+        ///
+        /// Without this the trip can be deleted before it is ever acted on, and silently.
+        /// TripNeededSystem:981-992 runs ahead of everything else it does with a citizen: if the
+        /// citizen carries PathInformation whose search has finished and has no Target to go with
+        /// it, the whole TripNeeded buffer is emptied and the pathfinding components stripped. A
+        /// citizen who has just finished an errand is in exactly that state, and a shore party at
+        /// last call is mostly citizens who have just finished an errand.
+        ///
+        /// Note that the mod's own path state lives on the household — TouristTargetSearchSystem
+        /// requests its searches there — while this is the citizen's, written by TripNeededSystem
+        /// itself. Clearing the household's, which the recall already does, does nothing for this.
+        ///
+        /// All three go, so the citizen starts from the state TripNeededSystem treats as new: no
+        /// destination, no path, one trip. It reads the trip's target agent, sets Target from it
+        /// (:1355-1361), and issues a fresh search with pedestrian, taxi and public transport
+        /// methods (:1075-1083) on the pass after.
+        /// </summary>
+        private void ClearCitizenPathState(Entity citizen, EntityCommandBuffer commandBuffer)
+        {
+            if (EntityManager.HasComponent<Target>(citizen))
+            {
+                commandBuffer.RemoveComponent<Target>(citizen);
+            }
+
+            if (EntityManager.HasComponent<Game.Pathfind.PathInformation>(citizen))
+            {
+                commandBuffer.RemoveComponent<Game.Pathfind.PathInformation>(citizen);
+            }
+
+            if (EntityManager.HasBuffer<Game.Pathfind.PathElement>(citizen))
+            {
+                commandBuffer.RemoveComponent<Game.Pathfind.PathElement>(citizen);
+            }
+        }
+
+
+        /// <summary>
+        /// Where one recalled party has got to: out walking, waiting on a path, or stopped.
+        ///
+        /// Diagnostic only, and deliberately cheap — it answers at most three component questions
+        /// per citizen and is only asked of parties that have already been called back.
+        ///
+        /// A body in the world (CurrentTransport) means the journey is real and under way. No body
+        /// but a queued TripNeeded means it has been issued and the citizen has not been given a
+        /// body for it yet. Neither means the trip is gone, which is the state that says something
+        /// took it away rather than that the walk is slow.
+        /// </summary>
+        private void ClassifyRecalledParty(Entity household, out bool hasBody, out bool hasTrip)
+        {
+            hasBody = false;
+            hasTrip = false;
+
+            if (!EntityManager.HasBuffer<HouseholdCitizen>(household))
+            {
+                return;
+            }
+
+            DynamicBuffer<HouseholdCitizen> citizens =
+                EntityManager.GetBuffer<HouseholdCitizen>(household, isReadOnly: true);
+
+            for (int i = 0; i < citizens.Length; i++)
+            {
+                Entity citizen = citizens[i].m_Citizen;
+
+                if (citizen == Entity.Null || !EntityManager.Exists(citizen))
+                {
+                    continue;
+                }
+
+                if (EntityManager.HasComponent<CurrentTransport>(citizen))
+                {
+                    hasBody = true;
+                    return;
+                }
+
+                if (!hasTrip
+                    && EntityManager.HasBuffer<TripNeeded>(citizen)
+                    && EntityManager.GetBuffer<TripNeeded>(citizen, isReadOnly: true).Length > 0)
+                {
+                    hasTrip = true;
+                }
+            }
+        }
+
     }
 }

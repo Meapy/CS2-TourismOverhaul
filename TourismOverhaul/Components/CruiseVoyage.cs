@@ -248,4 +248,48 @@ namespace TourismOverhaul.Components
     public struct CruiseTerminalLodging : IComponentData, IEmptySerializable
     {
     }
+
+    /// <summary>
+    /// Records that the stand-in <c>LodgingProvider</c> on a cruise terminal is ours.
+    ///
+    /// <see cref="CruiseTerminalLodging"/> says "this building is serving as a cruise terminal";
+    /// this says "and the provider on it was added by us". They are not the same building set once
+    /// harbours other than the stock one are in play: a port that already provides lodging is still
+    /// equipped as a terminal, and taking its own provider away when the ship sails would be
+    /// vandalism. Every component the mod writes to a terminal now has a marker like this, and
+    /// release removes only what the markers claim.
+    /// </summary>
+    public struct CruiseTerminalProvider : IComponentData, IEmptySerializable
+    {
+    }
+
+    /// <summary>
+    /// Written by this build on every terminal it equips, whatever else it did or did not add.
+    ///
+    /// Its absence is how a terminal equipped by an earlier build is recognised in a save. Those
+    /// carry <see cref="CruiseTerminalLodging"/> and no per-component markers, and there is no way
+    /// to ask the save what that build added — so they are released the way it behaved, taking the
+    /// provider and the renter buffer with them. This marker is what keeps that guess from being
+    /// applied to a terminal this build equipped, where "no marker" means "not ours, leave it".
+    /// </summary>
+    public struct CruiseTerminalEquipped : IComponentData, IEmptySerializable
+    {
+    }
+
+    /// <summary>Records that the terminal's <c>Renter</c> buffer was created by this mod.</summary>
+    public struct CruiseTerminalRenters : IComponentData, IEmptySerializable
+    {
+    }
+
+    /// <summary>
+    /// Records that the terminal's <c>StorageProperty</c> tag was added by this mod.
+    ///
+    /// That tag is what stops a docked ship's shore party from being billed to the port as utility
+    /// demand — see the notes on EquipTerminalWithLodging for why it is the right lever and what it
+    /// costs. Marked so it can be taken off again on every path that ends a call, because it is a
+    /// native serialized component on a player-owned building.
+    /// </summary>
+    public struct CruiseTerminalUtilityGuard : IComponentData, IEmptySerializable
+    {
+    }
 }
