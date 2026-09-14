@@ -88,6 +88,17 @@ namespace TourismOverhaul
             // Opening surge for newly built hotels. Must run before TouristDemandSystem reads it.
             updateSystem.UpdateBefore<HotelWelcomeSystem, TouristDemandSystem>(SystemUpdatePhase.GameSimulation);
 
+            // Scrubs the cruise feature's saved entity references just before the game writes
+            // them. Registered in the Serialize phase and ordered ahead of SerializerSystem, which
+            // is the system that does the writing — Game.Serialization.PreSerialize<T> is the
+            // game's own wrapper for exactly this, and calls IPreSerialize on the system it names.
+            //
+            // Not behind a setting: a reference to a deleted entity is what takes the game down as
+            // the file is written, so there is no configuration in which skipping it is acceptable.
+            updateSystem.UpdateBefore<
+                Game.Serialization.PreSerialize<CruiseVoyageSystem>,
+                Game.Serialization.SerializerSystem>(SystemUpdatePhase.Serialize);
+
             // Publishes our tourism figures to the UI layer for the frontend module.
             updateSystem.UpdateAt<TourismPanelUISystem>(SystemUpdatePhase.UIUpdate);
 

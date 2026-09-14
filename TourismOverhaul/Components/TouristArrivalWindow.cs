@@ -61,30 +61,57 @@ namespace TourismOverhaul.Components
     ///
     /// One element per slice, held in ring order. Summing the whole buffer gives the month.
     /// Stored as four named fields rather than an int4 so the save format is explicit about what
-    /// each number is, and so a fifth mode could be added at the end later.
+    /// each number is.
+    /// </summary>
+    /// <summary>
+    /// IEmptySerializable, not ISerializable, and this one is a crash fix.
+    ///
+    /// A hand-written Serialize on a buffer element took the game down whenever a save was written:
+    ///
+    ///     NullReferenceException
+    ///       at Colossal.Serialization.Entities.BinaryWriter.Write (System.UInt32 value)
+    ///       at TourismOverhaul.Components.TouristArrivalBucket.Serialize[TWriter] (TWriter writer)
+    ///       at Colossal.Serialization.Entities.BinaryWriter.Write[TSerializable] (NativeArray&lt;T&gt;)
+    ///       at BufferElementDataSerializer`1+SerializeBufferElementDataJob`1[
+    ///             TouristArrivalBucket, BinaryWriter].Execute ()
+    ///       at (wrapper delegate-invoke) ...
+    ///
+    /// followed by a native Mono crash with no managed stack, because the exception escaped a job's
+    /// Execute and left the job system unrecoverable.
+    ///
+    /// The throw is inside the game's writer, not in the four lines this used to have — they only
+    /// called it. What that last frame says is the important part: (wrapper delegate-invoke) is the
+    /// managed job fallback. Burst cannot compile a job parameterised on a type from an assembly
+    /// loaded at runtime, so SerializeBufferElementDataJob&lt;OurType, BinaryWriter&gt; runs managed,
+    /// while the same job for every one of the game's own buffer elements is Burst-compiled. The
+    /// shape is not the problem — Game.City.CityModifier is IBufferElementData, ISerializable with
+    /// InternalBufferCapacity(0), exactly like this was — the problem is that a mod type is the only
+    /// thing that ever reaches that code path managed.
+    ///
+    /// And this type gained nothing from being there. The game reserves a hand-written serializer on
+    /// a buffer element for work the plain path cannot do: CityStatistic migrates old saves across
+    /// three field widths, Resources maps a resource to a stable index, TripNeeded narrows enums.
+    /// This wrote four ints in declaration order, which is precisely what the blittable path writes
+    /// by itself — so the custom serializer was never buying anything, and it was the only thing in
+    /// this mod on that path. Every other serialized component here is IComponentData, which goes
+    /// through a different job and has saved cleanly all along.
+    ///
+    /// The bytes are unchanged: four int32s per element, in the same order, with the element count
+    /// written by the framework either way. Existing saves read back as they did before. If a save
+    /// ever does disagree, GetOrCreateArrivalWindow already resets a window whose length is wrong,
+    /// and the cost is a trailing-month figure that starts from zero and refills within an in-game
+    /// day.
+    ///
+    /// Do not give this type a Serialize method again. Adding a field means changing the layout,
+    /// which needs a version — and a version needs the custom path. Put the new field on
+    /// <see cref="TouristArrivalWindowData"/> instead, which is a component and already versioned.
     /// </summary>
     [InternalBufferCapacity(0)]
-    public struct TouristArrivalBucket : IBufferElementData, ISerializable
+    public struct TouristArrivalBucket : IBufferElementData, IEmptySerializable
     {
         public int m_Road;
         public int m_Train;
         public int m_Air;
         public int m_Ship;
-
-        public void Serialize<TWriter>(TWriter writer) where TWriter : IWriter
-        {
-            writer.Write(m_Road);
-            writer.Write(m_Train);
-            writer.Write(m_Air);
-            writer.Write(m_Ship);
-        }
-
-        public void Deserialize<TReader>(TReader reader) where TReader : IReader
-        {
-            reader.Read(out m_Road);
-            reader.Read(out m_Train);
-            reader.Read(out m_Air);
-            reader.Read(out m_Ship);
-        }
     }
 }

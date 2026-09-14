@@ -59,7 +59,7 @@ namespace TourismOverhaul.Systems
     /// CruiseTerminalLodging records which buildings we equipped so the provider can be taken off
     /// again without touching a building that legitimately has one.
     /// </summary>
-    public partial class CruiseVoyageSystem : GameSystemBase
+    public partial class CruiseVoyageSystem : GameSystemBase, Game.Serialization.IPreSerialize
     {
         /// <summary>
         /// Shore leave, in frames. 262,144 frames is one in-game day, which is one displayed month
@@ -231,6 +231,17 @@ namespace TourismOverhaul.Systems
 
         private EntityQuery m_CruiseVehicleQuery;
         private EntityQuery m_AshoreQuery;
+
+        /// <summary>
+        /// Every household carrying our tag, whatever else it has lost.
+        ///
+        /// Wider than m_AshoreQuery deliberately. That one also requires TouristHousehold, because
+        /// everything it drives is about a visitor; this one exists for the save, and the save does
+        /// not care — CruisePassenger is a serializable component, so a household that kept the tag
+        /// and lost TouristHousehold is still written out, entity references and all. Scrubbing
+        /// through the narrower query would step straight past it.
+        /// </summary>
+        private EntityQuery m_CruiseTaggedQuery;
         private EntityQuery m_EquippedTerminalQuery;
         private EntityQuery m_ActiveCallQuery;
         private EntityQuery m_CruiseRouteQuery;
@@ -303,6 +314,11 @@ namespace TourismOverhaul.Systems
                 ComponentType.Exclude<Deleted>(),
                 ComponentType.Exclude<Temp>());
 
+            m_CruiseTaggedQuery = GetEntityQuery(
+                ComponentType.ReadOnly<Components.CruisePassenger>(),
+                ComponentType.Exclude<Deleted>(),
+                ComponentType.Exclude<Temp>());
+
             m_EquippedTerminalQuery = GetEntityQuery(
                 ComponentType.ReadOnly<Components.CruiseTerminalLodging>(),
                 ComponentType.Exclude<Deleted>(),
@@ -359,6 +375,7 @@ namespace TourismOverhaul.Systems
                 < (uint)GetUpdateInterval(SystemUpdatePhase.GameSimulation))
             {
                 ReturnFinishedParties();
+                SweepOrphanedParties(m_EndFrameBarrier.CreateCommandBuffer());
                 SweepOrphanedTerminals();
             }
         }
@@ -553,6 +570,205 @@ namespace TourismOverhaul.Systems
                 + "map edge. It wants exactly two: one sea outside connection to load at, and one "
                 + "harbour to call at. Anything else and the ship lands its passengers at whichever "
                 + "quay it reaches first and sails past the rest.");
+        }
+
+        /// <summary>
+        /// Scrubs the entity references this mod persists, immediately before the game writes them.
+        ///
+        /// THIS IS A SAVE-CRASH FIX, and the hazard is the mod's own doing.
+        ///
+        /// CruiseCall.m_Terminal, CruisePassenger.m_Ship and CruisePassenger.m_Terminal are Entity
+        /// fields written into the save by our own Serialize methods. An Entity is not a value a
+        /// save can take at face value: SerializerSystem.CreateQuery builds the set of entities that
+        /// will be written and puts Temp and Deleted in its None list, so the file is a closed world
+        /// and every reference in it has to name something inside that world. A reference to a
+        /// vessel the player has just deleted, or a harbour marked Deleted this frame, names
+        /// something that is not going to be there — and it is the write of that reference, during
+        /// the Serialize phase, that takes the game down. Which is why it happens only on save, only
+        /// with this mod installed, and sooner in a city running a cruise line.
+        ///
+        /// The runtime already knew these references could dangle — SailingFrameFor and
+        /// ReturnFinishedParties both test Exists() before trusting them — so the values were
+        /// understood to be untrustworthy while being saved as though they were not.
+        ///
+        /// Nulling rather than removing, deliberately. Entity.Null is always representable, this
+        /// runs inside the Serialize phase where a structural change is the last thing wanted, and
+        /// SweepOrphanedParties has already taken the component off anything genuinely orphaned on
+        /// an ordinary update. What reaches here is the narrow case of a reference that went stale
+        /// since that sweep last ran, and for that, blanking the field is enough.
+        /// </summary>
+        public void PreSerialize(Colossal.Serialization.Entities.Context context)
+        {
+            int scrubbed = 0;
+
+            if (!m_ActiveCallQuery.IsEmptyIgnoreFilter)
+            {
+                NativeArray<Entity> ships = m_ActiveCallQuery.ToEntityArray(Allocator.Temp);
+
+                try
+                {
+                    for (int i = 0; i < ships.Length; i++)
+                    {
+                        Components.CruiseCall call =
+                            EntityManager.GetComponentData<Components.CruiseCall>(ships[i]);
+
+                        if (IsSavable(call.m_Terminal))
+                        {
+                            continue;
+                        }
+
+                        call.m_Terminal = Entity.Null;
+                        EntityManager.SetComponentData(ships[i], call);
+                        scrubbed++;
+                    }
+                }
+                finally
+                {
+                    ships.Dispose();
+                }
+            }
+
+            if (!m_CruiseTaggedQuery.IsEmptyIgnoreFilter)
+            {
+                NativeArray<Entity> parties = m_CruiseTaggedQuery.ToEntityArray(Allocator.Temp);
+
+                try
+                {
+                    for (int i = 0; i < parties.Length; i++)
+                    {
+                        Components.CruisePassenger passenger =
+                            EntityManager.GetComponentData<Components.CruisePassenger>(parties[i]);
+
+                        bool ship = IsSavable(passenger.m_Ship);
+                        bool terminal = IsSavable(passenger.m_Terminal);
+
+                        if (ship && terminal)
+                        {
+                            continue;
+                        }
+
+                        if (!ship)
+                        {
+                            passenger.m_Ship = Entity.Null;
+                        }
+
+                        if (!terminal)
+                        {
+                            passenger.m_Terminal = Entity.Null;
+                        }
+
+                        EntityManager.SetComponentData(parties[i], passenger);
+                        scrubbed++;
+                    }
+                }
+                finally
+                {
+                    parties.Dispose();
+                }
+            }
+
+            if (scrubbed > 0)
+            {
+                Mod.Log.Warn(
+                    $"Blanked {scrubbed} cruise reference(s) naming entities this save will not "
+                    + "contain. The save is sound; something was deleted between the last sweep and "
+                    + "the write.");
+            }
+        }
+
+        /// <summary>
+        /// Whether an entity reference can be written into a save.
+        ///
+        /// Entity.Null is fine — it is the absence of a reference, and always representable.
+        /// Anything else has to exist and has to be inside the set SerializerSystem will write,
+        /// which is what rules out Deleted and Temp: both are in that query's None list, so an
+        /// entity carrying either is not in the file however alive it looks from here.
+        /// </summary>
+        private bool IsSavable(Entity entity)
+        {
+            return entity == Entity.Null
+                || (EntityManager.Exists(entity)
+                    && !EntityManager.HasComponent<Deleted>(entity)
+                    && !EntityManager.HasComponent<Temp>(entity));
+        }
+
+        /// <summary>
+        /// Releases shore parties whose ship has gone, so none is left tagged for ever.
+        ///
+        /// The tag is what holds a party out of the hotel system and counts it against a vessel, and
+        /// every path that ends a visit needs that vessel: the recall targets the ship's connection,
+        /// and the write-off reads the ship's departure frame. So a party whose ship the player has
+        /// deleted is not merely stale — it is stuck, permanently ashore, permanently swept, and
+        /// permanently holding a reference this mod then writes into every save.
+        ///
+        /// Returning them to ordinary visitors is the honest recovery: the tag comes off, the
+        /// harbour anchor comes off with it, and TouristTargetSearchSystem gives them a hotel to
+        /// look for on its next pass, the same as any other arrival. They came ashore, their ship
+        /// left without them, and now they need a room.
+        ///
+        /// A party still at sea is not orphaned and must not be caught here. Its ship is real and
+        /// its terminal is deliberately null until the vessel docks — the sentinel
+        /// ReturnFinishedParties reads for exactly that — so the ship, not the terminal, is what
+        /// this tests.
+        /// </summary>
+        private void SweepOrphanedParties(EntityCommandBuffer commandBuffer)
+        {
+            if (m_CruiseTaggedQuery.IsEmptyIgnoreFilter)
+            {
+                return;
+            }
+
+            NativeArray<Entity> parties = m_CruiseTaggedQuery.ToEntityArray(Allocator.Temp);
+            NativeArray<Components.CruisePassenger> passengers =
+                m_CruiseTaggedQuery.ToComponentDataArray<Components.CruisePassenger>(Allocator.Temp);
+
+            int released = 0;
+
+            try
+            {
+                for (int i = 0; i < parties.Length; i++)
+                {
+                    Entity ship = passengers[i].m_Ship;
+
+                    if (ship != Entity.Null
+                        && EntityManager.Exists(ship)
+                        && !EntityManager.HasComponent<Deleted>(ship))
+                    {
+                        continue;
+                    }
+
+                    commandBuffer.RemoveComponent<Components.CruisePassenger>(parties[i]);
+
+                    // Their anchor was the terminal, and it is no longer theirs to hold. Cleared so
+                    // TouristHouseholdBehaviorSystem marks them LodgingSeeker and they look for a
+                    // room like any other visitor, rather than keeping a hotel that is a harbour.
+                    if (EntityManager.HasComponent<TouristHousehold>(parties[i]))
+                    {
+                        TouristHousehold tourist =
+                            EntityManager.GetComponentData<TouristHousehold>(parties[i]);
+
+                        if (tourist.m_Hotel == passengers[i].m_Terminal)
+                        {
+                            tourist.m_Hotel = Entity.Null;
+                            commandBuffer.SetComponent(parties[i], tourist);
+                        }
+                    }
+
+                    released++;
+                }
+            }
+            finally
+            {
+                passengers.Dispose();
+                parties.Dispose();
+            }
+
+            if (released > 0)
+            {
+                Mod.Log.Info(
+                    $"Released {released} shore parties whose ship no longer exists; they are "
+                    + "ordinary visitors again and will look for a hotel.");
+            }
         }
 
         /// <summary>
