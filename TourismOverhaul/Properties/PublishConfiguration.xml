@@ -233,7 +233,7 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
   <Tag Value="Code Mod" />
 
   <ForumLink Value="https://forum.paradoxplaza.com/forum/threads/mod-tourism-overhaul-fix-tourism.1937099/" />
-  <ModVersion Value="1.8.2" />
+  <ModVersion Value="1.8.3" />
   <GameVersion Value="1.6.*" />
 
   <!--
@@ -241,12 +241,10 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
     accumulating history here republishes every past release with every upload. The full record
     belongs in CHANGELOG.md.
   -->
-  <ChangeLog>1.8.2
-Cruise passengers now get back aboard before the ship sails. They walked to the quay and were left there, because only the last leg of the return actually boarded anyone and it rarely ran.
+  <ChangeLog>1.8.3
+Fixes a crash when saving. Every save, manual or automatic, could take the game down while the trailing-month arrivals figure was written out. If you have been losing cities to save crashes, this is the one.
 
-Maximum tourists is now genuinely a maximum. The setting was applied and the result then raised by 40%, so a limit of 20,000 was really 28,000.
-
-A cruise port no longer draws enormous power the moment a ship ties up. The fix now covers every harbour, including the ones from Bridges &amp; Ports and from asset mods, rather than only the base game's.
+Also fixes a case where deleting a cruise line left its passengers stranded ashore for good, still counted against a ship that no longer exists.
   </ChangeLog>
 
   <ExternalLink Type="github" Url="https://github.com/Meapy/CS2-TourismOverhaul" />
