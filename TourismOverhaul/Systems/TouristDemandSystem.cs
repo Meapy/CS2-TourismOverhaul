@@ -250,9 +250,18 @@ namespace TourismOverhaul.Systems
             m_DemandParameterQuery = GetEntityQuery(ComponentType.ReadOnly<DemandParameterData>());
 
             // The saved trailing-month arrival window. Created on first use if the save has none.
+            // Deleted and Temp are excluded, and that is not tidiness.
+            //
+            // SerializerSystem.CreateQuery puts both in its None list, so an entity carrying either
+            // is not written to the save. Without the same exclusions here this system goes on
+            // reading and writing a window entity the game has already given up on — and
+            // GetSingletonEntity throws outright the moment a replacement exists alongside it,
+            // which is one entity going away from happening.
             m_ArrivalWindowQuery = GetEntityQuery(
                 ComponentType.ReadWrite<Components.TouristArrivalWindowData>(),
-                ComponentType.ReadWrite<Components.TouristArrivalBucket>());
+                ComponentType.ReadWrite<Components.TouristArrivalBucket>(),
+                ComponentType.Exclude<Deleted>(),
+                ComponentType.Exclude<Temp>());
 
             // Counting query: only households that actually hold citizens count as tourists.
             //

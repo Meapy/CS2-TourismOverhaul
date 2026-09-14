@@ -5,6 +5,40 @@ All notable changes to CS2 Tourism Overhaul.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [semantic](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Saving no longer crashes while the trailing-month arrivals window is written.** Every save,
+  manual or automatic, could die with a `NullReferenceException` inside the game's serializer,
+  followed by a native crash with no managed stack — the exception escaped a job and left the job
+  system unrecoverable.
+
+  The arrivals window kept its counts in a buffer with a hand-written serializer. Burst cannot
+  compile a job parameterised on a type from an assembly loaded at runtime, so that serializer ran
+  on the managed fallback path, which the game's own buffers never touch because theirs are all
+  compiled. The type gained nothing from being there in the first place: it wrote four integers in
+  order, which is exactly what the plain path writes by itself. It now uses the plain path.
+
+  The saved bytes are unchanged, so existing saves are unaffected.
+
+- **Saving no longer crashes in a city running a cruise line.** The mod wrote raw entity references
+  into the save — the terminal a call belongs to, and the ship and terminal each shore party belongs
+  to — without ever checking they still named anything. A save file is a closed world: the game's
+  serializer excludes deleted and in-progress entities from it, so a reference to a vessel or harbour
+  that has just been removed names something the file will not contain, and writing it takes the game
+  down as the file is written. That is why it only ever happened on save, only with this mod
+  installed, and sooner the more you used the cruise line.
+
+  Those references are now checked immediately before the game writes, using the game's own
+  pre-serialization hook, and blanked if they name anything that will not be in the file.
+
+- **A shore party whose ship is deleted is no longer stranded for ever.** Every way a visit can end
+  needs the vessel — the walk back aims at its map-edge connection, and the deadline comes from its
+  departure — so deleting a cruise line left its passengers ashore permanently, still tagged, still
+  swept every update, and still holding the dead reference that went into every later save. They are
+  now released as ordinary visitors and go looking for a hotel.
+
 ## [1.8.2] — 2026-09-08
 
 ### Fixed
