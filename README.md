@@ -54,6 +54,25 @@ share with `1 / (1 + backlog / sensitivity)`, renormalising the rest. Asymptotic
 recovers rather than being abandoned. Backlog is counted per connection, so three airports absorb
 three times the traffic before air is throttled.
 
+### A3 — Park crowding
+
+Residents and tourists pick a park through `CitizenPathfindSetup.SetupLeisureTargetJob`, which offers
+every `LeisureProvider` of the chosen leisure type at cost 0 (`:164`) — only shops and restaurants
+get a fullness term (`:169-184`). The nearest park wins every search however packed it is, and one
+lawn was measured holding 1,487 cims.
+
+`ParkVisitorSpreadSystem` closes a park that is over its limit (lot cells ×
+**Park visitor limit**) by removing its `Game.Buildings.LeisureProvider` tag, the one per-park
+filter in that search's query (`:835`), and reopens it below three quarters. Visitors already
+inside keep their leisure — `LeisureSystem.SpendLeisure` reads the prefab's `LeisureProviderData`,
+not the tag — and nobody is removed; the crowd thins as they leave. The tag is serialized and
+not restored on load for parks, so every removed tag is put back in `PreSerialize`, on disable
+and on destroy. Inside a park, visitors on an over-full lawn re-roll their spot with the native
+re-path.
+
+Deciding who is standing in a park is a lane fact (`CreatureLaneFlags.Hangaround | EndReached`):
+`ResidentFlags.Arrived` is never set for group members, and `Divert` is removed on arrival.
+
 ### B — Demand
 
 `TourismSystem.GetTargetTourists` returns `attractiveness * 15` below 100, and the logistic in

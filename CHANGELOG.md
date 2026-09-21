@@ -7,6 +7,85 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 
+## [1.9.0] — 2026-09-21
+
+### Added
+
+- **A full park turns new visitors away.** A popular park would fill without limit — one lawn was
+  measured holding 1,487 cims — while others nearby stayed empty.
+
+  The cause is in how the game picks a park. Residents and tourists alike roll a leisure type in
+  `LeisureSystem.SelectLeisureType` (`:521-559`), then `CitizenPathfindSetup.SetupLeisureTargetJob`
+  offers every `LeisureProvider` of that type at **cost 0** (`:164`). Only shops and restaurants get
+  a fullness term (`:169-184`). So the nearest park wins every search however packed it is.
+  `AttractionCrowdingSystem` never reached this: the attractiveness it damps feeds only
+  `SetupTargetType.Attraction` (`TripNeededSystem:1442`).
+
+  The one per-park lever in that search is its candidate query — simply "has
+  `Game.Buildings.LeisureProvider`" (`:835`). A park over its limit has the tag removed, so new
+  leisure trips pick the next park; below three quarters of the limit it goes back. The tag is only
+  a search filter: `LeisureSystem.SpendLeisure` (`:283-360`) reads the prefab's
+  `LeisureProviderData`, so visitors already inside keep their leisure. **Nobody is moved out or
+  hidden** — the crowd thins as visitors finish and go home.
+
+  The tag is serialized, and `RequiredComponentSystem:1120-1128` restores it on load only for
+  companies, not parks. Every removed tag is therefore put back in `PreSerialize` (registered ahead
+  of `SerializerSystem`, as the cruise system does), when the feature is switched off, and on
+  destroy. The next update re-closes whatever is still full, so no save ever contains a closed park.
+
+  The limit is **Park visitor limit (per lot cell)**, 1.00 by default: a 12×12 park is full at 144.
+
+  Inside a park, a visitor on an over-full lawn re-rolls its spot (`PathFlags.Obsolete`, as
+  `ReachTarget:2241-2242` does), and settled visitors occasionally drift — the native re-roll works
+  out at over ten minutes of real time and `CannotIgnore` can pin a visitor for its whole stay.
+
+  Counting who is actually standing in a park took four attempts; the test is now
+  `CreatureLaneFlags.Hangaround | EndReached` on the lane, because `ResidentFlags.Arrived` is never
+  set for group members and `Divert` is removed on arrival. Two Burst jobs, once every 512 frames,
+  plus a main-thread pass over the parks. A **Diagnostic logging** line reports the population, the
+  busiest lawn and park, and how many parks are closed.
+
+- **"How busy a place gets before it puts people off" is now a visible setting.** It was hidden as a
+  development tuning value, which was wrong: it is the only dial in the mod that acts on the
+  *arrival* side. Everything the park systems do rearranges the visitors already present;
+  `AttractionCrowdTolerance` is what decides how many turn up. It multiplies an attraction's
+  footprint-derived capacity, so **lower spreads visitors sooner** — at 5 a place absorbs five times
+  as many before losing any appeal, which keeps one park heaving while others sit empty.
+  `AttractionCrowdingSystem` re-reads it every update, so the slider takes effect without a reload.
+
+### Performance
+
+- **Cruise passenger bookkeeping no longer goes through `EntityManager` per entity.** Profiling a
+  1.2M-citizen city (CS2 Performance, main-thread capture) put `CruiseVoyageSystem` at 2.2-5.1 ms per
+  rendered frame, with single updates as long as 250 ms, making it the most expensive mod system in the
+  city by some way. `TouristSpendingLedgerSystem` (0.8-1.1 ms), `HotelEfficiencyFloorSystem` (0.5-0.7 ms)
+  and `TouristRebookSystem` (0.3-0.4 ms) followed the same pattern.
+
+  The cause was the access path, not the logic. Every `EntityManager.HasComponent`/`GetComponentData`
+  resolves the component type afresh and checks the jobs writing it, and these paths asked one question
+  per entity they walked. Those reads now go through `ComponentLookup`/`BufferLookup` fields refreshed
+  once per update (and again after `EnforceOneCruiseLine`, the one path that makes a structural change).
+  Same components, same order, same results.
+
+  Per-phase timing added to `CruiseVoyageSystem` found the real hot spot, which was not where it looked:
+  the shore-party sweeps cost 0.02-0.8 ms per update, while **serving docked ships cost 17-27 ms**.
+
+  That phase walked the wrong set of vehicles. `m_CruiseVehicleQuery` asked for public transport with a
+  route, which in a large city is every bus, tram, train and taxi running, and `ServeDockedShips` then
+  asked `IsOnCruiseLine` about each one - four `EntityManager` calls apiece - on every update, only ever
+  to reject them. A cruise line is a ship line, so the query now asks for `Watercraft` as well and the
+  loop sees the handful of vessels that could actually be on it. `IsOnCruiseLine` and the manifest walk
+  in `CountOutboundAboard` (two thousand passengers on a full ship, five `EntityManager` calls each
+  through `HouseholdOf`) use lookups too.
+
+  The timing report now also prints how many vessels the loop walked, which is the number that made the
+  cause obvious.
+
+  The timing report stays in, logged every 256 updates, so the next regression is one log line away
+  instead of a guess.
+
+## [1.8.3] — 2026-09-14
+
 ### Fixed
 
 - **Saving no longer crashes while the trailing-month arrivals window is written.** Every save,

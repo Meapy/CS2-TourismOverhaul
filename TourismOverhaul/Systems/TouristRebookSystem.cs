@@ -49,6 +49,9 @@ namespace TourismOverhaul.Systems
         {
             base.OnCreate();
 
+            m_LodgingProviders = GetComponentLookup<LodgingProvider>(isReadOnly: true);
+            m_PropertyRenters = GetComponentLookup<PropertyRenter>(isReadOnly: true);
+            m_TouristHouseholds = GetComponentLookup<TouristHousehold>(isReadOnly: true);
             m_EndFrameBarrier = World.GetOrCreateSystemManaged<EndFrameBarrier>();
 
             // Tourists with citizens but no room. Households already on their way out are left be.
@@ -67,8 +70,25 @@ namespace TourismOverhaul.Systems
                 ComponentType.Exclude<Temp>());
         }
 
+
+        // Cached lookups: these paths ask the same questions for every household they walk, and going
+        // through EntityManager each time resolves the type and checks the jobs writing it every call.
+        private ComponentLookup<LodgingProvider> m_LodgingProviders;
+        private ComponentLookup<PropertyRenter> m_PropertyRenters;
+        private ComponentLookup<TouristHousehold> m_TouristHouseholds;
+
+        /// <summary>Refreshes the cached lookups, once per update.</summary>
+        private void RefreshLookups()
+        {
+            m_LodgingProviders.Update(this);
+            m_PropertyRenters.Update(this);
+            m_TouristHouseholds.Update(this);
+        }
+
         protected override void OnUpdate()
         {
+            RefreshLookups();
+
             TourismOverhaulSetting settings = Mod.Settings;
 
             if (settings == null || !settings.RebookDisplacedTourists)
@@ -121,7 +141,7 @@ namespace TourismOverhaul.Systems
                         // A household still holding a live hotel is fine.
                         if (tourists[i].m_Hotel != Entity.Null
                             && EntityManager.Exists(tourists[i].m_Hotel)
-                            && EntityManager.HasComponent<LodgingProvider>(tourists[i].m_Hotel))
+                            && m_LodgingProviders.HasComponent(tourists[i].m_Hotel))
                         {
                             continue;
                         }
@@ -179,12 +199,12 @@ namespace TourismOverhaul.Systems
 
                         Entity hotel = hotels[i];
 
-                        if (!EntityManager.HasComponent<PropertyRenter>(hotel))
+                        if (!m_PropertyRenters.HasComponent(hotel))
                         {
                             continue;
                         }
 
-                        Entity property = EntityManager.GetComponentData<PropertyRenter>(hotel).m_Property;
+                        Entity property = m_PropertyRenters[hotel].m_Property;
 
                         DynamicBuffer<Renter> renterList = renters[i];
 
@@ -194,7 +214,7 @@ namespace TourismOverhaul.Systems
                             Entity household = displaced[next++];
 
                             if (!EntityManager.Exists(household)
-                                || !EntityManager.HasComponent<TouristHousehold>(household))
+                                || !m_TouristHouseholds.HasComponent(household))
                             {
                                 continue;
                             }
@@ -204,7 +224,7 @@ namespace TourismOverhaul.Systems
                             renterList.Add(new Renter { m_Renter = household });
 
                             TouristHousehold tourist =
-                                EntityManager.GetComponentData<TouristHousehold>(household);
+                                m_TouristHouseholds[household];
                             tourist.m_Hotel = hotel;
                             // Clear the stay timer so TouristStaySystem gives them a fresh visit
                             // rather than expiring them on the old hotel's schedule.

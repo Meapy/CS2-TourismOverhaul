@@ -62,9 +62,44 @@ namespace TourismOverhaul
         /// <summary>
         /// How tolerant attractions are of crowds, as a multiplier on their footprint-derived
         /// capacity. Lower spreads visitors around sooner; higher lets favourites stay busy.
+        ///
+        /// Shown rather than hidden because it is the only dial that acts on the *arrival* side.
+        /// Everything the mod does inside a park rearranges the visitors already there; this is
+        /// what decides how many turn up in the first place.
+        /// </summary>
+        [SettingsUISlider(min = 1f, max = 10f, step = 1f, unit = "integer")]
+        [SettingsUISection(SectionMain, GroupDemand)]
+        public int AttractionCrowdTolerance { get; set; } = 2;
+
+        /// <summary>Visitors move around inside a park instead of freezing where they arrived.</summary>
+        [SettingsUISection(SectionMain, GroupDemand)]
+        public bool SpreadParkVisitors { get; set; } = true;
+
+        /// <summary>
+        /// Percent chance per update that a visitor on a comfortable spot wanders to another. The
+        /// system runs 512 times a day, so 8 is a couple of minutes of real time in one place.
         /// </summary>
         [SettingsUIHidden]
-        public int AttractionCrowdTolerance { get; set; } = 2;
+        public int ParkVisitorMoveChance { get; set; } = 8;
+
+        /// <summary>
+        /// Metres of lawn per visitor. A patch's capacity is its estimated floor area over the
+        /// square of this, so larger means parks fill up sooner.
+        /// </summary>
+        [SettingsUIHidden]
+        public float ParkVisitorSpacingMetres { get; set; } = 4f;
+
+        /// <summary>Path searches a single update may start, so a packed park cannot flood a frame.</summary>
+        [SettingsUIHidden]
+        public int MaxParkVisitorMovesPerUpdate { get; set; } = 256;
+
+        /// <summary>
+        /// Visitors a park holds per lot cell before it stops accepting new leisure trips. A 12x12
+        /// park at 1.0 closes at 144 visitors and reopens once it has thinned to three quarters.
+        /// </summary>
+        [SettingsUISlider(min = 0.25f, max = 4f, step = 0.25f, unit = "floatTwoFractions")]
+        [SettingsUISection(SectionMain, GroupDemand)]
+        public float MaxParkVisitorsPerCell { get; set; } = 1f;
 
         /// <summary>Upper bound on tourist citizens.</summary>
         [SettingsUISlider(min = 1500f, max = 100000f, step = 500f, unit = "integer")]
@@ -474,6 +509,11 @@ namespace TourismOverhaul
             HistoricBuildingAttractiveness = 3;
             EnableAttractionCrowding = true;
             AttractionCrowdTolerance = 3;
+            SpreadParkVisitors = true;
+            ParkVisitorMoveChance = 8;
+            ParkVisitorSpacingMetres = 4f;
+            MaxParkVisitorMovesPerUpdate = 256;
+            MaxParkVisitorsPerCell = 1f;
             HotelRoomDemandOccupancy = 80;
             ReplaceNativeSpawner = true;
 

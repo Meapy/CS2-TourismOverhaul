@@ -49,6 +49,9 @@ namespace TourismOverhaul.Systems
         {
             base.OnCreate();
 
+            m_PropertyRenters = GetComponentLookup<PropertyRenter>(isReadOnly: true);
+            // Read-write: the floor is applied by writing into this buffer (BuildingUtils.SetEfficiencyFactor).
+            m_EfficiencyBuffers = GetBufferLookup<Efficiency>(isReadOnly: false);
             m_HotelQuery = GetEntityQuery(
                 ComponentType.ReadOnly<LodgingProvider>(),
                 ComponentType.ReadOnly<PropertyRenter>(),
@@ -56,8 +59,23 @@ namespace TourismOverhaul.Systems
                 ComponentType.Exclude<Temp>());
         }
 
+
+        // Cached lookups: these paths ask the same questions for every household they walk, and going
+        // through EntityManager each time resolves the type and checks the jobs writing it every call.
+        private ComponentLookup<PropertyRenter> m_PropertyRenters;
+        private BufferLookup<Efficiency> m_EfficiencyBuffers;
+
+        /// <summary>Refreshes the cached lookups, once per update.</summary>
+        private void RefreshLookups()
+        {
+            m_PropertyRenters.Update(this);
+            m_EfficiencyBuffers.Update(this);
+        }
+
         protected override void OnUpdate()
         {
+            RefreshLookups();
+
             TourismOverhaulSetting settings = Mod.Settings;
 
             if (settings == null || !settings.EnableHotelEfficiencyFloor)
@@ -82,16 +100,16 @@ namespace TourismOverhaul.Systems
             {
                 for (int i = 0; i < hotels.Length; i++)
                 {
-                    Entity property = EntityManager.GetComponentData<PropertyRenter>(hotels[i]).m_Property;
+                    Entity property = m_PropertyRenters[hotels[i]].m_Property;
 
                     if (property == Entity.Null
                         || !EntityManager.Exists(property)
-                        || !EntityManager.HasBuffer<Efficiency>(property))
+                        || !m_EfficiencyBuffers.HasBuffer(property))
                     {
                         continue;
                     }
 
-                    DynamicBuffer<Efficiency> efficiencies = EntityManager.GetBuffer<Efficiency>(property);
+                    DynamicBuffer<Efficiency> efficiencies = m_EfficiencyBuffers[property];
 
                     for (int e = 0; e < efficiencies.Length; e++)
                     {

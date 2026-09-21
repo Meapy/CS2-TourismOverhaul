@@ -137,7 +137,13 @@ namespace TourismOverhaul
             // skips empties, so a gap falls back to English rather than shifting the rest.
             nameof(TourismOverhaulSetting.LeisureCostPercent),
             nameof(TourismOverhaulSetting.CruiseShoreLeaveHours),
-            nameof(TourismOverhaulSetting.CruiseShipCapacity)
+            nameof(TourismOverhaulSetting.CruiseShipCapacity),
+
+            // Appended with no locale entries anywhere below, which is the documented way to add
+            // one: For() falls back to English for any key past the end of a locale's array.
+            nameof(TourismOverhaulSetting.SpreadParkVisitors),
+            nameof(TourismOverhaulSetting.AttractionCrowdTolerance),
+            nameof(TourismOverhaulSetting.MaxParkVisitorsPerCell)
         };
 
         private static readonly Dictionary<string, string[]> Labels =

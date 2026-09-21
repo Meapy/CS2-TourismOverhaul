@@ -130,6 +130,16 @@ namespace TourismOverhaul.Systems
         {
             base.OnCreate();
 
+            m_ExpectsPurchases = GetComponentLookup<Components.ExpectsPurchase>(isReadOnly: true);
+            m_CurrentTransports = GetComponentLookup<Game.Citizens.CurrentTransport>(isReadOnly: true);
+            m_CurrentVehicles = GetComponentLookup<Game.Creatures.CurrentVehicle>(isReadOnly: true);
+            m_PublicTransports = GetComponentLookup<PublicTransport>(isReadOnly: true);
+            m_CurrentRoutes = GetComponentLookup<Game.Routes.CurrentRoute>(isReadOnly: true);
+            m_TransportLines = GetComponentLookup<Game.Routes.TransportLine>(isReadOnly: true);
+            m_ResourceBuyers = GetComponentLookup<Game.Companies.ResourceBuyer>(isReadOnly: true);
+            m_Leisures = GetComponentLookup<Game.Citizens.Leisure>(isReadOnly: true);
+            m_ResourceBuffers = GetBufferLookup<Game.Economy.Resources>(isReadOnly: true);
+            m_HouseholdCitizenBuffers = GetBufferLookup<HouseholdCitizen>(isReadOnly: true);
             m_DemandSystem = World.GetOrCreateSystemManaged<TouristDemandSystem>();
             m_HotelSystem = World.GetOrCreateSystemManaged<HotelCapacitySystem>();
             m_EndFrameBarrier = World.GetOrCreateSystemManaged<EndFrameBarrier>();
@@ -244,8 +254,39 @@ namespace TourismOverhaul.Systems
             });
         }
 
+
+        // Cached lookups: these paths ask the same questions for every household they walk, and going
+        // through EntityManager each time resolves the type and checks the jobs writing it every call.
+        private ComponentLookup<Components.ExpectsPurchase> m_ExpectsPurchases;
+        private ComponentLookup<Game.Citizens.CurrentTransport> m_CurrentTransports;
+        private ComponentLookup<Game.Creatures.CurrentVehicle> m_CurrentVehicles;
+        private ComponentLookup<PublicTransport> m_PublicTransports;
+        private ComponentLookup<Game.Routes.CurrentRoute> m_CurrentRoutes;
+        private ComponentLookup<Game.Routes.TransportLine> m_TransportLines;
+        private ComponentLookup<Game.Companies.ResourceBuyer> m_ResourceBuyers;
+        private ComponentLookup<Game.Citizens.Leisure> m_Leisures;
+        private BufferLookup<Game.Economy.Resources> m_ResourceBuffers;
+        private BufferLookup<HouseholdCitizen> m_HouseholdCitizenBuffers;
+
+        /// <summary>Refreshes the cached lookups, once per update.</summary>
+        private void RefreshLookups()
+        {
+            m_ExpectsPurchases.Update(this);
+            m_CurrentTransports.Update(this);
+            m_CurrentVehicles.Update(this);
+            m_PublicTransports.Update(this);
+            m_CurrentRoutes.Update(this);
+            m_TransportLines.Update(this);
+            m_ResourceBuyers.Update(this);
+            m_Leisures.Update(this);
+            m_ResourceBuffers.Update(this);
+            m_HouseholdCitizenBuffers.Update(this);
+        }
+
         protected override void OnUpdate()
         {
+            RefreshLookups();
+
             if (m_TouristQuery.IsEmptyIgnoreFilter)
             {
                 return;
@@ -345,14 +386,14 @@ namespace TourismOverhaul.Systems
 
         private void Sample(Entity household)
         {
-            if (!EntityManager.HasBuffer<Game.Economy.Resources>(household))
+            if (!m_ResourceBuffers.HasBuffer(household))
             {
                 return;
             }
 
             int balance = EconomyUtils.GetResources(
                 Resource.Money,
-                EntityManager.GetBuffer<Game.Economy.Resources>(household, isReadOnly: true));
+                m_ResourceBuffers[household]);
 
             if (!m_LastSample.TryGetValue(household, out int2 previous))
             {
@@ -408,7 +449,7 @@ namespace TourismOverhaul.Systems
                 m_Goods += spent;
 
                 // The trip has been paid for, so the mark has done its job.
-                if (EntityManager.HasComponent<Components.ExpectsPurchase>(household))
+                if (m_ExpectsPurchases.HasComponent(household))
                 {
                     m_CommandBuffer.RemoveComponent<Components.ExpectsPurchase>(household);
                 }
@@ -457,13 +498,13 @@ namespace TourismOverhaul.Systems
         {
             aboardFlag = 0;
 
-            if (!EntityManager.HasBuffer<HouseholdCitizen>(household))
+            if (!m_HouseholdCitizenBuffers.HasBuffer(household))
             {
                 return 0;
             }
 
             DynamicBuffer<HouseholdCitizen> citizens =
-                EntityManager.GetBuffer<HouseholdCitizen>(household, isReadOnly: true);
+                m_HouseholdCitizenBuffers[household];
 
             int fare = 0;
 
@@ -502,10 +543,10 @@ namespace TourismOverhaul.Systems
         {
             Entity traveller = citizen;
 
-            if (EntityManager.HasComponent<Game.Citizens.CurrentTransport>(citizen))
+            if (m_CurrentTransports.HasComponent(citizen))
             {
                 Entity transport =
-                    EntityManager.GetComponentData<Game.Citizens.CurrentTransport>(citizen).m_CurrentTransport;
+                    m_CurrentTransports[citizen].m_CurrentTransport;
 
                 if (transport != Entity.Null && EntityManager.Exists(transport))
                 {
@@ -513,12 +554,12 @@ namespace TourismOverhaul.Systems
                 }
             }
 
-            if (!EntityManager.HasComponent<Game.Creatures.CurrentVehicle>(traveller))
+            if (!m_CurrentVehicles.HasComponent(traveller))
             {
                 return Entity.Null;
             }
 
-            Entity vehicle = EntityManager.GetComponentData<Game.Creatures.CurrentVehicle>(traveller).m_Vehicle;
+            Entity vehicle = m_CurrentVehicles[traveller].m_Vehicle;
 
             if (vehicle == Entity.Null || !EntityManager.Exists(vehicle))
             {
@@ -527,25 +568,25 @@ namespace TourismOverhaul.Systems
 
             // Their own car carries no PublicTransport, which is the distinction that matters:
             // driving is free, riding is not.
-            return EntityManager.HasComponent<PublicTransport>(vehicle) ? vehicle : Entity.Null;
+            return m_PublicTransports.HasComponent(vehicle) ? vehicle : Entity.Null;
         }
 
         /// <summary>Mirrors ResidentAISystem.GetTicketPrice (:3046-3057).</summary>
         private int TicketPrice(Entity vehicle)
         {
-            if (!EntityManager.HasComponent<Game.Routes.CurrentRoute>(vehicle))
+            if (!m_CurrentRoutes.HasComponent(vehicle))
             {
                 return 0;
             }
 
-            Entity route = EntityManager.GetComponentData<Game.Routes.CurrentRoute>(vehicle).m_Route;
+            Entity route = m_CurrentRoutes[vehicle].m_Route;
 
-            if (route == Entity.Null || !EntityManager.HasComponent<Game.Routes.TransportLine>(route))
+            if (route == Entity.Null || !m_TransportLines.HasComponent(route))
             {
                 return 0;
             }
 
-            return EntityManager.GetComponentData<Game.Routes.TransportLine>(route).m_TicketPrice;
+            return m_TransportLines[route].m_TicketPrice;
         }
 
         /// <summary>
@@ -561,18 +602,18 @@ namespace TourismOverhaul.Systems
         /// </summary>
         private int Observe(Entity household)
         {
-            if (!EntityManager.HasBuffer<HouseholdCitizen>(household))
+            if (!m_HouseholdCitizenBuffers.HasBuffer(household))
             {
                 return 0;
             }
 
             DynamicBuffer<HouseholdCitizen> citizens =
-                EntityManager.GetBuffer<HouseholdCitizen>(household, isReadOnly: true);
+                m_HouseholdCitizenBuffers[household];
 
             // Set by TouristShoppingSystem when it sends the household shopping, and cleared by the
             // drop that pays for it. Far more reliable than catching ResourceBuyer, which exists
             // only while a purchase is outstanding and is usually gone by the time we look.
-            if (EntityManager.HasComponent<Components.ExpectsPurchase>(household))
+            if (m_ExpectsPurchases.HasComponent(household))
             {
                 return kFlagGoods;
             }
@@ -583,7 +624,7 @@ namespace TourismOverhaul.Systems
             {
                 Entity citizen = citizens[i].m_Citizen;
 
-                if (EntityManager.HasComponent<Game.Companies.ResourceBuyer>(citizen))
+                if (m_ResourceBuyers.HasComponent(citizen))
                 {
                     return kFlagGoods;
                 }
@@ -591,7 +632,7 @@ namespace TourismOverhaul.Systems
                 // Leisure is a weaker signal than a purchase, so it does not return early — a
                 // household with one member shopping and another at a venue should count as
                 // shopping, since that is the more specific claim.
-                if (EntityManager.HasComponent<Game.Citizens.Leisure>(citizen))
+                if (m_Leisures.HasComponent(citizen))
                 {
                     leisure = kFlagLeisure;
                 }
