@@ -299,12 +299,40 @@ namespace TourismOverhaul.Systems
             m_CruiseLineSystem = World.GetOrCreateSystemManaged<CruiseLineSystem>();
             m_DemandSystem = World.GetOrCreateSystemManaged<TouristDemandSystem>();
             m_SimulationSystem = World.GetOrCreateSystemManaged<SimulationSystem>();
+            m_HouseholdNeeds = GetComponentLookup<HouseholdNeed>(isReadOnly: true);
+            m_ExpectsPurchases = GetComponentLookup<Components.ExpectsPurchase>(isReadOnly: true);
+            m_PathInformations = GetComponentLookup<Game.Pathfind.PathInformation>(isReadOnly: true);
+            m_TravelPurposes = GetComponentLookup<TravelPurpose>(isReadOnly: true);
+            m_LodgingSeekers = GetComponentLookup<LodgingSeeker>(isReadOnly: true);
+            m_Targets = GetComponentLookup<Target>(isReadOnly: true);
+            m_LodgingProviders = GetComponentLookup<LodgingProvider>(isReadOnly: true);
+            m_TouristHouseholds = GetComponentLookup<TouristHousehold>(isReadOnly: true);
+            m_CurrentTransports = GetComponentLookup<CurrentTransport>(isReadOnly: true);
+            m_CurrentVehicles = GetComponentLookup<Game.Creatures.CurrentVehicle>(isReadOnly: true);
+            m_Residents = GetComponentLookup<Game.Creatures.Resident>(isReadOnly: true);
+            m_HouseholdMembers = GetComponentLookup<HouseholdMember>(isReadOnly: true);
+            m_CruisePassengers = GetComponentLookup<Components.CruisePassenger>(isReadOnly: true);
+            m_DeletedTags = GetComponentLookup<Deleted>(isReadOnly: true);
+            m_CruiseCalls = GetComponentLookup<Components.CruiseCall>(isReadOnly: true);
+            m_HouseholdCitizenBuffers = GetBufferLookup<HouseholdCitizen>(isReadOnly: true);
+            m_PassengerBuffers = GetBufferLookup<Passenger>(isReadOnly: true);
+            m_CurrentRoutes = GetComponentLookup<CurrentRoute>(isReadOnly: true);
+            m_PrefabRefs = GetComponentLookup<PrefabRef>(isReadOnly: true);
+            m_TripNeededBuffers = GetBufferLookup<TripNeeded>(isReadOnly: true);
             m_EndFrameBarrier = World.GetOrCreateSystemManaged<EndFrameBarrier>();
             m_PrefabSystem = World.GetOrCreateSystemManaged<PrefabSystem>();
 
+            // Watercraft only.
+            //
+            // Without it this query is every public transport vehicle in the city with a route - every bus,
+            // tram, train and taxi - and ServeDockedShips walks the lot on every update, asking IsOnCruiseLine
+            // about each one. Measured at 17-27 ms per update in a 1.2M city, which was the single most
+            // expensive thing this mod did. A cruise line is a ship line, so nothing but a ship can ever serve
+            // it and the rest were only ever going to fail that test.
             m_CruiseVehicleQuery = GetEntityQuery(
                 ComponentType.ReadWrite<Game.Vehicles.PublicTransport>(),
                 ComponentType.ReadOnly<CurrentRoute>(),
+                ComponentType.ReadOnly<Game.Vehicles.Watercraft>(),
                 ComponentType.Exclude<Deleted>(),
                 ComponentType.Exclude<Temp>());
 
@@ -339,11 +367,89 @@ namespace TourismOverhaul.Systems
                 ComponentType.Exclude<Temp>());
         }
 
+
+        // Where an update's time goes, in Stopwatch ticks, summed until the next report.
+        //
+        // The sweeps are the most expensive thing this mod does in a large city, and "the system costs N ms"
+        // is not actionable: the cost could be the snapshot, the vessel service, or any of the three sweeps,
+        // and they run at different cadences over different numbers of parties. Reported every
+        // kTimingReportUpdates updates so a profiler capture can be read against it.
+        private long m_TicksSnapshot;
+        private long m_TicksServeShips;
+        private long m_TicksReturnParties;
+        private long m_TicksSweepParties;
+        private long m_TicksSweepTerminals;
+        private int m_TimedUpdates;
+        private int m_TimedSweeps;
+        private int m_LastPartiesAshore;
+        private int m_LastVehiclesWalked;
+
+        /// <summary>Updates between timing reports. 256 is about a minute of play at the system's cadence.</summary>
+        private const int kTimingReportUpdates = 256;
+
+        // Cached lookups for the per-party sweeps.
+        //
+        // These paths ask about the same handful of components for every party ashore, which can be two
+        // thousand of them. Going through EntityManager for each question resolves the type and checks the
+        // jobs writing it every single time: measured at 0.075 ms of actual work costing 2.2-4.0 ms per
+        // frame, nearly all of it the main thread waiting. A lookup resolves once per update instead.
+        private ComponentLookup<HouseholdNeed> m_HouseholdNeeds;
+        private ComponentLookup<Components.ExpectsPurchase> m_ExpectsPurchases;
+        private ComponentLookup<Game.Pathfind.PathInformation> m_PathInformations;
+        private ComponentLookup<TravelPurpose> m_TravelPurposes;
+        private ComponentLookup<LodgingSeeker> m_LodgingSeekers;
+        private ComponentLookup<Target> m_Targets;
+        private ComponentLookup<LodgingProvider> m_LodgingProviders;
+        private ComponentLookup<TouristHousehold> m_TouristHouseholds;
+        private ComponentLookup<CurrentTransport> m_CurrentTransports;
+        private ComponentLookup<Game.Creatures.CurrentVehicle> m_CurrentVehicles;
+        private ComponentLookup<Game.Creatures.Resident> m_Residents;
+        private ComponentLookup<HouseholdMember> m_HouseholdMembers;
+        private ComponentLookup<Components.CruisePassenger> m_CruisePassengers;
+        private ComponentLookup<Deleted> m_DeletedTags;
+        private ComponentLookup<Components.CruiseCall> m_CruiseCalls;
+        private BufferLookup<HouseholdCitizen> m_HouseholdCitizenBuffers;
+        private BufferLookup<Passenger> m_PassengerBuffers;
+        private ComponentLookup<CurrentRoute> m_CurrentRoutes;
+        private ComponentLookup<PrefabRef> m_PrefabRefs;
+        private BufferLookup<TripNeeded> m_TripNeededBuffers;
+
+        /// <summary>Refreshes the cached lookups. Called once per update, before any sweep reads them.</summary>
+        private void RefreshLookups()
+        {
+            m_HouseholdNeeds.Update(this);
+            m_ExpectsPurchases.Update(this);
+            m_PathInformations.Update(this);
+            m_TravelPurposes.Update(this);
+            m_LodgingSeekers.Update(this);
+            m_Targets.Update(this);
+            m_LodgingProviders.Update(this);
+            m_TouristHouseholds.Update(this);
+            m_CurrentTransports.Update(this);
+            m_CurrentVehicles.Update(this);
+            m_Residents.Update(this);
+            m_HouseholdMembers.Update(this);
+            m_CruisePassengers.Update(this);
+            m_DeletedTags.Update(this);
+            m_CruiseCalls.Update(this);
+            m_HouseholdCitizenBuffers.Update(this);
+            m_PassengerBuffers.Update(this);
+            m_CurrentRoutes.Update(this);
+            m_PrefabRefs.Update(this);
+            m_TripNeededBuffers.Update(this);
+        }
+
         protected override void OnUpdate()
         {
+            RefreshLookups();
+
+            long started = System.Diagnostics.Stopwatch.GetTimestamp();
+            m_TimedUpdates++;
+
             // Before the early returns, so a panel reading the published count never sees figures
             // left over from a line that has since been deleted.
             SnapshotPassengersAshore();
+            m_TicksSnapshot += System.Diagnostics.Stopwatch.GetTimestamp() - started;
 
             if (m_CruiseLineSystem == null || !m_CruiseLineSystem.LineCreated)
             {
@@ -357,8 +463,15 @@ namespace TourismOverhaul.Systems
                 return;
             }
 
+            // EnforceOneCruiseLine can add Locked to the line prefab, which is a structural change and
+            // invalidates the lookups taken above.
             EnforceOneCruiseLine(cruiseLinePrefab);
+            RefreshLookups();
+
+            started = System.Diagnostics.Stopwatch.GetTimestamp();
+            m_LastVehiclesWalked = m_CruiseVehicleQuery.CalculateEntityCount();
             ServeDockedShips(cruiseLinePrefab);
+            m_TicksServeShips += System.Diagnostics.Stopwatch.GetTimestamp() - started;
 
             // The shore party is swept on its own, slower cadence.
             //
@@ -374,10 +487,58 @@ namespace TourismOverhaul.Systems
             if (m_SimulationSystem.frameIndex % kShorePartyInterval
                 < (uint)GetUpdateInterval(SystemUpdatePhase.GameSimulation))
             {
+                m_TimedSweeps++;
+
+                started = System.Diagnostics.Stopwatch.GetTimestamp();
                 ReturnFinishedParties();
+                long afterReturn = System.Diagnostics.Stopwatch.GetTimestamp();
+                m_TicksReturnParties += afterReturn - started;
+
                 SweepOrphanedParties(m_EndFrameBarrier.CreateCommandBuffer());
+                long afterParties = System.Diagnostics.Stopwatch.GetTimestamp();
+                m_TicksSweepParties += afterParties - afterReturn;
+
                 SweepOrphanedTerminals();
+                m_TicksSweepTerminals += System.Diagnostics.Stopwatch.GetTimestamp() - afterParties;
             }
+
+            ReportTimingIfDue();
+        }
+
+        /// <summary>
+        /// Writes where the last <see cref="kTimingReportUpdates"/> updates went, then starts again.
+        ///
+        /// Milliseconds per update, so the figures can be compared directly with a profiler capture's
+        /// ms-per-frame for this system, plus the number of parties the sweeps had to walk, which is what
+        /// the sweep costs scale with.
+        /// </summary>
+        private void ReportTimingIfDue()
+        {
+            if (m_TimedUpdates < kTimingReportUpdates)
+            {
+                return;
+            }
+
+            double ToMs(long ticks) =>
+                ticks * 1000.0 / System.Diagnostics.Stopwatch.Frequency / m_TimedUpdates;
+
+            Mod.Log.Info(
+                $"CruiseVoyage timing over {m_TimedUpdates} updates ({m_TimedSweeps} with sweeps), "
+                + $"{m_LastPartiesAshore} parties ashore, {m_LastVehiclesWalked} vessels walked: "
+                + $"snapshot {ToMs(m_TicksSnapshot):0.000} ms, "
+                + $"serve ships {ToMs(m_TicksServeShips):0.000} ms, "
+                + $"return parties {ToMs(m_TicksReturnParties):0.000} ms, "
+                + $"sweep parties {ToMs(m_TicksSweepParties):0.000} ms, "
+                + $"sweep terminals {ToMs(m_TicksSweepTerminals):0.000} ms "
+                + "(per update, averaged over all of them)");
+
+            m_TicksSnapshot = 0;
+            m_TicksServeShips = 0;
+            m_TicksReturnParties = 0;
+            m_TicksSweepParties = 0;
+            m_TicksSweepTerminals = 0;
+            m_TimedUpdates = 0;
+            m_TimedSweeps = 0;
         }
 
         /// <summary>
@@ -732,7 +893,7 @@ namespace TourismOverhaul.Systems
 
                     if (ship != Entity.Null
                         && EntityManager.Exists(ship)
-                        && !EntityManager.HasComponent<Deleted>(ship))
+                        && !m_DeletedTags.HasComponent(ship))
                     {
                         continue;
                     }
@@ -742,10 +903,10 @@ namespace TourismOverhaul.Systems
                     // Their anchor was the terminal, and it is no longer theirs to hold. Cleared so
                     // TouristHouseholdBehaviorSystem marks them LodgingSeeker and they look for a
                     // room like any other visitor, rather than keeping a hotel that is a harbour.
-                    if (EntityManager.HasComponent<TouristHousehold>(parties[i]))
+                    if (m_TouristHouseholds.HasComponent(parties[i]))
                     {
                         TouristHousehold tourist =
-                            EntityManager.GetComponentData<TouristHousehold>(parties[i]);
+                            m_TouristHouseholds[parties[i]];
 
                         if (tourist.m_Hotel == passengers[i].m_Terminal)
                         {
@@ -1012,21 +1173,19 @@ namespace TourismOverhaul.Systems
 
         private bool IsOnCruiseLine(Entity vehicle, Entity cruiseLinePrefab)
         {
-            if (!EntityManager.HasComponent<CurrentRoute>(vehicle))
+            if (!m_CurrentRoutes.HasComponent(vehicle))
             {
                 return false;
             }
 
-            Entity route = EntityManager.GetComponentData<CurrentRoute>(vehicle).m_Route;
+            Entity route = m_CurrentRoutes[vehicle].m_Route;
 
-            if (route == Entity.Null
-                || !EntityManager.Exists(route)
-                || !EntityManager.HasComponent<PrefabRef>(route))
+            if (route == Entity.Null || !m_PrefabRefs.HasComponent(route))
             {
                 return false;
             }
 
-            return EntityManager.GetComponentData<PrefabRef>(route).m_Prefab == cruiseLinePrefab;
+            return m_PrefabRefs[route].m_Prefab == cruiseLinePrefab;
         }
 
         /// <summary>
@@ -1890,13 +2049,13 @@ namespace TourismOverhaul.Systems
         /// </summary>
         private int CountOutboundAboard(Entity vehicle)
         {
-            if (!EntityManager.HasBuffer<Passenger>(vehicle))
+            if (!m_PassengerBuffers.HasBuffer(vehicle))
             {
                 return 0;
             }
 
             DynamicBuffer<Passenger> manifest =
-                EntityManager.GetBuffer<Passenger>(vehicle, isReadOnly: true);
+                m_PassengerBuffers[vehicle];
 
             int aboard = 0;
 
@@ -1909,9 +2068,8 @@ namespace TourismOverhaul.Systems
                     continue;
                 }
 
-                if (EntityManager.HasComponent<Components.CruisePassenger>(household)
-                    && EntityManager.GetComponentData<Components.CruisePassenger>(household)
-                           .m_Homeward != 0)
+                if (m_CruisePassengers.HasComponent(household)
+                    && m_CruisePassengers[household].m_Homeward != 0)
                 {
                     continue;
                 }
@@ -2008,13 +2166,13 @@ namespace TourismOverhaul.Systems
             uint reboard,
             EntityCommandBuffer commandBuffer)
         {
-            if (!EntityManager.HasBuffer<Passenger>(vehicle))
+            if (!m_PassengerBuffers.HasBuffer(vehicle))
             {
                 return 0;
             }
 
             DynamicBuffer<Passenger> manifest =
-                EntityManager.GetBuffer<Passenger>(vehicle, isReadOnly: true);
+                m_PassengerBuffers[vehicle];
 
             NativeParallelHashSet<Entity> seen =
                 new NativeParallelHashSet<Entity>(64, Allocator.Temp);
@@ -2146,7 +2304,7 @@ namespace TourismOverhaul.Systems
         /// </summary>
         private void CancelHotelTrip(Entity household, EntityCommandBuffer commandBuffer)
         {
-            if (EntityManager.HasComponent<HouseholdNeed>(household))
+            if (m_HouseholdNeeds.HasComponent(household))
             {
                 commandBuffer.SetComponent(household, new HouseholdNeed
                 {
@@ -2157,7 +2315,7 @@ namespace TourismOverhaul.Systems
 
             // The shopping mark goes too, so the spending ledger stops attributing this party's
             // wallet drops to goods it is no longer out buying.
-            if (EntityManager.HasComponent<Components.ExpectsPurchase>(household))
+            if (m_ExpectsPurchases.HasComponent(household))
             {
                 commandBuffer.RemoveComponent<Components.ExpectsPurchase>(household);
             }
@@ -2165,18 +2323,18 @@ namespace TourismOverhaul.Systems
             // A finished or in-flight lodging search would otherwise be read back and acted on.
             // TouristTargetSearchSystem drops this component to restart a search, so its absence is
             // the neutral state rather than a missing value.
-            if (EntityManager.HasComponent<Game.Pathfind.PathInformation>(household))
+            if (m_PathInformations.HasComponent(household))
             {
                 commandBuffer.RemoveComponent<Game.Pathfind.PathInformation>(household);
             }
 
-            if (!EntityManager.HasBuffer<HouseholdCitizen>(household))
+            if (!m_HouseholdCitizenBuffers.HasBuffer(household))
             {
                 return;
             }
 
             DynamicBuffer<HouseholdCitizen> citizens =
-                EntityManager.GetBuffer<HouseholdCitizen>(household, isReadOnly: true);
+                m_HouseholdCitizenBuffers[household];
 
             for (int i = 0; i < citizens.Length; i++)
             {
@@ -2190,7 +2348,7 @@ namespace TourismOverhaul.Systems
                 // Removing rather than rewriting: TravelPurpose is added when a trip is issued
                 // (TripNeededSystem:1621) and its absence is the state a citizen with nothing to do
                 // is in, so taking it away returns them to that rather than inventing a purpose.
-                if (EntityManager.HasComponent<TravelPurpose>(citizen))
+                if (m_TravelPurposes.HasComponent(citizen))
                 {
                     commandBuffer.RemoveComponent<TravelPurpose>(citizen);
                 }
@@ -2202,7 +2360,7 @@ namespace TourismOverhaul.Systems
                 // buffer leaves nothing queued, and the ordinary tourist behaviour fills it again
                 // with whatever a visitor with a bed already booked would do: shopping, leisure,
                 // attractions.
-                if (EntityManager.HasBuffer<TripNeeded>(citizen))
+                if (m_TripNeededBuffers.HasBuffer(citizen))
                 {
                     commandBuffer.SetBuffer<TripNeeded>(citizen);
                 }
@@ -2249,23 +2407,23 @@ namespace TourismOverhaul.Systems
         /// <summary>The household behind a creature, or Entity.Null if the hops do not resolve.</summary>
         private Entity HouseholdOf(Entity creature)
         {
-            if (creature == Entity.Null
-                || !EntityManager.Exists(creature)
-                || !EntityManager.HasComponent<Game.Creatures.Resident>(creature))
+            // Through lookups rather than EntityManager: CountOutboundAboard calls this once per passenger
+            // on the manifest, which is two thousand of them on a full ship, on every update while the
+            // vessel loads. HasComponent on a lookup also answers the existence question, so the separate
+            // Exists calls go with it.
+            if (creature == Entity.Null || !m_Residents.HasComponent(creature))
             {
                 return Entity.Null;
             }
 
-            Entity citizen = EntityManager.GetComponentData<Game.Creatures.Resident>(creature).m_Citizen;
+            Entity citizen = m_Residents[creature].m_Citizen;
 
-            if (citizen == Entity.Null
-                || !EntityManager.Exists(citizen)
-                || !EntityManager.HasComponent<HouseholdMember>(citizen))
+            if (citizen == Entity.Null || !m_HouseholdMembers.HasComponent(citizen))
             {
                 return Entity.Null;
             }
 
-            Entity household = EntityManager.GetComponentData<HouseholdMember>(citizen).m_Household;
+            Entity household = m_HouseholdMembers[citizen].m_Household;
 
             return household != Entity.Null && EntityManager.Exists(household)
                 ? household
@@ -2343,10 +2501,10 @@ namespace TourismOverhaul.Systems
             int ours = 0;
             int missing = 0;
 
-            if (EntityManager.HasBuffer<Passenger>(vehicle))
+            if (m_PassengerBuffers.HasBuffer(vehicle))
             {
                 DynamicBuffer<Passenger> manifest =
-                    EntityManager.GetBuffer<Passenger>(vehicle, isReadOnly: true);
+                    m_PassengerBuffers[vehicle];
 
                 inBuffer = manifest.Length;
 
@@ -2375,25 +2533,25 @@ namespace TourismOverhaul.Systems
         /// <summary>Whether a creature belongs to one of this mod's cruise parties.</summary>
         private bool IsCruiseCreature(Entity creature)
         {
-            if (!EntityManager.HasComponent<Game.Creatures.Resident>(creature))
+            if (!m_Residents.HasComponent(creature))
             {
                 return false;
             }
 
-            Entity citizen = EntityManager.GetComponentData<Game.Creatures.Resident>(creature).m_Citizen;
+            Entity citizen = m_Residents[creature].m_Citizen;
 
             if (citizen == Entity.Null
                 || !EntityManager.Exists(citizen)
-                || !EntityManager.HasComponent<HouseholdMember>(citizen))
+                || !m_HouseholdMembers.HasComponent(citizen))
             {
                 return false;
             }
 
-            Entity household = EntityManager.GetComponentData<HouseholdMember>(citizen).m_Household;
+            Entity household = m_HouseholdMembers[citizen].m_Household;
 
             return household != Entity.Null
                    && EntityManager.Exists(household)
-                   && EntityManager.HasComponent<Components.CruisePassenger>(household);
+                   && m_CruisePassengers.HasComponent(household);
         }
 
         private void HoldShip(
@@ -2567,6 +2725,7 @@ namespace TourismOverhaul.Systems
         private void SnapshotPassengersAshore()
         {
             m_AshoreByShip.Clear();
+            m_LastPartiesAshore = 0;
 
             if (m_AshoreQuery.IsEmptyIgnoreFilter)
             {
@@ -2632,6 +2791,7 @@ namespace TourismOverhaul.Systems
                         }
 
                         m_AshoreByShip[ship] = count;
+                        m_LastPartiesAshore++;
                     }
                 }
             }
@@ -3191,7 +3351,7 @@ namespace TourismOverhaul.Systems
                 return;
             }
 
-            if (EntityManager.HasComponent<HouseholdNeed>(household))
+            if (m_HouseholdNeeds.HasComponent(household))
             {
                 commandBuffer.SetComponent(household, new HouseholdNeed
                 {
@@ -3200,23 +3360,23 @@ namespace TourismOverhaul.Systems
                 });
             }
 
-            if (EntityManager.HasComponent<Components.ExpectsPurchase>(household))
+            if (m_ExpectsPurchases.HasComponent(household))
             {
                 commandBuffer.RemoveComponent<Components.ExpectsPurchase>(household);
             }
 
-            if (EntityManager.HasComponent<Game.Pathfind.PathInformation>(household))
+            if (m_PathInformations.HasComponent(household))
             {
                 commandBuffer.RemoveComponent<Game.Pathfind.PathInformation>(household);
             }
 
-            if (!EntityManager.HasBuffer<HouseholdCitizen>(household))
+            if (!m_HouseholdCitizenBuffers.HasBuffer(household))
             {
                 return;
             }
 
             DynamicBuffer<HouseholdCitizen> citizens =
-                EntityManager.GetBuffer<HouseholdCitizen>(household, isReadOnly: true);
+                m_HouseholdCitizenBuffers[household];
 
             for (int i = 0; i < citizens.Length; i++)
             {
@@ -3224,13 +3384,13 @@ namespace TourismOverhaul.Systems
 
                 if (citizen == Entity.Null
                     || !EntityManager.Exists(citizen)
-                    || !EntityManager.HasBuffer<TripNeeded>(citizen))
+                    || !m_TripNeededBuffers.HasBuffer(citizen))
                 {
                     continue;
                 }
 
                 // Whatever they were doing is over.
-                if (EntityManager.HasComponent<TravelPurpose>(citizen))
+                if (m_TravelPurposes.HasComponent(citizen))
                 {
                     commandBuffer.RemoveComponent<TravelPurpose>(citizen);
                 }
@@ -3329,13 +3489,13 @@ namespace TourismOverhaul.Systems
         {
             if (ship == Entity.Null
                 || !EntityManager.Exists(ship)
-                || !EntityManager.HasBuffer<HouseholdCitizen>(household))
+                || !m_HouseholdCitizenBuffers.HasBuffer(household))
             {
                 return false;
             }
 
             DynamicBuffer<HouseholdCitizen> citizens =
-                EntityManager.GetBuffer<HouseholdCitizen>(household, isReadOnly: true);
+                m_HouseholdCitizenBuffers[household];
 
             for (int i = 0; i < citizens.Length; i++)
             {
@@ -3343,22 +3503,22 @@ namespace TourismOverhaul.Systems
 
                 if (citizen == Entity.Null
                     || !EntityManager.Exists(citizen)
-                    || !EntityManager.HasComponent<CurrentTransport>(citizen))
+                    || !m_CurrentTransports.HasComponent(citizen))
                 {
                     continue;
                 }
 
                 Entity creature =
-                    EntityManager.GetComponentData<CurrentTransport>(citizen).m_CurrentTransport;
+                    m_CurrentTransports[citizen].m_CurrentTransport;
 
                 if (creature == Entity.Null
                     || !EntityManager.Exists(creature)
-                    || !EntityManager.HasComponent<Game.Creatures.CurrentVehicle>(creature))
+                    || !m_CurrentVehicles.HasComponent(creature))
                 {
                     continue;
                 }
 
-                if (EntityManager.GetComponentData<Game.Creatures.CurrentVehicle>(creature).m_Vehicle
+                if (m_CurrentVehicles[creature].m_Vehicle
                     == ship)
                 {
                     return true;
@@ -3457,7 +3617,7 @@ namespace TourismOverhaul.Systems
         private void KeepOffTheHotels(
             Entity household, Entity terminal, EntityCommandBuffer commandBuffer)
         {
-            if (EntityManager.HasComponent<LodgingSeeker>(household))
+            if (m_LodgingSeekers.HasComponent(household))
             {
                 commandBuffer.RemoveComponent<LodgingSeeker>(household);
             }
@@ -3475,13 +3635,13 @@ namespace TourismOverhaul.Systems
             // a building that provides lodging, and the terminal is excluded because that is their
             // own anchor. Everything else they might be heading for — a shop, a venue, an
             // attraction — is left strictly alone, so this cannot interrupt sightseeing.
-            if (EntityManager.HasComponent<Target>(household))
+            if (m_Targets.HasComponent(household))
             {
-                Entity going = EntityManager.GetComponentData<Target>(household).m_Target;
+                Entity going = m_Targets[household].m_Target;
 
                 if (going != terminal
                     && going != Entity.Null
-                    && EntityManager.HasComponent<LodgingProvider>(going))
+                    && m_LodgingProviders.HasComponent(going))
                 {
                     commandBuffer.RemoveComponent<Target>(household);
                     CancelHotelTrip(household, commandBuffer);
@@ -3495,7 +3655,7 @@ namespace TourismOverhaul.Systems
 
             // Re-equip the terminal if its provider has gone. Cheap: the component test fails
             // immediately in the ordinary case.
-            if (!EntityManager.HasComponent<LodgingProvider>(terminal))
+            if (!m_LodgingProviders.HasComponent(terminal))
             {
                 EquipTerminalWithLodging(terminal, commandBuffer);
             }
@@ -3517,12 +3677,12 @@ namespace TourismOverhaul.Systems
             // its renters". The renters can stay, the anchor holds, and the port draws what it is
             // rated for on every harbour rather than only the one this code was written against.
 
-            if (!EntityManager.HasComponent<TouristHousehold>(household))
+            if (!m_TouristHouseholds.HasComponent(household))
             {
                 return;
             }
 
-            TouristHousehold tourist = EntityManager.GetComponentData<TouristHousehold>(household);
+            TouristHousehold tourist = m_TouristHouseholds[household];
 
             if (tourist.m_Hotel != terminal)
             {
@@ -3815,13 +3975,13 @@ namespace TourismOverhaul.Systems
             hasBody = false;
             hasTrip = false;
 
-            if (!EntityManager.HasBuffer<HouseholdCitizen>(household))
+            if (!m_HouseholdCitizenBuffers.HasBuffer(household))
             {
                 return;
             }
 
             DynamicBuffer<HouseholdCitizen> citizens =
-                EntityManager.GetBuffer<HouseholdCitizen>(household, isReadOnly: true);
+                m_HouseholdCitizenBuffers[household];
 
             for (int i = 0; i < citizens.Length; i++)
             {
@@ -3832,15 +3992,15 @@ namespace TourismOverhaul.Systems
                     continue;
                 }
 
-                if (EntityManager.HasComponent<CurrentTransport>(citizen))
+                if (m_CurrentTransports.HasComponent(citizen))
                 {
                     hasBody = true;
                     return;
                 }
 
                 if (!hasTrip
-                    && EntityManager.HasBuffer<TripNeeded>(citizen)
-                    && EntityManager.GetBuffer<TripNeeded>(citizen, isReadOnly: true).Length > 0)
+                    && m_TripNeededBuffers.HasBuffer(citizen)
+                    && m_TripNeededBuffers[citizen].Length > 0)
                 {
                     hasTrip = true;
                 }

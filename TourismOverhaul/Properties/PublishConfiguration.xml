@@ -143,6 +143,17 @@ and the crowds in the park thin out because there is somewhere else worth going.
 
 How keenly they shop is adjustable, and can be turned off entirely.
 
+## Parks stop turning into one solid crowd
+
+In the base game a park never turns anyone away. Every resident and tourist heading for a park
+picks the nearest one, however packed it already is, so a popular park fills with a wall of cims
+while others nearby sit empty.
+
+A full park is now passed over and visitors head for the next one instead. Nobody already there
+is moved out or hidden — the crowd thins as they finish and go home, and the park reopens. Inside
+a park, visitors spread off an over-full patch of lawn to other spots. The limit is a slider,
+scaled to each park's size.
+
 ## Historic districts draw visitors
 
 Attractiveness in the base game comes almost entirely from parks and signature landmarks. An
@@ -233,7 +244,7 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
   <Tag Value="Code Mod" />
 
   <ForumLink Value="https://forum.paradoxplaza.com/forum/threads/mod-tourism-overhaul-fix-tourism.1937099/" />
-  <ModVersion Value="1.8.3" />
+  <ModVersion Value="1.9.0" />
   <GameVersion Value="1.6.*" />
 
   <!--
@@ -241,10 +252,12 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
     accumulating history here republishes every past release with every upload. The full record
     belongs in CHANGELOG.md.
   -->
-  <ChangeLog>1.8.3
-Fixes a crash when saving. Every save, manual or automatic, could take the game down while the trailing-month arrivals figure was written out. If you have been losing cities to save crashes, this is the one.
+  <ChangeLog>1.9.0
+Parks no longer turn into one solid crowd. In the base game a park never turns anyone away: every resident and tourist heading for a park picks the nearest one, however packed it is, so a popular park fills with a wall of cims while others sit empty. A full park is now passed over and visitors head for the next one instead. Nobody is moved out or hidden; the crowd thins as they finish and go home, and the park reopens. Visitors inside also spread off an over-full patch of lawn.
 
-Also fixes a case where deleting a cruise line left its passengers stranded ashore for good, still counted against a ship that no longer exists.
+New settings: "Park visitor limit (per lot cell)" sets how full a park gets, and "How busy a place gets before it puts people off" is now visible.
+
+Performance: cruise ship handling was walking every bus, tram and train in the city on every update. It now looks only at ships, which removes most of its cost in large cities.
   </ChangeLog>
 
   <ExternalLink Type="github" Url="https://github.com/Meapy/CS2-TourismOverhaul" />

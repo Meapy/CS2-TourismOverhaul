@@ -99,6 +99,12 @@ namespace TourismOverhaul
                 Game.Serialization.PreSerialize<CruiseVoyageSystem>,
                 Game.Serialization.SerializerSystem>(SystemUpdatePhase.Serialize);
 
+            // Reopens every park the visitor limit has closed, so no save is ever written with a
+            // park's LeisureProvider tag missing — the game does not restore it for parks on load.
+            updateSystem.UpdateBefore<
+                Game.Serialization.PreSerialize<ParkVisitorSpreadSystem>,
+                Game.Serialization.SerializerSystem>(SystemUpdatePhase.Serialize);
+
             // Publishes our tourism figures to the UI layer for the frontend module.
             updateSystem.UpdateAt<TourismPanelUISystem>(SystemUpdatePhase.UIUpdate);
 
@@ -134,6 +140,10 @@ namespace TourismOverhaul
             // Damps a crowded attraction's appeal so visitors spread out. Must run after
             // HistoricAttractivenessSystem, which sets the values this one scales.
             updateSystem.UpdateAt<AttractionCrowdingSystem>(SystemUpdatePhase.GameSimulation);
+
+            // Keeps park visitors circulating instead of freezing on the first spot they reach,
+            // which is what turns a busy park into one static pile beside the entrance.
+            updateSystem.UpdateAt<ParkVisitorSpreadSystem>(SystemUpdatePhase.GameSimulation);
 
             // Makes old town buildings attractive in their own right, so a historic district draws
             // visitors without needing a landmark dropped into it.

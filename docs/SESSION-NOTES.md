@@ -726,3 +726,181 @@ Write a version int first, always. Add new fields at the end and read them condi
   mechanism is unknown.
 - Arrival counting now happens on conversion (`Components/ArrivalMode`), not dispatch. Average
   wallet held should converge below the starting budget; if it does not, something tops wallets up.
+
+## A park's crowd is a stopped clock, not a missing feature
+
+Parks collect a dense knot of cims just inside the gate and stay empty everywhere else. The obvious
+reading — the game has no way to spread visitors around a lot — is wrong, and chasing it leads to
+rewriting position selection, which is not the problem.
+
+The spreading exists. `PathfindTargetSeeker:391-410` walks the building's `SpawnLocationElement`
+buffer — every bench, viewpoint, activity location and `HangaroundLocation` lawn — counts the
+candidates, draws one at random, and penalises the rest by `m_SetupQueueTarget.m_RandomCost`
+(30 for residents, `ResidentAISystem:3077-3085`):
+
+```csharp
+num2 = random.NextInt(num3);
+for (int j = 0; j < dynamicBuffer.Length; j++)
+{
+    float cost2 = math.select(cost, cost + m_SetupQueueTarget.m_RandomCost, num2 != 0);
+    num2 -= AddSpawnLocation(...);
+}
+```
+
+For an area candidate it draws again, one sub-lane out of the area's triangles, in the branch at
+`:653-657` where `int2 int5 = random.NextInt(bufferData.Length)` collapses the whole loop to a
+single index. Two independent rolls per pathfind. Frequent re-pathing would fill a park.
+
+What is missing is the re-pathing. It happens in exactly one place, `ReachTarget:2234-2280`, and
+both of that block's exits are shut:
+
+- The trigger is `random.NextInt(2500) == 0`, evaluated per creature tick. `ResidentAISystem`
+  processes `frameIndex % 16` (`:4578`), so a creature ticks once every 16 frames and the expected
+  wait is 40,000 frames — about a sixth of an in-game day, over ten minutes of real time in one
+  spot.
+- The move is then gated on `GetIgnoreFlags` returning a flag the visitor does not already hold,
+  and those flags alternate: `IgnoreBenches` after a bench, `IgnoreAreas` after a lawn. When the
+  building offers only one of the two kinds, the scan at `:2345-2372` finds nothing new, falls
+  through to `resident.m_Flags |= ResidentFlags.CannotIgnore` (`:2374-2377`), and `GetIgnoreFlags`
+  returns `None` for the rest of the visit (`:2325-2328`). The visitor is frozen permanently.
+
+So the pile is arrivals stopping at whatever the pathfinder priced cheapest — near the gate,
+because 30 cost units is small next to a walk across a large lot — and never being asked again. It
+is invisible at vanilla visitor numbers and obvious at this mod's.
+
+Three things follow for anyone touching this:
+
+1. The lever is `PathFlags.Obsolete` on the creature's `PathOwner`, nothing else.
+   `CreatureUtils.RequireNewPath` reads it on the next tick and `FindNewPath` re-rolls both draws.
+   Writing transforms or `HumanCurrentLane.m_LanePosition` by hand fights `HumanNavigationSystem`,
+   which recomputes both every tick from `MoveAreaTarget`.
+2. Do **not** clear `ResidentFlags.Hangaround` when forcing the re-path, even though the native
+   block does. `ReachTarget:2306-2313` deletes a creature that reaches its target without it — the
+   visitor is treated as having gone inside. Leaving it set means a re-path that resolves to a
+   non-hangaround target leaves the visitor standing there instead of vanishing, and the game sets
+   the flag again on arrival regardless.
+3. `ResidentAISystem`'s creature query excludes `GroupMember` (`:4536`) because a follower does not
+   path for itself. Any system nudging visitors has to exclude them too, or it is nudging entities
+   that cannot act on it. Moving the leader moves the family.
+
+Tested in a live city since: re-pathing alone did **not** clear the pile. The section below is why,
+and it is the part that matters — read both, this one is only half the story.
+
+## The lawn pile is one point, not a crowd of choices — WRONG, see the section after this
+
+**This section's conclusion is false.** Points 1 and 3 below are accurate readings of the code, but
+the conclusion drawn from them — that every visitor is aimed at one triangle vertex — is not,
+because point 2 is only half the story. `ResidentAISystem:2054-2059` calls
+`CreatureUtils.SetRandomAreaTarget:1163-1218` on the final path element whenever it is an area lane,
+and that picks a triangle weighted by its area, a uniform random barycentric point inside it, and
+`endCurvePos = random.NextFloat(...)`. The hardcoded `0.5` is a placeholder overwritten before the
+creature walks anywhere. **The game already spreads arrivals across a lawn.**
+
+Kept rather than deleted because the parameterisation in point 3 is correct and load-bearing — it is
+how `Reseat` places a visitor — and because the failure mode is instructive: a `0.5` marker built on
+this reading could never match, so the system silently did nothing for two rounds.
+
+Three facts, in the order they matter:
+
+1. **A rectangular lawn has exactly one connection lane.** The pathfinder targets an area's lanes,
+   not the area. `AreaConnectionSystem:309-347` emits one lane per edge shared by two triangles, and
+   `GeometrySystem.Triangulate:865` is plain ear clipping with no subdivision —
+   `triangles.Length = nodes.Length - 2`. Four nodes → two triangles → one shared edge → one lane.
+   The random sub-lane draw at `PathfindTargetSeeker:653-657` is drawing from a set of size one.
+
+2. **That lane is targeted at a hardcoded curve position.** `PathfindTargetSeeker:665`:
+
+   ```csharp
+   AddTarget(ref random, target, subLane, 0.5f, cost, flags);
+   ```
+
+   and `HumanNavigationSystem:1208` copies it onto the creature verbatim:
+   `currentLane.m_CurvePosition = pathElement2.m_TargetDelta`.
+
+3. **0.5 is the apex.** `CreatureUtils.CalculateTriangleTarget:527-546` turns the pair
+   (`m_LanePosition`, `m_CurvePosition.y`) into a point: `lanePosition` slides along the triangle's
+   base edge, `curveDelta` runs from that edge toward the apex.
+
+   ```csharp
+   float num3 = curveDelta * 2f;
+   num3 = math.select(1f - num3, num3 - 1f, curveDelta > 0.5f);
+   t = math.sqrt(math.saturate(1f - num3)) * math.saturate(1f - num / len);
+   ```
+
+   At `curveDelta == 0.5`, `num3 == 0`, so `t ≈ 1` — the apex itself. Every visitor the park ever
+   receives is aimed at one triangle vertex. What keeps them apart is collision avoidance shoving
+   them sideways, which is exactly what a dense pile of cims looks like.
+
+And it is computed once. The navigation loop skips the entire recompute once the creature has
+arrived (`HumanNavigationSystem:850`):
+
+```csharp
+if ((currentLane.m_Flags & (CreatureLaneFlags.EndReached | CreatureLaneFlags.WaitSignal)) == 0
+    && currentLane.m_Lane != Entity.Null)
+```
+
+So the two knobs that place a settled visitor are reachable, and one of them is durable:
+
+- `m_CurvePosition.y` is **not** written for a settled area visitor. `MoveAreaTarget` only writes
+  `curveDelta.x` (`:1409`, `:1425`, `:1446`, `:1454`), and `.y` is set from the path element only
+  while advancing through the path, which has ended. Writing it sticks.
+- `m_LanePosition` is **not** durable — collision avoidance lerps it 0.5 of the way to its own value
+  every tick (`:1330`), and drift rewrites it while moving (`:831`). Write it as a hint, do not rely
+  on it.
+- Clearing `EndReached` is what makes the recompute run. The creature then *walks* to the new point
+  under its own power; `:974` sets `EndReached` again when it stops. No teleport, no pathfind.
+
+Inverting the shaping matters. Sampling `curveDelta` uniformly bunches people near the two apexes,
+because `t = sqrt(1 - |1 - 2c|)` is steep at the ends. For an even spread pick `t` first and invert:
+`c = t²/2` or `1 - t²/2` for the two-triangle lane, `c = 1 - t²` for the single-triangle branch
+(`areaLane.m_Nodes.y == m_Nodes.z`, handled at `MoveAreaTarget:1400`).
+
+`m_CurvePosition.y == 0.5f` doubles as a free "never spread" marker: it is the pathfinder's value and
+nothing else produces it, so no per-creature component is needed to remember who has been moved.
+
+**Benches were never the problem.** `CalculateTransformPosition:337-360` walks the prefab's
+`ActivityLocationElement` buffer and asks the moving-object search tree whether each slot is taken:
+
+```csharp
+iterator.m_Found = false;
+movingObjectSearchTree.Iterate(ref iterator);
+if (iterator.m_Found) continue;
+```
+
+and returns false when none are free, so the object is refused. Seats are capacity-limited by the
+game. Areas have no capacity concept at all, which is why capacity had to be invented for them —
+from the lane's `Curve.m_Length`, whose square approximates the patch's floor area.
+
+## On a resident creature, almost nothing is guaranteed
+
+This is what actually cost four rounds on the park crowds. Three separate attempts to define "a
+visitor standing in a park" each excluded most of the population, and each failure looked identical
+from outside: a system that ran, logged nothing, and changed nothing.
+
+**`ResidentFlags.Arrived` and `Hangaround` are set in exactly one place**, `ReachTarget` (`:2294`,
+`:2281`). `ReachTarget` is reached only from `TickWalking`. Group members go to
+`TickGroupMemberWalking` (`:1257-1300`), which never calls it — so **anyone travelling with their
+household can never have either flag**, however long they stand still. `ResidentAISystem` splits
+them at `:4536`/`:4537`; copying that `Exclude<GroupMember>` into a mod query hides most of a crowd.
+
+**`Divert` is removed on arrival.** `ReachDivert:2476` does
+`m_CommandBuffer.RemoveComponent<Divert>(jobIndex, entity)` and *then* calls `ReachTarget`. A
+tourist reaching an attraction therefore ends up settled with no `Divert` component at all.
+Requiring it in a query excludes precisely the population that arrived successfully.
+
+**`PathOwner`, `Target`, `HumanCurrentLane` and `Divert` are all optional.** The game reads them
+with `CollectionUtils.TryGet` (`ResidentAISystem:862-864`) and reaches `PathOwner` through a
+`ComponentLookup` rather than a chunk handle. That is the specification, not a style quirk.
+
+So: require `Game.Creatures.Resident` and `HumanCurrentLane`, read everything else per chunk with
+`chunk.Has`, and treat absence as the quiet case — no `Divert` means no errand, no `PathOwner` means
+no search in flight, no `Target` means nothing stale to validate. Ask the **lane** whether a creature
+is parked (`CreatureLaneFlags.Hangaround | EndReached`), because navigation state is the one thing
+both populations carry and it is set by the shared `HumanNavigationSystem`.
+
+The general lesson is duller and more useful than any of the specifics: **when a system that should
+act does nothing, instrument the filter before re-reading the mechanism.** A counter that splits the
+walked population by rejection reason is a dozen lines, and it located this in one log line after
+three rounds of confident, wrong code reading. Log it unconditionally and rate-limit it — a log
+gated on "did something" cannot distinguish "not running" from "running, nobody qualifies", which
+are the two cases you actually need to tell apart.

@@ -305,6 +305,47 @@ namespace TourismOverhaul
                     "anyone looks elsewhere."
                 },
                 {
+                    m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.AttractionCrowdTolerance)),
+                    "How busy a place gets before it puts people off"
+                },
+                {
+                    m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.AttractionCrowdTolerance)),
+                    "How many visitors an attraction absorbs before it starts to look crowded, as a " +
+                    "multiple of what its size suggests.\n\n" +
+                    "Low values spread visitors across your city aggressively: a place gets busy, " +
+                    "loses its appeal quickly, and the next arrivals pick somewhere else. High " +
+                    "values let a favourite stay packed.\n\n" +
+                    "This is the setting that decides how many people turn up at a park at all. If " +
+                    "one park is always heaving while others sit empty, turn this down.\n\n" +
+                    "Needs \"Crowded places lose their appeal\" switched on."
+                },
+                {
+                    m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.MaxParkVisitorsPerCell)),
+                    "Park visitor limit (per lot cell)"
+                },
+                {
+                    m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.MaxParkVisitorsPerCell)),
+                    "How many visitors a park takes, per cell of its lot, before it stops " +
+                    "accepting new ones. A 12x12 park at 1.00 is full at 144.\n\n" +
+                    "In the base game a park never turns anyone away: every resident and tourist " +
+                    "going to a park simply picks the nearest one, however packed it already is. " +
+                    "A full park is now passed over and visitors head for the next one instead. " +
+                    "Nobody already there is moved out — the crowd thins as they finish and go " +
+                    "home, and the park reopens once it is down to three quarters.\n\n" +
+                    "Lower means quieter parks and visitors spread across more of them."
+                },
+                {
+                    m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.SpreadParkVisitors)),
+                    "Visitors spread out inside parks"
+                },
+                {
+                    m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.SpreadParkVisitors)),
+                    "Stops popular parks turning into one solid crowd.\n\n" +
+                    "Parks stop accepting new visitors once they reach the limit below, and " +
+                    "visitors inside move off an over-full patch of lawn to another spot in the " +
+                    "park. Everyone stays visible — nobody is removed."
+                },
+                {
                     m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.HistoricBuildingAttractiveness)),
                     "Historical building appeal"
                 },
