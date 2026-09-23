@@ -114,6 +114,12 @@ namespace TourismOverhaul.Systems
         /// </summary>
         public int CurrentTourists { get; private set; }
 
+        /// <summary>
+        /// Tourist citizens per occupied tourist household — the people who share one hotel room.
+        /// Zero until the first count.
+        /// </summary>
+        public float AveragePartySize { get; private set; }
+
         /// <summary>Cruise passengers ashore right now, in citizens.</summary>
         public int CruiseVisitors { get; private set; }
 
@@ -1096,12 +1102,18 @@ namespace TourismOverhaul.Systems
         /// </summary>
         private int CountTouristCitizens()
         {
-            return CountCitizensIn(m_TouristHouseholdQuery);
+            int citizens = CountCitizensIn(m_TouristHouseholdQuery, out int parties);
+            AveragePartySize = parties > 0 ? (float)citizens / parties : 0f;
+            return citizens;
         }
 
-        private int CountCitizensIn(EntityQuery query)
+        private int CountCitizensIn(EntityQuery query) => CountCitizensIn(query, out _);
+
+        /// <summary>Citizens across the query's households, and how many households hold any.</summary>
+        private int CountCitizensIn(EntityQuery query, out int occupiedHouseholds)
         {
             int count = 0;
+            occupiedHouseholds = 0;
 
             BufferTypeHandle<HouseholdCitizen> citizenHandle =
                 GetBufferTypeHandle<HouseholdCitizen>(isReadOnly: true);
@@ -1118,6 +1130,7 @@ namespace TourismOverhaul.Systems
                     for (int j = 0; j < chunk.Count; j++)
                     {
                         count += citizens[j].Length;
+                        occupiedHouseholds += citizens[j].Length > 0 ? 1 : 0;
                     }
                 }
             }
@@ -1277,9 +1290,22 @@ namespace TourismOverhaul.Systems
                     return;
                 }
 
+                // Never at a connection the cruise line calls at: its stop there is held free for
+                // the cruise complement, and an ordinary visitor spawned beside it would queue for
+                // the ship too. See CruiseVoyageSystem.ServesCruiseLine.
+                CruiseVoyageSystem cruise = World.GetExistingSystemManaged<CruiseVoyageSystem>();
+
                 for (int i = 0; i < connectionArray.Length; i++)
                 {
-                    connections.Add(connectionArray[i]);
+                    if (cruise == null || !cruise.ServesCruiseLine(connectionArray[i]))
+                    {
+                        connections.Add(connectionArray[i]);
+                    }
+                }
+
+                if (connections.Length == 0)
+                {
+                    return;
                 }
 
                 DemandParameterData demandParameters = m_DemandParameterQuery.GetSingleton<DemandParameterData>();

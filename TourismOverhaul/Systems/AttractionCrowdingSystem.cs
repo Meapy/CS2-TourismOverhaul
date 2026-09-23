@@ -1,9 +1,10 @@
 using Game;
 using Game.Buildings;
-using Game.Citizens;
 using Game.Common;
 using Game.Prefabs;
 using Game.Tools;
+using Unity.Burst;
+using Unity.Burst.Intrinsics;
 using Unity.Collections;
 using Unity.Entities;
 using Unity.Mathematics;
@@ -11,69 +12,85 @@ using Unity.Mathematics;
 namespace TourismOverhaul.Systems
 {
     /// <summary>
-    /// Makes a crowded attraction less appealing, so visitors spread out instead of piling into the
-    /// same few places.
+    /// Makes a crowded attraction less appealing, so tourists spread out instead of piling into the
+    /// same few places — and makes a park the park gate has closed unappealing too.
     ///
-    /// Tourists pick a destination by score, and CitizenPathfindSetup:87-91 folds the attractiveness
-    /// available on the target's road edge into that score. Nothing in that calculation notices how
-    /// many people are already there, so the most attractive park in the city stays the most
-    /// attractive park no matter how packed it is, and everywhere else stays empty.
+    /// WHY IT MATTERS
     ///
-    /// This scales each attraction's contribution by how full it is relative to its size:
+    /// A tourist rolls LeisureType.Attractions 30% of the time before anything else
+    /// (LeisureSystem.SelectLeisureType:524-527). That trip goes through meetings to
+    /// Purpose.VisitAttractions and SetupAttractionJob, whose candidates are every Building with an
+    /// AttractivenessProvider (CitizenPathfindSetup:853) — parks included — scored at
+    /// -100 x attractiveness x random (:369). It never consults LeisureProvider, so it bypasses
+    /// ParkVisitorSpreadSystem's gate entirely, and nothing in it notices how full a place is.
     ///
-    ///     factor = 1 / (1 + crowd / capacity)
+    /// WHY THE PREVIOUS VERSION DID NOTHING
     ///
-    /// The same asymptotic damping TouristRoutingSystem uses for connection backlog. A busy
-    /// attraction becomes less appealing without ever becoming worthless, so crowds redistribute
-    /// smoothly rather than oscillating between full and abandoned.
+    ///   1. It counted crowds by the tourist *household's* Target, which is the hotel, so it
+    ///      almost never saw anyone at a park.
+    ///   2. The game recomputes m_Attractiveness from prefab, efficiency, maintenance and terrain
+    ///      (AttractionSystem:85-122) every 256 frames — interval 16 over 16 update groups. A
+    ///      damped value written every 1,024 frames was overwritten within 256, so the damping was
+    ///      live for an eighth of the time at best.
     ///
-    /// Capacity comes from the building's footprint, so a small square saturates after a handful of
-    /// visitors while a large attraction absorbs many before it starts to feel crowded — which is
-    /// what makes big attractions worth building.
+    /// HOW IT WORKS NOW
     ///
-    /// SAFETY: m_Attractiveness is serialized, so a system that lowers it is writing to the save. It
-    /// would be very easy to ratchet a city's attractiveness permanently downward, and the player
-    /// would have no way to recover it. Two rules prevent that, and both matter:
+    /// Every 1,024 frames the factors are rebuilt from the visitors ParkVisitorSpreadSystem
+    /// actually counts standing at each building:
     ///
-    ///   1. The authored value is captured once, on first sight, and kept outside the component.
-    ///      Every write is base x factor. This never reads the live value back, so an error cannot
-    ///      compound.
-    ///   2. Every base value is restored when the feature is switched off and when the system is
-    ///      destroyed, so unloading or disabling the mod leaves the city exactly as it was.
+    ///     factor = 1 / (1 + visitors / capacity)      (capacity from lot area x tolerance)
+    ///     factor = floor                              (a park currently closed to new trips)
+    ///
+    /// Every frame, ordered after AttractionSystem, a Burst job multiplies the values the game has
+    /// just rewritten. The query's change filter limits it to those chunks, and a value is only
+    /// damped if it differs from the one this system last wrote there, so a chunk flagged changed
+    /// without a real rewrite can never be damped twice. Because the game supplies a fresh base
+    /// every 256 frames there is no base to capture, nothing ratchets, and switching the setting
+    /// off restores every value within 256 frames with no cleanup.
+    ///
+    /// Damped values also feed the city's total attractiveness, so a city whose attractions are
+    /// packed reads as slightly less attractive. That was always the intent.
     /// </summary>
     public partial class AttractionCrowdingSystem : GameSystemBase
     {
         /// <summary>
-        /// Visitors a single lot cell can absorb before the place feels busy.
-        ///
-        /// A 2x2 square is 4 cells and so tolerates 4x this many; a large attraction on a 10x10 lot
-        /// tolerates 25 times as many. That ratio is the point of the feature.
+        /// Visitors a single lot cell can absorb before the place feels busy. A 2x2 square holds
+        /// 4x this, a 10x10 attraction 25x as many — which is what makes big attractions worth it.
         /// </summary>
         private const int kVisitorsPerLotCell = 4;
 
-        /// <summary>Floor, so a crowded attraction still beats an ordinary building.</summary>
+        /// <summary>Floor, and the value for a closed park: still beats an ordinary building.</summary>
         private const float kMinimumFactor = 0.1f;
 
+        /// <summary>Frames between factor rebuilds. The counts behind them change every 512.</summary>
+        private const int kRebuildFrames = 1024;
+
+        /// <summary>Change-filtered: only chunks the game has rewritten since the last run.</summary>
         private EntityQuery m_AttractionQuery;
-        private EntityQuery m_VisitorQuery;
 
-        /// <summary>Authored attractiveness per building. The only copy of the real value.</summary>
-        private NativeHashMap<Entity, int> m_BaseAttractiveness;
+        /// <summary>Unfiltered: every attraction, for the factor rebuild.</summary>
+        private EntityQuery m_AllAttractionsQuery;
+        private ParkVisitorSpreadSystem m_Parks;
 
-        private bool m_Applied;
+        /// <summary>Attractions currently damped, and their factor. Absent means untouched.</summary>
+        private NativeHashMap<Entity, float> m_Factors;
+
+        /// <summary>The value this system last wrote to each attraction, so it never damps twice.</summary>
+        private NativeHashMap<Entity, int> m_Written;
+
+        private int m_FramesSinceRebuild = kRebuildFrames;
+        private int m_RebuildsSinceLog;
 
         /// <summary>Attractions currently damped. For diagnostics.</summary>
         public int CrowdedAttractions { get; private set; }
-
-        // Often enough to feel responsive as crowds move, rarely enough that the crowd count is not
-        // a per-tick cost.
-        public override int GetUpdateInterval(SystemUpdatePhase phase) => 1024;
 
         protected override void OnCreate()
         {
             base.OnCreate();
 
-            m_BaseAttractiveness = new NativeHashMap<Entity, int>(256, Allocator.Persistent);
+            m_Parks = World.GetOrCreateSystemManaged<ParkVisitorSpreadSystem>();
+            m_Factors = new NativeHashMap<Entity, float>(256, Allocator.Persistent);
+            m_Written = new NativeHashMap<Entity, int>(256, Allocator.Persistent);
 
             m_AttractionQuery = GetEntityQuery(
                 ComponentType.ReadWrite<AttractivenessProvider>(),
@@ -81,21 +98,28 @@ namespace TourismOverhaul.Systems
                 ComponentType.Exclude<Deleted>(),
                 ComponentType.Exclude<Temp>());
 
-            // Tourists already heading somewhere. Target names the destination they chose.
-            m_VisitorQuery = GetEntityQuery(
-                ComponentType.ReadOnly<TouristHousehold>(),
-                ComponentType.ReadOnly<Target>(),
+            // Only chunks whose attractiveness was rewritten since this system last ran.
+            m_AttractionQuery.SetChangedVersionFilter(ComponentType.ReadWrite<AttractivenessProvider>());
+
+            m_AllAttractionsQuery = GetEntityQuery(
+                ComponentType.ReadOnly<AttractivenessProvider>(),
+                ComponentType.ReadOnly<PrefabRef>(),
                 ComponentType.Exclude<Deleted>(),
                 ComponentType.Exclude<Temp>());
         }
 
         protected override void OnDestroy()
         {
-            RestoreAll();
+            CompleteDependency();
 
-            if (m_BaseAttractiveness.IsCreated)
+            if (m_Factors.IsCreated)
             {
-                m_BaseAttractiveness.Dispose();
+                m_Factors.Dispose();
+            }
+
+            if (m_Written.IsCreated)
+            {
+                m_Written.Dispose();
             }
 
             base.OnDestroy();
@@ -105,165 +129,102 @@ namespace TourismOverhaul.Systems
         {
             base.OnGameLoadingComplete(purpose, mode);
 
-            // Entities differ between sessions, so last session's captures mean nothing. The values
-            // in the save are the authored ones, since they were restored on unload.
-            m_BaseAttractiveness.Clear();
-            m_Applied = false;
+            // Keys name entities in the old world.
+            CompleteDependency();
+            m_Factors.Clear();
+            m_Written.Clear();
+            m_FramesSinceRebuild = kRebuildFrames;
         }
 
         protected override void OnUpdate()
         {
             TourismOverhaulSetting settings = Mod.Settings;
 
+            if (++m_FramesSinceRebuild >= kRebuildFrames)
+            {
+                m_FramesSinceRebuild = 0;
+                CompleteDependency();
+                Rebuild(settings);
+            }
+
+            if (m_Factors.IsEmpty)
+            {
+                return;
+            }
+
+            Dependency = JobChunkExtensions.Schedule(new DampJob
+            {
+                m_EntityType = GetEntityTypeHandle(),
+                m_ProviderType = GetComponentTypeHandle<AttractivenessProvider>(),
+                m_Factors = m_Factors,
+                m_Written = m_Written
+            }, m_AttractionQuery, Dependency);
+        }
+
+        /// <summary>
+        /// Recomputes every attraction's factor from the visitors on site. Main thread, every
+        /// 1,024 frames, over a few hundred attractions at most.
+        /// </summary>
+        private void Rebuild(TourismOverhaulSetting settings)
+        {
+            m_Factors.Clear();
+            CrowdedAttractions = 0;
+
             if (settings == null || !settings.EnableAttractionCrowding)
             {
-                if (m_Applied)
-                {
-                    RestoreAll();
-                }
-
+                // The game rewrites every value within 256 frames; nothing else to undo. m_Written
+                // is otherwise kept across rebuilds — it is the guard against damping a value twice.
+                m_Written.Clear();
                 return;
             }
 
-            if (m_AttractionQuery.IsEmptyIgnoreFilter)
-            {
-                return;
-            }
+            int tolerance = math.max(1, settings.AttractionCrowdTolerance);
 
-            NativeHashMap<Entity, int> crowds = new NativeHashMap<Entity, int>(256, Allocator.Temp);
+            NativeArray<Entity> attractions = m_AllAttractionsQuery.ToEntityArray(Allocator.Temp);
+            int total = attractions.Length;
+            int closed = 0;
+            float strongest = 1f;
 
-            try
+            for (int i = 0; i < attractions.Length; i++)
             {
-                CountVisitors(crowds);
-                ApplyCrowding(crowds, math.max(1, settings.AttractionCrowdTolerance));
-            }
-            finally
-            {
-                crowds.Dispose();
-            }
-        }
+                Entity attraction = attractions[i];
+                float factor;
 
-        /// <summary>
-        /// Tallies visitors by the destination they are heading for.
-        ///
-        /// Counted in citizens rather than parties, since a family of four crowds a small square as
-        /// much as four separate visitors do.
-        /// </summary>
-        private void CountVisitors(NativeHashMap<Entity, int> crowds)
-        {
-            ComponentTypeHandle<Target> targetHandle = GetComponentTypeHandle<Target>(isReadOnly: true);
-            BufferTypeHandle<HouseholdCitizen> citizenHandle =
-                GetBufferTypeHandle<HouseholdCitizen>(isReadOnly: true);
-
-            NativeArray<ArchetypeChunk> chunks = m_VisitorQuery.ToArchetypeChunkArray(Allocator.Temp);
-            try
-            {
-                for (int c = 0; c < chunks.Length; c++)
+                if (m_Parks.IsClosed(attraction))
                 {
-                    ArchetypeChunk chunk = chunks[c];
-
-                    if (!chunk.Has(ref citizenHandle))
-                    {
-                        continue;
-                    }
-
-                    NativeArray<Target> targets = chunk.GetNativeArray(ref targetHandle);
-                    BufferAccessor<HouseholdCitizen> citizens = chunk.GetBufferAccessor(ref citizenHandle);
-
-                    for (int i = 0; i < targets.Length; i++)
-                    {
-                        Entity destination = targets[i].m_Target;
-
-                        if (destination == Entity.Null)
-                        {
-                            continue;
-                        }
-
-                        crowds.TryGetValue(destination, out int running);
-                        crowds[destination] = running + citizens[i].Length;
-                    }
+                    factor = kMinimumFactor;
+                    closed++;
                 }
-            }
-            finally
-            {
-                chunks.Dispose();
-            }
-        }
-
-        private void ApplyCrowding(NativeHashMap<Entity, int> crowds, int tolerance)
-        {
-            int crowded = 0;
-
-            NativeArray<Entity> attractions = m_AttractionQuery.ToEntityArray(Allocator.Temp);
-            try
-            {
-                for (int i = 0; i < attractions.Length; i++)
+                else if (m_Parks.TryGetVisitorsOnSite(attraction, out int visitors) && visitors > 0)
                 {
-                    Entity attraction = attractions[i];
-
-                    int baseValue = CaptureBase(attraction);
-
-                    if (baseValue <= 0)
-                    {
-                        continue;
-                    }
-
-                    crowds.TryGetValue(attraction, out int crowd);
-
                     int capacity = math.max(1, Capacity(attraction) * tolerance);
-                    float factor = math.max(kMinimumFactor, 1f / (1f + (float)crowd / capacity));
+                    factor = math.max(kMinimumFactor, 1f / (1f + (float)visitors / capacity));
+                }
+                else
+                {
+                    continue;
+                }
 
-                    if (factor < 0.999f)
-                    {
-                        crowded++;
-                    }
-
-                    // base x factor, never a read-modify-write of the live value.
-                    int damped = math.max(1, (int)math.round(baseValue * factor));
-
-                    AttractivenessProvider provider =
-                        EntityManager.GetComponentData<AttractivenessProvider>(attraction);
-
-                    if (provider.m_Attractiveness != damped)
-                    {
-                        provider.m_Attractiveness = damped;
-                        EntityManager.SetComponentData(attraction, provider);
-                    }
+                if (factor < 0.999f)
+                {
+                    m_Factors[attraction] = factor;
+                    CrowdedAttractions++;
+                    strongest = math.min(strongest, factor);
                 }
             }
-            finally
-            {
-                attractions.Dispose();
-            }
 
-            CrowdedAttractions = crowded;
-            m_Applied = true;
+            attractions.Dispose();
+
+            if (settings.DiagnosticLogging && ++m_RebuildsSinceLog >= 8)
+            {
+                m_RebuildsSinceLog = 0;
+                Mod.Log.Info($"Attraction crowding: {CrowdedAttractions} of {total} "
+                    + $"attractions damped, {closed} of them closed parks at the floor; "
+                    + $"strongest damping to {strongest:P0} of normal appeal.");
+            }
         }
 
-        /// <summary>
-        /// The authored value, captured once. Later calls return the stored copy, so a damped value
-        /// can never be mistaken for the original.
-        /// </summary>
-        private int CaptureBase(Entity attraction)
-        {
-            if (m_BaseAttractiveness.TryGetValue(attraction, out int stored))
-            {
-                return stored;
-            }
-
-            int authored = EntityManager.GetComponentData<AttractivenessProvider>(attraction).m_Attractiveness;
-
-            m_BaseAttractiveness[attraction] = authored;
-
-            return authored;
-        }
-
-        /// <summary>
-        /// How many visitors a place absorbs before it feels busy, from its footprint.
-        ///
-        /// Lot area rather than any authored capacity, because attractions do not carry one. It is
-        /// the right shape regardless: a bigger place holds more people.
-        /// </summary>
+        /// <summary>How many visitors a place absorbs before it feels busy, from its footprint.</summary>
         private int Capacity(Entity attraction)
         {
             Entity prefab = EntityManager.GetComponentData<PrefabRef>(attraction).m_Prefab;
@@ -278,47 +239,42 @@ namespace TourismOverhaul.Systems
             return math.max(1, lot.x * lot.y) * kVisitorsPerLotCell;
         }
 
-        /// <summary>
-        /// Puts every authored value back. Called when the feature is switched off and when the
-        /// system is destroyed, so disabling or unloading the mod leaves the city as it was.
-        /// </summary>
-        private void RestoreAll()
+        /// <summary>Damps freshly rewritten attractiveness by each attraction's factor.</summary>
+        [BurstCompile]
+        private struct DampJob : IJobChunk
         {
-            if (!m_BaseAttractiveness.IsCreated || m_BaseAttractiveness.IsEmpty)
-            {
-                m_Applied = false;
-                return;
-            }
+            [ReadOnly] public EntityTypeHandle m_EntityType;
+            public ComponentTypeHandle<AttractivenessProvider> m_ProviderType;
+            [ReadOnly] public NativeHashMap<Entity, float> m_Factors;
+            public NativeHashMap<Entity, int> m_Written;
 
-            NativeArray<Entity> entities = m_BaseAttractiveness.GetKeyArray(Allocator.Temp);
-            try
+            public void Execute(in ArchetypeChunk chunk, int index, bool useMask, in v128 mask)
             {
+                NativeArray<Entity> entities = chunk.GetNativeArray(m_EntityType);
+                NativeArray<AttractivenessProvider> providers = chunk.GetNativeArray(ref m_ProviderType);
+
                 for (int i = 0; i < entities.Length; i++)
                 {
-                    Entity attraction = entities[i];
-
-                    if (!EntityManager.Exists(attraction)
-                        || !EntityManager.HasComponent<AttractivenessProvider>(attraction))
+                    if (!m_Factors.TryGetValue(entities[i], out float factor))
                     {
                         continue;
                     }
 
-                    EntityManager.SetComponentData(attraction, new AttractivenessProvider
+                    int current = providers[i].m_Attractiveness;
+
+                    // Nothing to damp — and max(1, ...) below would otherwise raise a zero. Or
+                    // already damped by this system, and not rewritten since.
+                    if (current <= 1
+                        || (m_Written.TryGetValue(entities[i], out int written) && written == current))
                     {
-                        m_Attractiveness = m_BaseAttractiveness[attraction]
-                    });
+                        continue;
+                    }
+
+                    int damped = math.max(1, (int)math.round(current * factor));
+                    providers[i] = new AttractivenessProvider { m_Attractiveness = damped };
+                    m_Written[entities[i]] = damped;
                 }
             }
-            finally
-            {
-                entities.Dispose();
-            }
-
-            m_BaseAttractiveness.Clear();
-            m_Applied = false;
-            CrowdedAttractions = 0;
-
-            Mod.Log.Info("Attraction crowding removed; authored attractiveness restored.");
         }
     }
 }

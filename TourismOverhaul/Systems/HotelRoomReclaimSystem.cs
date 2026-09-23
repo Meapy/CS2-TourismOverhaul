@@ -4,8 +4,10 @@ using Game.Citizens;
 using Game.Common;
 using Game.Companies;
 using Game.Tools;
+using Unity.Burst;
 using Unity.Collections;
 using Unity.Entities;
+using Unity.Jobs;
 
 namespace TourismOverhaul.Systems
 {
@@ -32,7 +34,8 @@ namespace TourismOverhaul.Systems
     ///
     /// THE FIX
     ///
-    /// Two passes, both bounded so a large backlog is cleared gradually rather than in one spike:
+    /// Two passes, both bounded so a large backlog is cleared gradually rather than in one spike,
+    /// run as one Burst job so the main thread neither does the work nor waits for it:
     ///
     ///   1. Drop Renter entries whose household is gone or empty, which frees the room by way of
     ///      the recomputation above. Nothing else is touched, so a hotel with real guests is
@@ -61,6 +64,20 @@ namespace TourismOverhaul.Systems
 
         private EndFrameBarrier m_EndFrameBarrier;
 
+        // Both passes ask the same few questions of every guest in every hotel and every tourist
+        // household, about fifty thousand of each in a 665k city. On the main thread that was
+        // 15-30 ms of work per update plus a wait for the jobs writing those components, felt as
+        // a hitch every 2048 frames. It now runs as a Burst job scheduled after those jobs, so the
+        // main thread neither does the work nor waits for anything.
+        private EntityStorageInfoLookup m_Entities;
+        private ComponentLookup<Deleted> m_DeletedTags;
+        private BufferLookup<HouseholdCitizen> m_HouseholdCitizenBuffers;
+        private BufferLookup<Renter> m_RenterBuffers;
+
+        /// <summary>The last job's tallies: rooms released, husks removed. Read on the next update.</summary>
+        private NativeArray<int> m_Counts;
+        private JobHandle m_LastJob;
+
         /// <summary>Rooms released since load. For diagnostics.</summary>
         public int RoomsReclaimed { get; private set; }
 
@@ -69,11 +86,11 @@ namespace TourismOverhaul.Systems
 
         // 262144 frames per in-game day, so this runs 128 times a day.
         //
-        // Every pass walks each hotel's full renter buffer with per-entity lookups, which is the
-        // expensive part and scales with the number of guests rather than the number of departures.
-        // Running it four times less often costs nothing that matters: a room sits idle for a few
-        // seconds longer before it is offered again, and the caps below still clear far more per
-        // day than any city generates. The initial backlog drains a little slower, once.
+        // Every pass walks each hotel's full renter buffer, which is the expensive part and scales
+        // with the number of guests rather than the number of departures. Running it four times
+        // less often costs nothing that matters: a room sits idle for a few seconds longer before
+        // it is offered again, and the caps below still clear far more per day than any city
+        // generates. The initial backlog drains a little slower, once.
         public override int GetUpdateInterval(SystemUpdatePhase phase) => 2048;
 
         protected override void OnCreate()
@@ -81,6 +98,12 @@ namespace TourismOverhaul.Systems
             base.OnCreate();
 
             m_EndFrameBarrier = World.GetOrCreateSystemManaged<EndFrameBarrier>();
+
+            m_Entities = GetEntityStorageInfoLookup();
+            m_DeletedTags = GetComponentLookup<Deleted>(isReadOnly: true);
+            m_HouseholdCitizenBuffers = GetBufferLookup<HouseholdCitizen>(isReadOnly: true);
+            m_RenterBuffers = GetBufferLookup<Renter>(isReadOnly: false);
+            m_Counts = new NativeArray<int>(2, Allocator.Persistent);
 
             m_HotelQuery = GetEntityQuery(
                 ComponentType.ReadOnly<LodgingProvider>(),
@@ -97,37 +120,90 @@ namespace TourismOverhaul.Systems
                 ComponentType.Exclude<Temp>());
         }
 
+        protected override void OnDestroy()
+        {
+            m_LastJob.Complete();
+            m_Counts.Dispose();
+            base.OnDestroy();
+        }
+
         protected override void OnUpdate()
         {
+            // The previous job finished two thousand frames ago; this only collects its tallies.
+            m_LastJob.Complete();
+            int released = m_Counts[0];
+            RoomsReclaimed += released;
+            HusksRemoved += m_Counts[1];
+            m_Counts[0] = 0;
+            m_Counts[1] = 0;
+
+            // Only worth reporting when it is doing unusual work. At steady state this fires every
+            // pass and says nothing, which buries everything else in the log.
+            if (released >= kMaxRoomsPerUpdate && Mod.Settings != null && Mod.Settings.DiagnosticLogging)
+            {
+                Mod.Log.Info(
+                    $"Released {released} hotel room(s) held by empty households — at the per-update " +
+                    $"ceiling, so a backlog is still draining.");
+            }
+
             TourismOverhaulSetting settings = Mod.Settings;
 
-            if (settings == null || !settings.ReclaimAbandonedHotelRooms)
+            if (settings == null || !settings.ReclaimAbandonedHotelRooms
+                || (m_HotelQuery.IsEmptyIgnoreFilter && m_HuskQuery.IsEmptyIgnoreFilter))
             {
                 return;
             }
 
-            ReleaseRooms();
-            RemoveHusks();
+            m_Entities.Update(this);
+            m_DeletedTags.Update(this);
+            m_HouseholdCitizenBuffers.Update(this);
+            m_RenterBuffers.Update(this);
+
+            NativeList<Entity> hotels = m_HotelQuery.ToEntityListAsync(Allocator.TempJob, out JobHandle hotelsReady);
+            NativeList<Entity> households = m_HuskQuery.ToEntityListAsync(Allocator.TempJob, out JobHandle householdsReady);
+
+            JobHandle job = new ReclaimJob
+            {
+                m_Hotels = hotels,
+                m_Households = households,
+                m_Entities = m_Entities,
+                m_DeletedTags = m_DeletedTags,
+                m_HouseholdCitizens = m_HouseholdCitizenBuffers,
+                m_Renters = m_RenterBuffers,
+                m_CommandBuffer = m_EndFrameBarrier.CreateCommandBuffer(),
+                m_Counts = m_Counts,
+            }.Schedule(JobHandle.CombineDependencies(Dependency, hotelsReady, householdsReady));
+
+            hotels.Dispose(job);
+            households.Dispose(job);
+            m_EndFrameBarrier.AddJobHandleForProducer(job);
+            m_LastJob = job;
+            Dependency = job;
         }
 
         /// <summary>
-        /// Removes Renter entries pointing at households that are gone or empty.
+        /// Both passes, in the order and with the caps they always had: drop Renter entries whose
+        /// household is gone or empty, then delete the emptied tourist households themselves.
         /// </summary>
-        private void ReleaseRooms()
+        [BurstCompile]
+        private struct ReclaimJob : IJob
         {
-            if (m_HotelQuery.IsEmptyIgnoreFilter)
-            {
-                return;
-            }
+            [ReadOnly] public NativeList<Entity> m_Hotels;
+            [ReadOnly] public NativeList<Entity> m_Households;
+            [ReadOnly] public EntityStorageInfoLookup m_Entities;
+            [ReadOnly] public ComponentLookup<Deleted> m_DeletedTags;
+            [ReadOnly] public BufferLookup<HouseholdCitizen> m_HouseholdCitizens;
+            public BufferLookup<Renter> m_Renters;
+            public EntityCommandBuffer m_CommandBuffer;
+            public NativeArray<int> m_Counts;
 
-            int released = 0;
-
-            NativeArray<Entity> hotels = m_HotelQuery.ToEntityArray(Allocator.Temp);
-            try
+            public void Execute()
             {
-                for (int i = 0; i < hotels.Length && released < kMaxRoomsPerUpdate; i++)
+                int released = 0;
+
+                for (int i = 0; i < m_Hotels.Length && released < kMaxRoomsPerUpdate; i++)
                 {
-                    DynamicBuffer<Renter> renters = EntityManager.GetBuffer<Renter>(hotels[i]);
+                    DynamicBuffer<Renter> renters = m_Renters[m_Hotels[i]];
 
                     // Backwards, so removing an entry cannot skip the one after it.
                     for (int r = renters.Length - 1; r >= 0 && released < kMaxRoomsPerUpdate; r--)
@@ -141,92 +217,41 @@ namespace TourismOverhaul.Systems
                         released++;
                     }
                 }
-            }
-            finally
-            {
-                hotels.Dispose();
-            }
 
-            RoomsReclaimed += released;
+                int removed = 0;
 
-            // Only worth reporting when it is doing unusual work. At steady state this fires every
-            // pass and says nothing, which buries everything else in the log.
-            if (released >= kMaxRoomsPerUpdate && Mod.Settings != null && Mod.Settings.DiagnosticLogging)
-            {
-                Mod.Log.Info(
-                    $"Released {released} hotel room(s) held by empty households — at the per-update " +
-                    $"ceiling, so a backlog is still draining.");
-            }
-        }
-
-        /// <summary>
-        /// Whether a renter has ceased to be a guest in any meaningful sense.
-        ///
-        /// Deliberately conservative: a household that still holds anyone keeps its room, whatever
-        /// state it is otherwise in, including one that is packing to leave. Releasing a room out
-        /// from under a guest who is still present would evict a real visitor.
-        /// </summary>
-        private bool IsAbandoned(Entity household)
-        {
-            if (household == Entity.Null || !EntityManager.Exists(household))
-            {
-                return true;
-            }
-
-            if (EntityManager.HasComponent<Deleted>(household))
-            {
-                return true;
-            }
-
-            if (!EntityManager.HasBuffer<HouseholdCitizen>(household))
-            {
-                return true;
-            }
-
-            return EntityManager.GetBuffer<HouseholdCitizen>(household, isReadOnly: true).Length == 0;
-        }
-
-        /// <summary>
-        /// Deletes emptied tourist households, which are otherwise immortal.
-        /// </summary>
-        private void RemoveHusks()
-        {
-            if (m_HuskQuery.IsEmptyIgnoreFilter)
-            {
-                return;
-            }
-
-            EntityCommandBuffer commandBuffer = m_EndFrameBarrier.CreateCommandBuffer();
-
-            int removed = 0;
-
-            NativeArray<Entity> households = m_HuskQuery.ToEntityArray(Allocator.Temp);
-            try
-            {
-                for (int i = 0; i < households.Length && removed < kMaxDeletionsPerUpdate; i++)
+                for (int i = 0; i < m_Households.Length && removed < kMaxDeletionsPerUpdate; i++)
                 {
-                    Entity household = households[i];
+                    Entity household = m_Households[i];
 
-                    if (!EntityManager.HasBuffer<HouseholdCitizen>(household))
+                    if (!m_HouseholdCitizens.HasBuffer(household) || m_HouseholdCitizens[household].Length > 0)
                     {
                         continue;
                     }
 
-                    if (EntityManager.GetBuffer<HouseholdCitizen>(household, isReadOnly: true).Length > 0)
-                    {
-                        continue;
-                    }
-
-                    commandBuffer.AddComponent(household, default(Deleted));
+                    m_CommandBuffer.AddComponent(household, default(Deleted));
                     removed++;
                 }
-            }
-            finally
-            {
-                households.Dispose();
+
+                m_Counts[0] = released;
+                m_Counts[1] = removed;
             }
 
-            HusksRemoved += removed;
+            /// <summary>
+            /// Whether a renter has ceased to be a guest in any meaningful sense.
+            ///
+            /// Deliberately conservative: a household that still holds anyone keeps its room, whatever
+            /// state it is otherwise in, including one that is packing to leave. Releasing a room out
+            /// from under a guest who is still present would evict a real visitor.
+            /// </summary>
+            private bool IsAbandoned(Entity household)
+            {
+                return household == Entity.Null
+                       || !m_Entities.Exists(household)
+                       || m_DeletedTags.HasComponent(household)
+                       || !m_HouseholdCitizens.HasBuffer(household)
+                       || m_HouseholdCitizens[household].Length == 0;
+            }
         }
     }
 }

@@ -20,7 +20,23 @@ namespace TourismOverhaul
 
         public void OnLoad(UpdateSystem updateSystem)
         {
-            Log.Info($"{ModName}: OnLoad");
+            // The build, not just the name. A copy into the Mods folder while the game is running
+            // does nothing until the next start, and several sessions were spent measuring a build
+            // that was never loaded. This line says which one is actually running.
+            string built = "unknown";
+
+            try
+            {
+                built = System.IO.File
+                    .GetLastWriteTime(typeof(Mod).Assembly.Location)
+                    .ToString("yyyy-MM-dd HH:mm:ss");
+            }
+            catch (System.Exception)
+            {
+                // A shadow-copied or in-memory assembly has no readable path; the name is enough.
+            }
+
+            Log.Info($"{ModName}: OnLoad (build of {built})");
 
             Settings = new TourismOverhaulSetting(this);
             Settings.RegisterInOptionsUI();
@@ -123,6 +139,10 @@ namespace TourismOverhaul
             // availability decays permanently as guests come and go.
             updateSystem.UpdateAt<HotelRoomReclaimSystem>(SystemUpdatePhase.GameSimulation);
 
+            // Sends home tourist parties left sitting in an outside connection with a hotel and
+            // nothing to do, which otherwise retry a hopeless leisure trip every few seconds.
+            updateSystem.UpdateAt<StrandedVisitorSystem>(SystemUpdatePhase.GameSimulation);
+
             // Replaces the native tourist target search, whose origin radius of zero strands every
             // arrival that is not standing on a lane. Must run in the simulation phase, in place of
             // TouristFindTargetSystem which it disables.
@@ -137,9 +157,11 @@ namespace TourismOverhaul
             // Watches tourist wallets and attributes what leaves them to a category.
             updateSystem.UpdateAt<TouristSpendingLedgerSystem>(SystemUpdatePhase.GameSimulation);
 
-            // Damps a crowded attraction's appeal so visitors spread out. Must run after
-            // HistoricAttractivenessSystem, which sets the values this one scales.
-            updateSystem.UpdateAt<AttractionCrowdingSystem>(SystemUpdatePhase.GameSimulation);
+            // Damps a crowded attraction's appeal so visitors spread out. Ordered after the game's
+            // AttractionSystem, which rewrites every attractiveness value every 256 frames — damping
+            // written before it would be overwritten before any tourist saw it.
+            updateSystem.UpdateAfter<AttractionCrowdingSystem, Game.Simulation.AttractionSystem>(
+                SystemUpdatePhase.GameSimulation);
 
             // Keeps park visitors circulating instead of freezing on the first spot they reach,
             // which is what turns a busy park into one static pile beside the entrance.

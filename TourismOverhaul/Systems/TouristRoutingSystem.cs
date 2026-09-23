@@ -207,11 +207,17 @@ namespace TourismOverhaul.Systems
             connectionTypes = new NativeParallelHashMap<Entity, OutsideConnectionTransferType>(
                 math.max(1, connections.Length), Allocator.Temp);
 
+            // The spawner never uses a cruise line's connection, so it must not count as a way in
+            // either — otherwise its share is rolled and then has nowhere to land. A city whose only
+            // sea connection is the cruise line's gets its ship share spread over the other modes.
+            CruiseVoyageSystem cruise = World.GetExistingSystemManaged<CruiseVoyageSystem>();
+
             try
             {
                 for (int i = 0; i < connections.Length; i++)
                 {
-                    if (!EntityManager.HasComponent<PrefabRef>(connections[i]))
+                    if (!EntityManager.HasComponent<PrefabRef>(connections[i])
+                        || (cruise != null && cruise.ServesCruiseLine(connections[i])))
                     {
                         continue;
                     }

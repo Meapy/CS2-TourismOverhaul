@@ -601,12 +601,13 @@ namespace TourismOverhaul
                 },
                 {
                     m_Setting.GetOptionLabelLocaleID(nameof(TourismOverhaulSetting.HotelRoomsPerTourist)),
-                    "Rooms wanted per tourist"
+                    "Rooms wanted per travelling party"
                 },
                 {
                     m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.HotelRoomsPerTourist)),
-                    "How many hotel rooms the city considers necessary per tourist. The base game " +
-                    "uses 0.5. Above 1.0 keeps spare capacity so arrivals always find a room."
+                    "How many hotel rooms the city considers necessary per visiting party — a " +
+                    "family or group shares one room. The base game works out at one room per " +
+                    "party. Above 1.0 keeps spare capacity so arrivals always find a room."
                 },
 
                 // ---- C

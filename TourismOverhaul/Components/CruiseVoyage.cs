@@ -22,9 +22,9 @@ namespace TourismOverhaul.Components
         /// Layout version, written first and always. See TourismLedgerData for why.
         ///
         /// Version 2 added <see cref="m_Escaped"/>, version 3 <see cref="m_TargetPassengers"/>,
-        /// both at the end.
+        /// version 4 <see cref="m_Overstayed"/>, each at the end.
         /// </summary>
-        private const int kVersion = 3;
+        private const int kVersion = 4;
 
         /// <summary>The building the ship is docked at, and that its passengers return to.</summary>
         public Entity m_Terminal;
@@ -57,6 +57,12 @@ namespace TourismOverhaul.Components
         /// </summary>
         public int m_TargetPassengers;
 
+        /// <summary>
+        /// Set once the call has been extended to wait for passengers still ashore, so that is
+        /// logged once per call.
+        /// </summary>
+        public byte m_Overstayed;
+
         public void Serialize<TWriter>(TWriter writer) where TWriter : IWriter
         {
             writer.Write(kVersion);
@@ -66,6 +72,7 @@ namespace TourismOverhaul.Components
             writer.Write(m_PartyCount);
             writer.Write(m_Escaped);
             writer.Write(m_TargetPassengers);
+            writer.Write(m_Overstayed);
         }
 
         public void Deserialize<TReader>(TReader reader) where TReader : IReader
@@ -78,6 +85,7 @@ namespace TourismOverhaul.Components
 
             m_Escaped = 0;
             m_TargetPassengers = 0;
+            m_Overstayed = 0;
 
             if (version >= 2)
             {
@@ -87,6 +95,11 @@ namespace TourismOverhaul.Components
             if (version >= 3)
             {
                 reader.Read(out m_TargetPassengers);
+            }
+
+            if (version >= 4)
+            {
+                reader.Read(out m_Overstayed);
             }
         }
     }
