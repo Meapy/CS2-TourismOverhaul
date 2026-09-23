@@ -83,6 +83,14 @@ namespace TourismOverhaul.Systems
             m_LodgingProviders.Update(this);
             m_PropertyRenters.Update(this);
             m_TouristHouseholds.Update(this);
+
+            // A lookup read on the main thread does not wait for the jobs writing it, which
+            // EntityManager.GetComponentData/GetBuffer did. So wait here for exactly the types whose
+            // data is read. Types only tested for presence need no wait (EntityManager.HasComponent
+            // never waited either), and CompleteDependency() waited for all of them: measured at
+            // 5-16 ms per update.
+            EntityManager.CompleteDependencyBeforeRO<PropertyRenter>();
+            EntityManager.CompleteDependencyBeforeRO<TouristHousehold>();
         }
 
         protected override void OnUpdate()

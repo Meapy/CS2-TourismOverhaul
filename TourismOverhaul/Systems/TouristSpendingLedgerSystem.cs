@@ -4,8 +4,10 @@ using Game.Common;
 using Game.Economy;
 using Game.Tools;
 using Game.Vehicles;
+using Unity.Burst;
 using Unity.Collections;
 using Unity.Entities;
+using Unity.Jobs;
 using Unity.Mathematics;
 
 namespace TourismOverhaul.Systems
@@ -50,9 +52,6 @@ namespace TourismOverhaul.Systems
 
         private HotelCapacitySystem m_HotelSystem;
         private EndFrameBarrier m_EndFrameBarrier;
-
-        /// <summary>Rebuilt once per update, used to clear purchase marks as they are paid.</summary>
-        private EntityCommandBuffer m_CommandBuffer;
 
         private int m_Cursor;
         private int m_TrackedMonth = -1;
@@ -130,6 +129,7 @@ namespace TourismOverhaul.Systems
         {
             base.OnCreate();
 
+            m_Entities = GetEntityStorageInfoLookup();
             m_ExpectsPurchases = GetComponentLookup<Components.ExpectsPurchase>(isReadOnly: true);
             m_CurrentTransports = GetComponentLookup<Game.Citizens.CurrentTransport>(isReadOnly: true);
             m_CurrentVehicles = GetComponentLookup<Game.Creatures.CurrentVehicle>(isReadOnly: true);
@@ -145,6 +145,8 @@ namespace TourismOverhaul.Systems
             m_EndFrameBarrier = World.GetOrCreateSystemManaged<EndFrameBarrier>();
 
             m_LastSample = new NativeHashMap<Entity, int2>(4096, Allocator.Persistent);
+            m_Results = new NativeArray<long>((int)Result.Count, Allocator.Persistent);
+            ResetResults();
 
             m_LedgerQuery = GetEntityQuery(ComponentType.ReadWrite<Components.TourismLedgerData>());
 
@@ -157,6 +159,9 @@ namespace TourismOverhaul.Systems
 
         protected override void OnDestroy()
         {
+            m_LastJob.Complete();
+            m_Results.Dispose();
+
             if (m_LastSample.IsCreated)
             {
                 m_LastSample.Dispose();
@@ -170,7 +175,10 @@ namespace TourismOverhaul.Systems
             base.OnGameLoadingComplete(purpose, mode);
 
             // Entities differ between sessions, so last session's balances mean nothing. The
-            // totals, however, do — they are restored below.
+            // totals, however, do — they are restored below. A sample still in flight belongs to
+            // the old session and is dropped with them.
+            m_LastJob.Complete();
+            ResetResults();
             m_LastSample.Clear();
             m_Cursor = 0;
 
@@ -228,7 +236,8 @@ namespace TourismOverhaul.Systems
         ///
         /// Called on every update rather than only at save time, because there is no hook that
         /// reliably precedes a save. The cost is a single component write against work that already
-        /// walks a thousand households.
+        /// walks a thousand households. It stores what has been collected, so the sample still in
+        /// its job (128 frames' worth) is not in a save made before the next update.
         /// </summary>
         private void StoreTotals()
         {
@@ -255,8 +264,11 @@ namespace TourismOverhaul.Systems
         }
 
 
-        // Cached lookups: these paths ask the same questions for every household they walk, and going
-        // through EntityManager each time resolves the type and checks the jobs writing it every call.
+        // Lookups for the sampling job. Sampling reads tourist wallets (Resources), which the game's
+        // economy jobs write all through the frame, and on the main thread that meant waiting for
+        // them: 10-12 ms per update against 1-1.6 ms of actual work. The job is scheduled after those
+        // writers instead, so it reads exactly the same balances and the main thread waits for nothing.
+        private EntityStorageInfoLookup m_Entities;
         private ComponentLookup<Components.ExpectsPurchase> m_ExpectsPurchases;
         private ComponentLookup<Game.Citizens.CurrentTransport> m_CurrentTransports;
         private ComponentLookup<Game.Creatures.CurrentVehicle> m_CurrentVehicles;
@@ -268,9 +280,45 @@ namespace TourismOverhaul.Systems
         private BufferLookup<Game.Economy.Resources> m_ResourceBuffers;
         private BufferLookup<HouseholdCitizen> m_HouseholdCitizenBuffers;
 
-        /// <summary>Refreshes the cached lookups, once per update.</summary>
-        private void RefreshLookups()
+        /// <summary>What the last job measured, folded into the totals on the next update. See <see cref="Result"/>.</summary>
+        private NativeArray<long> m_Results;
+        private JobHandle m_LastJob;
+
+        private enum Result
         {
+            Goods,
+            Fares,
+            Leisure,
+            Other,
+            GoodsSignals,
+            Rides,
+            Cursor,
+            Count
+        }
+
+        protected override void OnUpdate()
+        {
+            // The last job was scheduled 128 frames ago; this only collects what it measured, into
+            // the month it was measured in, before the calendar is checked.
+            CollectLastSample();
+
+            if (m_TouristQuery.IsEmptyIgnoreFilter)
+            {
+                return;
+            }
+
+            RollOverMonthIfNeeded();
+
+            // Drain the exact lodging charges accumulated by the hotel system since last update.
+            if (m_HotelSystem != null)
+            {
+                m_Lodging += m_HotelSystem.LodgingChargedSinceReset;
+                m_HotelSystem.LodgingChargedSinceReset = 0;
+            }
+
+            StoreTotals();
+
+            m_Entities.Update(this);
             m_ExpectsPurchases.Update(this);
             m_CurrentTransports.Update(this);
             m_CurrentVehicles.Update(this);
@@ -281,75 +329,72 @@ namespace TourismOverhaul.Systems
             m_Leisures.Update(this);
             m_ResourceBuffers.Update(this);
             m_HouseholdCitizenBuffers.Update(this);
-        }
-
-        protected override void OnUpdate()
-        {
-            RefreshLookups();
-
-            if (m_TouristQuery.IsEmptyIgnoreFilter)
-            {
-                return;
-            }
-
-            RollOverMonthIfNeeded();
-
-            m_CommandBuffer = m_EndFrameBarrier.CreateCommandBuffer();
-
-            // Drain the exact lodging charges accumulated by the hotel system since last update.
-            if (m_HotelSystem != null)
-            {
-                m_Lodging += m_HotelSystem.LodgingChargedSinceReset;
-                m_HotelSystem.LodgingChargedSinceReset = 0;
-            }
 
             // Chunks, not entities.
             //
             // ToEntityArray allocated and filled an array of every tourist household — tens of
             // thousands — on every update, to then touch at most a thousand of them. The chunk
-            // array is two orders of magnitude smaller, and entities are read straight out of the
+            // list is two orders of magnitude smaller, and entities are read straight out of the
             // chunks that are actually visited.
-            EntityTypeHandle entityHandle = GetEntityTypeHandle();
+            NativeList<ArchetypeChunk> chunks =
+                m_TouristQuery.ToArchetypeChunkListAsync(Allocator.TempJob, out JobHandle chunksReady);
 
-            NativeArray<ArchetypeChunk> chunks = m_TouristQuery.ToArchetypeChunkArray(Allocator.Temp);
-            try
+            JobHandle job = new SampleJob
             {
-                int index = 0;
-                int taken = 0;
+                m_Chunks = chunks,
+                m_EntityType = GetEntityTypeHandle(),
+                m_Cursor = m_Cursor,
+                m_Entities = m_Entities,
+                m_ExpectsPurchases = m_ExpectsPurchases,
+                m_CurrentTransports = m_CurrentTransports,
+                m_CurrentVehicles = m_CurrentVehicles,
+                m_PublicTransports = m_PublicTransports,
+                m_CurrentRoutes = m_CurrentRoutes,
+                m_TransportLines = m_TransportLines,
+                m_ResourceBuyers = m_ResourceBuyers,
+                m_Leisures = m_Leisures,
+                m_ResourceBuffers = m_ResourceBuffers,
+                m_HouseholdCitizens = m_HouseholdCitizenBuffers,
+                m_LastSample = m_LastSample,
+                m_CommandBuffer = m_EndFrameBarrier.CreateCommandBuffer(),
+                m_Results = m_Results,
+            }.Schedule(JobHandle.CombineDependencies(Dependency, chunksReady));
 
-                for (int c = 0; c < chunks.Length && taken < kMaxPerUpdate; c++)
-                {
-                    ArchetypeChunk chunk = chunks[c];
+            chunks.Dispose(job);
+            m_EndFrameBarrier.AddJobHandleForProducer(job);
+            m_LastJob = job;
+            Dependency = job;
+        }
 
-                    // Skip whole chunks that fall before the cursor without reading them.
-                    if (index + chunk.Count <= m_Cursor)
-                    {
-                        index += chunk.Count;
-                        continue;
-                    }
+        /// <summary>Adds the last job's measurements to the running totals and takes its cursor.</summary>
+        private void CollectLastSample()
+        {
+            m_LastJob.Complete();
 
-                    NativeArray<Entity> entities = chunk.GetNativeArray(entityHandle);
-
-                    int start = math.max(0, m_Cursor - index);
-
-                    for (int i = start; i < entities.Length && taken < kMaxPerUpdate; i++)
-                    {
-                        Sample(entities[i]);
-                        taken++;
-                    }
-
-                    index += chunk.Count;
-                }
-
-                // Wrap when the sweep reaches the end, so every household is visited in turn.
-                m_Cursor = taken < kMaxPerUpdate ? 0 : m_Cursor + taken;
-            }
-            finally
+            if (m_Results[(int)Result.Cursor] < 0)
             {
-                chunks.Dispose();
+                return; // nothing scheduled since load
             }
 
-            StoreTotals();
+            m_Goods += m_Results[(int)Result.Goods];
+            m_Fares += m_Results[(int)Result.Fares];
+            m_Leisure += m_Results[(int)Result.Leisure];
+            m_Other += m_Results[(int)Result.Other];
+            GoodsSignalsSeen += (int)m_Results[(int)Result.GoodsSignals];
+            RidesCharged += (int)m_Results[(int)Result.Rides];
+            m_Cursor = (int)m_Results[(int)Result.Cursor];
+
+            ResetResults();
+        }
+
+        private void ResetResults()
+        {
+            for (int i = 0; i < m_Results.Length; i++)
+            {
+                m_Results[i] = 0;
+            }
+
+            m_Results[(int)Result.Cursor] = -1;
         }
 
         /// <summary>
@@ -384,93 +429,6 @@ namespace TourismOverhaul.Systems
             m_TrackedMonth = month;
         }
 
-        private void Sample(Entity household)
-        {
-            if (!m_ResourceBuffers.HasBuffer(household))
-            {
-                return;
-            }
-
-            int balance = EconomyUtils.GetResources(
-                Resource.Money,
-                m_ResourceBuffers[household]);
-
-            if (!m_LastSample.TryGetValue(household, out int2 previous))
-            {
-                // First sight. Record it; the next sample measures against this one.
-                m_LastSample[household] = new int2(balance, Observe(household));
-                return;
-            }
-
-            // Fares are counted exactly, on the transition onto a vehicle, and taken out of the
-            // drop before anything else is attributed so they are not counted twice.
-            int fare = FareForNewBoarding(household, previous.y, out int aboardFlag);
-
-            if (fare > 0)
-            {
-                m_Fares += fare;
-                RidesCharged++;
-            }
-
-            int observed = Observe(household);
-
-            if ((observed & kFlagGoods) != 0)
-            {
-                GoodsSignalsSeen++;
-            }
-
-            int seen = observed | aboardFlag;
-
-            int spent = previous.x - balance - fare;
-
-            // Signals carried forward from earlier samples, plus whatever is visible now.
-            //
-            // This is the part that makes shops and fares measurable at all. Both states are
-            // momentary — a citizen carries ResourceBuyer only while a purchase is outstanding, and
-            // rides a vehicle only for the journey — so requiring the signal to be visible at the
-            // instant the money moves almost never worked, and the spending fell to "other".
-            // Remembering that a household was shopping until its next drop is what connects the
-            // two, since a wallet that falls after we saw someone buying almost certainly fell
-            // because of it.
-            int flags = previous.y | seen;
-
-            // Wallets only fall. A rise means a recycled entity, not income.
-            if (spent <= 0)
-            {
-                m_LastSample[household] = new int2(balance, flags);
-                return;
-            }
-
-            // Lodging is not inferred here at all — HotelCapacitySystem counts it exactly, where
-            // guests are billed. What is measured here is the rest: the wallet fell by more than
-            // the room can explain, so something else was bought.
-            if ((flags & kFlagGoods) != 0)
-            {
-                m_Goods += spent;
-
-                // The trip has been paid for, so the mark has done its job.
-                if (m_ExpectsPurchases.HasComponent(household))
-                {
-                    m_CommandBuffer.RemoveComponent<Components.ExpectsPurchase>(household);
-                }
-            }
-            else if ((flags & kFlagLeisure) != 0)
-            {
-                m_Leisure += spent;
-            }
-            else
-            {
-                m_Other += spent;
-            }
-
-            // Shopping signals are consumed by the drop they explain, so one trip is not credited
-            // with every later purchase. The aboard flag is kept, since it tracks a ride in
-            // progress rather than an unexplained payment.
-            // Shopping and leisure signals are consumed by the drop they explain. The aboard flag is
-            // kept, since it tracks a ride in progress rather than an unexplained payment.
-            m_LastSample[household] = new int2(balance, flags & kFlagAboard);
-        }
-
         private const int kFlagGoods = 1;
 
         /// <summary>Set while a member is out at a venue, which is a positive leisure signal.</summary>
@@ -480,166 +438,307 @@ namespace TourismOverhaul.Systems
         private const int kFlagAboard = 2;
 
         /// <summary>
-        /// The fare a household owes for any ride it has just started, and whether it is riding.
-        ///
-        /// Fares cannot be observed the way lodging can, because the game charges them inside
-        /// ResidentAISystem's boarding queue (:3922-3928) — one instant, no lingering state, and the
-        /// money goes straight to the city budget rather than to a company, so residents' and
-        /// visitors' fares are indistinguishable at the point of payment.
-        ///
-        /// They can be reconstructed, though. The price is a property of the route
-        /// (ResidentAISystem.GetTicketPrice:3046-3057 reads CurrentRoute on the vehicle and then
-        /// TransportLine.m_TicketPrice), so seeing a tourist newly aboard a vehicle is enough to
-        /// know what they just paid. Counting on the transition from not-aboard to aboard charges
-        /// each ride exactly once, and only for tourist households — which is precisely the split
-        /// the city budget cannot give us.
+        /// Samples up to <see cref="kMaxPerUpdate"/> wallets from the cursor on, and attributes each
+        /// drop since the last sample. The same walk, in the same order, as the main-thread version.
         /// </summary>
-        private int FareForNewBoarding(Entity household, int previousFlags, out int aboardFlag)
+        [BurstCompile]
+        private struct SampleJob : IJob
         {
-            aboardFlag = 0;
+            [ReadOnly] public NativeList<ArchetypeChunk> m_Chunks;
+            [ReadOnly] public EntityTypeHandle m_EntityType;
+            public int m_Cursor;
 
-            if (!m_HouseholdCitizenBuffers.HasBuffer(household))
+            [ReadOnly] public EntityStorageInfoLookup m_Entities;
+            [ReadOnly] public ComponentLookup<Components.ExpectsPurchase> m_ExpectsPurchases;
+            [ReadOnly] public ComponentLookup<Game.Citizens.CurrentTransport> m_CurrentTransports;
+            [ReadOnly] public ComponentLookup<Game.Creatures.CurrentVehicle> m_CurrentVehicles;
+            [ReadOnly] public ComponentLookup<PublicTransport> m_PublicTransports;
+            [ReadOnly] public ComponentLookup<Game.Routes.CurrentRoute> m_CurrentRoutes;
+            [ReadOnly] public ComponentLookup<Game.Routes.TransportLine> m_TransportLines;
+            [ReadOnly] public ComponentLookup<Game.Companies.ResourceBuyer> m_ResourceBuyers;
+            [ReadOnly] public ComponentLookup<Game.Citizens.Leisure> m_Leisures;
+            [ReadOnly] public BufferLookup<Game.Economy.Resources> m_ResourceBuffers;
+            [ReadOnly] public BufferLookup<HouseholdCitizen> m_HouseholdCitizens;
+
+            public NativeHashMap<Entity, int2> m_LastSample;
+            public EntityCommandBuffer m_CommandBuffer;
+            public NativeArray<long> m_Results;
+
+            public void Execute()
             {
-                return 0;
-            }
+                int index = 0;
+                int taken = 0;
 
-            DynamicBuffer<HouseholdCitizen> citizens =
-                m_HouseholdCitizenBuffers[household];
-
-            int fare = 0;
-
-            for (int i = 0; i < citizens.Length; i++)
-            {
-                Entity vehicle = PublicVehicleOf(citizens[i].m_Citizen);
-
-                if (vehicle == Entity.Null)
+                for (int c = 0; c < m_Chunks.Length && taken < kMaxPerUpdate; c++)
                 {
-                    continue;
+                    ArchetypeChunk chunk = m_Chunks[c];
+
+                    // Skip whole chunks that fall before the cursor without reading them.
+                    if (index + chunk.Count <= m_Cursor)
+                    {
+                        index += chunk.Count;
+                        continue;
+                    }
+
+                    NativeArray<Entity> entities = chunk.GetNativeArray(m_EntityType);
+
+                    int start = math.max(0, m_Cursor - index);
+
+                    for (int i = start; i < entities.Length && taken < kMaxPerUpdate; i++)
+                    {
+                        Sample(entities[i]);
+                        taken++;
+                    }
+
+                    index += chunk.Count;
                 }
 
-                aboardFlag = kFlagAboard;
+                // Wrap when the sweep reaches the end, so every household is visited in turn.
+                m_Results[(int)Result.Cursor] = taken < kMaxPerUpdate ? 0 : m_Cursor + taken;
+            }
 
-                // Already counted when this ride began.
-                if ((previousFlags & kFlagAboard) != 0)
+            private void Sample(Entity household)
+            {
+                if (!m_ResourceBuffers.HasBuffer(household))
                 {
-                    continue;
+                    return;
                 }
 
-                fare += TicketPrice(vehicle);
-            }
+                int balance = EconomyUtils.GetResources(
+                    Resource.Money,
+                    m_ResourceBuffers[household]);
 
-            return fare;
-        }
-
-        /// <summary>
-        /// The vehicle a citizen is riding, if it is one they had to pay for.
-        ///
-        /// A Citizen is a record, not a body. The thing that physically moves is a separate
-        /// creature entity, and CurrentVehicle lives on that — which is why looking for it on the
-        /// citizen found nothing and fares read zero. CurrentTransport is the link between the two
-        /// (the same hop CommonPathfindSetup:88-95 makes when resolving where someone is).
-        /// </summary>
-        private Entity PublicVehicleOf(Entity citizen)
-        {
-            Entity traveller = citizen;
-
-            if (m_CurrentTransports.HasComponent(citizen))
-            {
-                Entity transport =
-                    m_CurrentTransports[citizen].m_CurrentTransport;
-
-                if (transport != Entity.Null && EntityManager.Exists(transport))
+                if (!m_LastSample.TryGetValue(household, out int2 previous))
                 {
-                    traveller = transport;
+                    // First sight. Record it; the next sample measures against this one.
+                    m_LastSample[household] = new int2(balance, Observe(household));
+                    return;
                 }
+
+                // Fares are counted exactly, on the transition onto a vehicle, and taken out of the
+                // drop before anything else is attributed so they are not counted twice.
+                int fare = FareForNewBoarding(household, previous.y, out int aboardFlag);
+
+                if (fare > 0)
+                {
+                    m_Results[(int)Result.Fares] += fare;
+                    m_Results[(int)Result.Rides]++;
+                }
+
+                int observed = Observe(household);
+
+                if ((observed & kFlagGoods) != 0)
+                {
+                    m_Results[(int)Result.GoodsSignals]++;
+                }
+
+                int seen = observed | aboardFlag;
+
+                int spent = previous.x - balance - fare;
+
+                // Signals carried forward from earlier samples, plus whatever is visible now.
+                //
+                // This is the part that makes shops and fares measurable at all. Both states are
+                // momentary — a citizen carries ResourceBuyer only while a purchase is outstanding,
+                // and rides a vehicle only for the journey — so requiring the signal to be visible at
+                // the instant the money moves almost never worked, and the spending fell to "other".
+                // Remembering that a household was shopping until its next drop is what connects the
+                // two, since a wallet that falls after we saw someone buying almost certainly fell
+                // because of it.
+                int flags = previous.y | seen;
+
+                // Wallets only fall. A rise means a recycled entity, not income.
+                if (spent <= 0)
+                {
+                    m_LastSample[household] = new int2(balance, flags);
+                    return;
+                }
+
+                // Lodging is not inferred here at all — HotelCapacitySystem counts it exactly, where
+                // guests are billed. What is measured here is the rest: the wallet fell by more than
+                // the room can explain, so something else was bought.
+                if ((flags & kFlagGoods) != 0)
+                {
+                    m_Results[(int)Result.Goods] += spent;
+
+                    // The trip has been paid for, so the mark has done its job.
+                    if (m_ExpectsPurchases.HasComponent(household))
+                    {
+                        m_CommandBuffer.RemoveComponent<Components.ExpectsPurchase>(household);
+                    }
+                }
+                else if ((flags & kFlagLeisure) != 0)
+                {
+                    m_Results[(int)Result.Leisure] += spent;
+                }
+                else
+                {
+                    m_Results[(int)Result.Other] += spent;
+                }
+
+                // Shopping and leisure signals are consumed by the drop they explain. The aboard flag
+                // is kept, since it tracks a ride in progress rather than an unexplained payment.
+                m_LastSample[household] = new int2(balance, flags & kFlagAboard);
             }
 
-            if (!m_CurrentVehicles.HasComponent(traveller))
+            /// <summary>
+            /// The fare a household owes for any ride it has just started, and whether it is riding.
+            ///
+            /// Fares cannot be observed the way lodging can, because the game charges them inside
+            /// ResidentAISystem's boarding queue (:3922-3928) — one instant, no lingering state, and
+            /// the money goes straight to the city budget rather than to a company, so residents' and
+            /// visitors' fares are indistinguishable at the point of payment.
+            ///
+            /// They can be reconstructed, though. The price is a property of the route
+            /// (ResidentAISystem.GetTicketPrice:3046-3057 reads CurrentRoute on the vehicle and then
+            /// TransportLine.m_TicketPrice), so seeing a tourist newly aboard a vehicle is enough to
+            /// know what they just paid. Counting on the transition from not-aboard to aboard charges
+            /// each ride exactly once, and only for tourist households — which is precisely the split
+            /// the city budget cannot give us.
+            /// </summary>
+            private int FareForNewBoarding(Entity household, int previousFlags, out int aboardFlag)
             {
-                return Entity.Null;
+                aboardFlag = 0;
+
+                if (!m_HouseholdCitizens.HasBuffer(household))
+                {
+                    return 0;
+                }
+
+                DynamicBuffer<HouseholdCitizen> citizens = m_HouseholdCitizens[household];
+
+                int fare = 0;
+
+                for (int i = 0; i < citizens.Length; i++)
+                {
+                    Entity vehicle = PublicVehicleOf(citizens[i].m_Citizen);
+
+                    if (vehicle == Entity.Null)
+                    {
+                        continue;
+                    }
+
+                    aboardFlag = kFlagAboard;
+
+                    // Already counted when this ride began.
+                    if ((previousFlags & kFlagAboard) != 0)
+                    {
+                        continue;
+                    }
+
+                    fare += TicketPrice(vehicle);
+                }
+
+                return fare;
             }
 
-            Entity vehicle = m_CurrentVehicles[traveller].m_Vehicle;
-
-            if (vehicle == Entity.Null || !EntityManager.Exists(vehicle))
+            /// <summary>
+            /// The vehicle a citizen is riding, if it is one they had to pay for.
+            ///
+            /// A Citizen is a record, not a body. The thing that physically moves is a separate
+            /// creature entity, and CurrentVehicle lives on that — which is why looking for it on the
+            /// citizen found nothing and fares read zero. CurrentTransport is the link between the two
+            /// (the same hop CommonPathfindSetup:88-95 makes when resolving where someone is).
+            /// </summary>
+            private Entity PublicVehicleOf(Entity citizen)
             {
-                return Entity.Null;
+                Entity traveller = citizen;
+
+                if (m_CurrentTransports.HasComponent(citizen))
+                {
+                    Entity transport = m_CurrentTransports[citizen].m_CurrentTransport;
+
+                    if (transport != Entity.Null && m_Entities.Exists(transport))
+                    {
+                        traveller = transport;
+                    }
+                }
+
+                if (!m_CurrentVehicles.HasComponent(traveller))
+                {
+                    return Entity.Null;
+                }
+
+                Entity vehicle = m_CurrentVehicles[traveller].m_Vehicle;
+
+                if (vehicle == Entity.Null || !m_Entities.Exists(vehicle))
+                {
+                    return Entity.Null;
+                }
+
+                // Their own car carries no PublicTransport, which is the distinction that matters:
+                // driving is free, riding is not.
+                return m_PublicTransports.HasComponent(vehicle) ? vehicle : Entity.Null;
             }
 
-            // Their own car carries no PublicTransport, which is the distinction that matters:
-            // driving is free, riding is not.
-            return m_PublicTransports.HasComponent(vehicle) ? vehicle : Entity.Null;
-        }
-
-        /// <summary>Mirrors ResidentAISystem.GetTicketPrice (:3046-3057).</summary>
-        private int TicketPrice(Entity vehicle)
-        {
-            if (!m_CurrentRoutes.HasComponent(vehicle))
+            /// <summary>Mirrors ResidentAISystem.GetTicketPrice (:3046-3057).</summary>
+            private int TicketPrice(Entity vehicle)
             {
-                return 0;
+                if (!m_CurrentRoutes.HasComponent(vehicle))
+                {
+                    return 0;
+                }
+
+                Entity route = m_CurrentRoutes[vehicle].m_Route;
+
+                if (route == Entity.Null || !m_TransportLines.HasComponent(route))
+                {
+                    return 0;
+                }
+
+                return m_TransportLines[route].m_TicketPrice;
             }
 
-            Entity route = m_CurrentRoutes[vehicle].m_Route;
-
-            if (route == Entity.Null || !m_TransportLines.HasComponent(route))
+            /// <summary>
+            /// What the household appears to be doing, as flags.
+            ///
+            /// Both signals are positive rather than inferred: a citizen carrying ResourceBuyer is
+            /// definitely buying something, and one aboard a vehicle marked PublicTransport is
+            /// definitely paying to ride it. Their own car is not, which is the distinction that
+            /// matters — driving is free, riding is not.
+            ///
+            /// Stops at the first citizen that shows either signal, since one is enough to explain the
+            /// household's next drop and the buffers are walked for every sampled household.
+            /// </summary>
+            private int Observe(Entity household)
             {
-                return 0;
-            }
+                if (!m_HouseholdCitizens.HasBuffer(household))
+                {
+                    return 0;
+                }
 
-            return m_TransportLines[route].m_TicketPrice;
-        }
+                DynamicBuffer<HouseholdCitizen> citizens = m_HouseholdCitizens[household];
 
-        /// <summary>
-        /// What the household appears to be doing, as flags.
-        ///
-        /// Both signals are positive rather than inferred: a citizen carrying ResourceBuyer is
-        /// definitely buying something, and one aboard a vehicle marked PublicTransport is
-        /// definitely paying to ride it. Their own car is not, which is the distinction that
-        /// matters — driving is free, riding is not.
-        ///
-        /// Stops at the first citizen that shows either signal, since one is enough to explain the
-        /// household's next drop and the buffers are walked for every sampled household.
-        /// </summary>
-        private int Observe(Entity household)
-        {
-            if (!m_HouseholdCitizenBuffers.HasBuffer(household))
-            {
-                return 0;
-            }
-
-            DynamicBuffer<HouseholdCitizen> citizens =
-                m_HouseholdCitizenBuffers[household];
-
-            // Set by TouristShoppingSystem when it sends the household shopping, and cleared by the
-            // drop that pays for it. Far more reliable than catching ResourceBuyer, which exists
-            // only while a purchase is outstanding and is usually gone by the time we look.
-            if (m_ExpectsPurchases.HasComponent(household))
-            {
-                return kFlagGoods;
-            }
-
-            int leisure = 0;
-
-            for (int i = 0; i < citizens.Length; i++)
-            {
-                Entity citizen = citizens[i].m_Citizen;
-
-                if (m_ResourceBuyers.HasComponent(citizen))
+                // Set by TouristShoppingSystem when it sends the household shopping, and cleared by
+                // the drop that pays for it. Far more reliable than catching ResourceBuyer, which
+                // exists only while a purchase is outstanding and is usually gone by the time we look.
+                if (m_ExpectsPurchases.HasComponent(household))
                 {
                     return kFlagGoods;
                 }
 
-                // Leisure is a weaker signal than a purchase, so it does not return early — a
-                // household with one member shopping and another at a venue should count as
-                // shopping, since that is the more specific claim.
-                if (m_Leisures.HasComponent(citizen))
+                int leisure = 0;
+
+                for (int i = 0; i < citizens.Length; i++)
                 {
-                    leisure = kFlagLeisure;
+                    Entity citizen = citizens[i].m_Citizen;
+
+                    if (m_ResourceBuyers.HasComponent(citizen))
+                    {
+                        return kFlagGoods;
+                    }
+
+                    // Leisure is a weaker signal than a purchase, so it does not return early — a
+                    // household with one member shopping and another at a venue should count as
+                    // shopping, since that is the more specific claim.
+                    if (m_Leisures.HasComponent(citizen))
+                    {
+                        leisure = kFlagLeisure;
+                    }
                 }
+
+                return leisure;
             }
-
-            return leisure;
         }
-
     }
 }

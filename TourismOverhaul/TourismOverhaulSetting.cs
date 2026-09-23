@@ -187,7 +187,6 @@ namespace TourismOverhaul
         [SettingsUISlider(min = 8f, max = 48f, step = 1f, unit = "integer")]
         [SettingsUISection(SectionMain, GroupDemand)]
         public int CruiseShoreLeaveHours { get; set; } = 12;
-
         /// <summary>
         /// How many passengers a cruise ship carries when it calls.
         ///
@@ -397,6 +396,11 @@ namespace TourismOverhaul
         [SettingsUIHidden]
         public bool FixHotelDemand { get; set; } = true;
 
+        /// <summary>
+        /// Hotel rooms the city should have per visiting party (household), not per citizen — a
+        /// room holds a whole household. TouristEconomySystem divides by the measured party size
+        /// before handing the game its per-citizen figure.
+        /// </summary>
         [SettingsUIHidden]
         public float HotelRoomsPerTourist { get; set; } = 1.2f;
 

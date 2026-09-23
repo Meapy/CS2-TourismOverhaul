@@ -904,3 +904,91 @@ walked population by rejection reason is a dozen lines, and it located this in o
 three rounds of confident, wrong code reading. Log it unconditionally and rate-limit it — a log
 gated on "did something" cannot distinguish "not running" from "running, nobody qualifies", which
 are the two cases you actually need to tell apart.
+
+## A value the game recomputes cannot be set once — it has to be re-applied after every rewrite
+
+`AttractionCrowdingSystem` shipped for several versions and never did anything measurable. Two
+independent reasons, either of which alone would have hidden the other.
+
+**It counted the wrong thing.** It tallied tourist households by `Target`. A tourist household's
+`Target` is its hotel, so for a park the crowd count was essentially always zero.
+
+**Its writes did not survive.** `AttractionSystem:85-122` rebuilds `m_Attractiveness` from prefab
+`AttractionData`, upgrades, efficiency, park maintenance and terrain. It has interval 16 and
+processes one of 16 `UpdateFrame` groups per run, so every building is rewritten every 256 frames.
+A factor written every 1,024 frames was live for 256 at most — an eighth of the time — and the
+"capture the authored base once" bookkeeping was protecting against a ratchet that could never
+happen, because the game hands back a fresh base every cycle.
+
+The shape that works for any game-recomputed value:
+
+- Order the modifier **after** the recomputing system (`UpdateAfter<Mine, AttractionSystem>`).
+- Run it every frame, but filter the query with `SetChangedVersionFilter` on the component, so it
+  only touches chunks the game has just rewritten. A system's own writes carry its own version,
+  which is not newer than its `LastSystemVersion` on the next run, so they do not re-trigger it.
+- Keep the value last written per entity and skip any entity whose current value still equals it.
+  That makes a chunk flagged changed without a real rewrite harmless — nothing is damped twice.
+- Nothing to restore on disable or save: stop applying, and the game restores the base within one
+  cycle.
+
+And the reason it mattered at all: tourists roll `LeisureType.Attractions` 30% of the time before
+any other roll (`SelectLeisureType:524-527`). That route ends in `SetupAttractionJob`, over every
+building with an `AttractivenessProvider` (`CitizenPathfindSetup:853`), and never consults
+`LeisureProvider` — so the park gate, which works by removing that tag, could not see it. With
+tourists at ~99,000 the busiest park climbed to 721 while closed.
+
+**The game has no post-save hook.** `Game.Serialization` offers `PreSerialize`, `PreDeserialize`
+and `PostDeserialize` only. Anything reverted for a save stays reverted until the owning system
+next runs, so a system that reverts in `PreSerialize` should wake often enough to reapply promptly
+— here, every 16 frames with the full work still every 512.
+
+## A citizen with a `TravelPurpose` cannot start a queued trip
+
+`TripNeededSystem`'s citizen query excludes `TravelPurpose` outright (`:1966`), along with
+`ResourceBuyer`, and requires `CurrentBuilding`. So a `TripNeeded` handed to a citizen who is busy
+somewhere — sitting in a museum, eating, at a leisure venue — is not refused, it is simply never
+looked at. It waits until whatever they are doing ends and the purpose comes off.
+
+Anything that sends citizens somewhere has to take the purpose away as well as add the trip, and has
+to keep doing it: a single pass catches only the citizens who happened to be idle at that moment.
+Measured in the cruise recall: about 280 parties per call held a journey home that could never run,
+and the giveaway in the log was a queue that never moved with none of them waiting on the pathfinder.
+
+The mirror of that is not to touch citizens whose trip *can* run. Clearing the path of one already
+walking, or already waiting on a route search, restarts a journey that was going to finish — with a
+refresh every 2048 frames, only parties whose whole walk fitted inside one window ever arrived.
+"Already on the way" has to be tested precisely: a body in the world whose `Target` is the
+destination, or no body, no `TravelPurpose`, and the trip queued.
+
+## A vehicle hold is only as good as the stop's claim on the vehicle
+
+`PublicTransport.m_DepartureFrame` is the only lever that keeps a vessel in port, and `StopBoarding`
+(`TransportWatercraftAISystem:797-807`) consults it only when the stop behind the vehicle's `Target`
+carries a `BoardingVehicle` naming that vehicle. With the field blank, `:850` clears `Boarding` and
+the vessel sails, hold or no hold.
+
+`Game.Routes.BoardingVehicleSystem` blanks that field on **every** stop in the city after a load, and
+whenever any waypoint anywhere is `Updated` or `Deleted`, keeping it only where the vehicle's
+`Target` still resolves back to the stop (`IsValidBoarding`). A vessel parked for hours is exposed to
+that for the whole call, which is why the fault was intermittent and why it appeared right after a
+load. Measured: a ship left 62,613 frames into a call with 1,100 passengers ashore.
+
+A hold that has to survive a long dwell therefore has to re-assert the claim, not just the frame.
+
+## Pricing a stop cannot separate two kinds of passenger
+
+`PathUtils.GetTransportStopSpecification:1562` prices boarding as
+`max(m_VehicleInterval * 0.5, m_AverageWaitingTime) - stopDuration`. `m_VehicleInterval` is the live
+figure `TransportLineSystem:194` recomputes, and on a line deliberately held to one vessel it is
+large — so boarding a cruise ship costs hundreds where a bus costs a few.
+
+That asymmetry is what keeps commuters off the ship, and it is the same asymmetry that sends the
+shore party to an ordinary ferry when one serves the same sea connection: cost belongs to the stop,
+not to the traveller. The two groups cannot be told apart by price, in either direction. What the
+stop *can* distinguish is *when*, which is why the pier's window is time-based — and a shore party
+that leaves the city by another line has to be released rather than waited for.
+
+Writing a waiting figure is also not the same as pricing the stop. `WaitingPassengersSystem:177-192`
+rebuilds the average from the stop's history every 256 frames and tags the waypoint `PathfindUpdated`
+only when that rebuild changes the value; the pathfinder reads the cost only after such a tag. A
+figure written on its own never reaches the graph at all.

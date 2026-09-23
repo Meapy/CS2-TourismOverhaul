@@ -26,8 +26,12 @@ namespace TourismOverhaul.Systems
     /// (:521-559) and then a destination through CitizenPathfindSetup.SetupLeisureTargetJob, which
     /// offers every LeisureProvider of that type at cost 0 (:164). Only shops and restaurants get a
     /// fullness term (:169-184). So the nearest park wins every search however packed it is — a
-    /// single lawn was measured holding 1,487 visitors. AttractionCrowdingSystem cannot help: the
-    /// attractiveness it damps feeds only SetupTargetType.Attraction (TripNeededSystem:1442).
+    /// single lawn was measured holding 1,487 visitors.
+    ///
+    /// Tourists also reach parks by a second route this gate does not cover: 30% of their leisure
+    /// is Attractions (SelectLeisureType:524-527), scored by attractiveness over every building
+    /// with an AttractivenessProvider (CitizenPathfindSetup:853). AttractionCrowdingSystem closes
+    /// that one, using the on-site counts this system publishes and IsClosed.
     ///
     /// THE FIX
     ///
@@ -123,8 +127,34 @@ namespace TourismOverhaul.Systems
         /// <summary>False while the feature is off or the query is empty, so silence is unambiguous.</summary>
         private bool m_Ran;
 
-        // 262144 frames an in-game day, so 512 updates a day.
-        public override int GetUpdateInterval(SystemUpdatePhase phase) => 512;
+        /// <summary>
+        /// Visitors standing at each destination building, from the last full pass, copied off the
+        /// job's container so another system can read it on the main thread without a sync point.
+        /// </summary>
+        private readonly Dictionary<Entity, int> m_OnSite = new Dictionary<Entity, int>();
+
+        /// <summary>
+        /// Set by PreSerialize. The game has no post-save hook, so without this every closed park
+        /// would stay open to new trips until the next full pass — up to 512 frames after each save.
+        /// </summary>
+        private bool m_RegatePending;
+
+        private int m_Pass;
+
+        /// <summary>
+        /// The system wakes every 16 frames so it can re-close parks promptly after a save, but does
+        /// its real work only every 32nd wake: 512 frames, 512 times an in-game day.
+        /// </summary>
+        private const int kPassesPerRun = 32;
+
+        public override int GetUpdateInterval(SystemUpdatePhase phase) => 16;
+
+        /// <summary>Visitors standing at a building on the last full pass. Main thread only.</summary>
+        internal bool TryGetVisitorsOnSite(Entity building, out int visitors) =>
+            m_OnSite.TryGetValue(building, out visitors);
+
+        /// <summary>Whether this park is currently closed to new leisure trips.</summary>
+        internal bool IsClosed(Entity park) => m_Gated.Contains(park);
 
         protected override void OnCreate()
         {
@@ -184,6 +214,8 @@ namespace TourismOverhaul.Systems
             CompleteDependency();
             m_Gated.Clear();
             m_ParkOccupancy.Clear();
+            m_OnSite.Clear();
+            m_RegatePending = false;
         }
 
         /// <summary>Puts every removed tag back before the game writes the save. See the class doc.</summary>
@@ -194,24 +226,58 @@ namespace TourismOverhaul.Systems
             // Logged unconditionally: this is the one step whose failure would outlive the mod,
             // so it should be visible in every log that contains a save.
             Mod.Log.Info($"Park gate: reopened {m_Gated.Count} park(s) before saving.");
+            m_RegatePending = m_Gated.Count > 0;
             ReopenAll();
         }
 
         protected override void OnUpdate()
         {
-            Report();
-
             TourismOverhaulSetting settings = Mod.Settings;
-            m_Ran = settings != null && settings.SpreadParkVisitors && !m_Query.IsEmptyIgnoreFilter;
+            bool spread = settings != null && settings.SpreadParkVisitors;
+            float perCell = settings != null ? math.max(0.1f, settings.MaxParkVisitorsPerCell) : 1f;
+
+            // A save just reopened every closed park; close the full ones again straight away.
+            if (m_RegatePending)
+            {
+                m_RegatePending = false;
+
+                if (spread)
+                {
+                    CompleteDependency();
+                    Gate(perCell);
+                }
+            }
+
+            if (++m_Pass < kPassesPerRun)
+            {
+                return;
+            }
+
+            m_Pass = 0;
+
+            Report();
+            Snapshot();
+
+            // The counts are also what AttractionCrowdingSystem damps attractions by, so they are
+            // taken whenever either feature is on; closing parks and moving visitors need this one.
+            m_Ran = settings != null && (spread || settings.EnableAttractionCrowding)
+                && !m_Query.IsEmptyIgnoreFilter;
+
+            if (!m_Ran || !spread)
+            {
+                ReopenAll();
+            }
 
             if (!m_Ran)
             {
-                ReopenAll();
                 return;
             }
 
             // Structural changes first: they invalidate type handles, so they must precede the jobs.
-            Gate(math.max(0.1f, settings.MaxParkVisitorsPerCell));
+            if (spread)
+            {
+                Gate(perCell);
+            }
 
             m_CurveData.Update(this);
             m_ParkOccupancy.Clear();
@@ -242,6 +308,12 @@ namespace TourismOverhaul.Systems
                     m_ParkOccupancy = m_ParkOccupancy
                 },
                 m_Query, Dependency);
+
+            if (!spread)
+            {
+                Dependency = occupancy.Dispose(counted);
+                return;
+            }
 
             JobHandle applied = JobChunkExtensions.Schedule(
                 new ApplyJob
@@ -310,6 +382,21 @@ namespace TourismOverhaul.Systems
                 EntityManager.AddComponent<Game.Buildings.LeisureProvider>(park);
                 return true;
             });
+        }
+
+        /// <summary>Publishes the last full pass's counts. Called after Report has completed the job.</summary>
+        private void Snapshot()
+        {
+            m_OnSite.Clear();
+
+            NativeArray<Entity> keys = m_ParkOccupancy.GetKeyArray(Allocator.Temp);
+
+            for (int i = 0; i < keys.Length; i++)
+            {
+                m_OnSite[keys[i]] = m_ParkOccupancy[keys[i]];
+            }
+
+            keys.Dispose();
         }
 
         /// <summary>A park's visitor limit, from its lot area — the same idiom AttractionCrowdingSystem uses.</summary>
@@ -463,11 +550,11 @@ namespace TourismOverhaul.Systems
 
         private string Summary()
         {
-            if (!m_Ran)
+            if (!m_Ran || !Mod.Settings.SpreadParkVisitors)
             {
-                return Mod.Settings.SpreadParkVisitors
-                    ? "Park spread: idle, no resident creatures matched the query."
-                    : "Park spread: switched off.";
+                return !Mod.Settings.SpreadParkVisitors
+                    ? "Park spread: switched off" + (m_Ran ? " (still counting visitors for attraction crowding)." : ".")
+                    : "Park spread: idle, no resident creatures matched the query.";
             }
 
             return $"Park spread: walked {m_Counters[Counter.Examined]} creatures -> "

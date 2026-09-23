@@ -230,9 +230,21 @@ namespace TourismOverhaul.Systems
             float perTourist = math.clamp(settings.HotelRoomsPerTourist, 0.1f, 3f);
             float multiplier = math.max(1, settings.HotelRoomMultiplier);
 
+            // The game's test multiplies tourist CITIZENS by the requirement (TourismSystem:78) and
+            // compares against ROOMS (:90), and a room holds a whole household. The vanilla 0.5
+            // (DemandPrefab:91) is one room per two-person party. The setting has always meant
+            // rooms per party — its description says above 1.0 leaves spare capacity — but was
+            // applied per citizen, demanding about two rooms per party: hotels were built forever,
+            // 40% of rooms stood empty, and every new hotel's welcome bonus lifted the tourist
+            // target until MaximumTourists caught it. Dividing by the measured party size makes it
+            // per party. Rounded to 0.1 so ordinary drift in party size does not rewrite the
+            // demand parameter every update.
+            float partySize = m_DemandSystem != null ? m_DemandSystem.AveragePartySize : 0f;
+            partySize = partySize >= 1f ? math.clamp(math.round(partySize * 10f) / 10f, 1f, 4f) : 2f;
+
             // Clamped well above the per-tourist ceiling because this is a compensated figure, not
-            // a player-facing one — at 3 rooms per tourist and a 10x multiplier it reaches 30.
-            float requirement = math.clamp(perTourist * multiplier, 0.1f, 30f);
+            // a player-facing one — at 3 rooms per party and a 10x multiplier it reaches 30.
+            float requirement = math.clamp(perTourist * multiplier / partySize, 0.05f, 30f);
 
             // The first hotel or motel should still be buildable when the city has no lodging
             // capacity yet. That prevents the very first zoned lodging building from being blocked
@@ -272,11 +284,11 @@ namespace TourismOverhaul.Systems
             m_LastWrittenRoomRequirement = requirement;
 
             string reason = hasLodgingCapacity
-                ? $"({perTourist:0.00} wanted x {multiplier:0} room multiplier)"
+                ? $"({perTourist:0.00} rooms wanted per party of {partySize:0.0} x {multiplier:0} room multiplier)"
                 : "(first hotel/motel build exception)";
 
             Mod.Log.Info(
-                $"Hotel room requirement set to {requirement:0.00} rooms per tourist {reason}");
+                $"Hotel room requirement set to {requirement:0.00} per tourist citizen {reason}");
         }
     }
 }

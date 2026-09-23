@@ -70,6 +70,14 @@ not restored on load for parks, so every removed tag is put back in `PreSerializ
 and on destroy. Inside a park, visitors on an over-full lawn re-roll their spot with the native
 re-path.
 
+Tourists also reach parks through `Attractions` leisure (30% of their rolls,
+`SelectLeisureType:524-527`), which scores every building with an `AttractivenessProvider` by
+attractiveness and never looks at `LeisureProvider`. `AttractionCrowdingSystem` covers that route:
+it damps each attraction by the visitors actually counted on site, drops a closed park to a 10%
+floor, and applies the factor in a Burst job ordered after the game's `AttractionSystem`, which
+rewrites every value every 256 frames. The park system also re-closes parks within 16 frames of a
+save rather than on its next 512-frame pass.
+
 Deciding who is standing in a park is a lane fact (`CreatureLaneFlags.Hangaround | EndReached`):
 `ResidentFlags.Arrived` is never set for group members, and `Divert` is removed on arrival.
 
@@ -180,8 +188,28 @@ mechanisms — `LodgingSeeker` to earn a destination, `TripNeeded` to earn a bod
 The two stops are deliberately priced against each other through
 `PathUtils.GetTransportStopSpecification`. The map edge is held maximally attractive so the
 complement chooses the ship; the pier is priced out so the city's commuters do not fill a vessel that
-sits with its doors open for hours, and opened again during last call so the shore party can board.
-`WaitingPassengers` is self-healing and safe to write; `m_ComfortFactor` is authored data and is not.
+sits with its doors open for hours, and opened again for the whole window in which any party of the
+call may be walking back. `WaitingPassengers` is self-healing and safe to write; `m_ComfortFactor` is
+authored data and is not. Writing the figure is not enough on its own: the game rebuilds a stop's
+average from its history and tags the waypoint `PathfindUpdated` only when that rebuild changes the
+value, and the pathfinder reads the cost only after such a tag, so the mod writes a history that
+reproduces the figure and tags the waypoint itself.
+
+The return is the hard half, and it is built out of three parts that each failed alone. A party is
+given one ordinary trip to the ship's sea connection, so the legs come out as walk, wait, board. The
+recall is re-asserted periodically for parties that have wandered off, but never for one already
+walking back or waiting on a route — restarting those meant only the parties that finished inside one
+refresh ever reached the ship. A party held by a `TravelPurpose` is recalled even so, because
+`TripNeededSystem` excludes those citizens from its query entirely and their queued journey cannot
+start until the purpose comes off.
+
+The vessel is held at the quay by `PublicTransport.m_DepartureFrame`, which `StopBoarding` honours
+only while the stop's `BoardingVehicle` names it — a field the game blanks after a load and on
+unrelated waypoint changes, so the mod puts its claim back rather than letting the ship sail. If
+shore leave ends with passengers still out, the call is extended in steps, up to half the shore leave
+again. A party that reaches the sea connection by some other line leaves the city there: it can never
+board, so it is released rather than counted ashore and waited for. Giving the cruise line a sea
+connection no other line serves is what makes every passenger come back to the ship itself.
 
 Passengers ashore are anchored to the terminal by a zero-price `LodgingProvider` and an empty
 `Renter` buffer — the buffer is what makes `TouristHouseholdBehaviorSystem:74` believe the anchor,

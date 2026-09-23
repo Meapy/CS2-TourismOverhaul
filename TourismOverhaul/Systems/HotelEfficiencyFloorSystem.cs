@@ -3,8 +3,10 @@ using Game.Buildings;
 using Game.Common;
 using Game.Companies;
 using Game.Tools;
+using Unity.Burst;
 using Unity.Collections;
 using Unity.Entities;
+using Unity.Jobs;
 using Unity.Mathematics;
 
 namespace TourismOverhaul.Systems
@@ -31,7 +33,20 @@ namespace TourismOverhaul.Systems
     {
         private EntityQuery m_HotelQuery;
 
-        /// <summary>Hotels currently held above the floor. For diagnostics.</summary>
+        // Applying the floor writes each hotel's Efficiency buffer, and a write has to wait for every
+        // job still reading or writing that buffer, which on the main thread was 6-10 ms per update
+        // against almost no work. The same pass now runs as a Burst job scheduled after them, still
+        // straight after ProcessingCompanySystem's job that writes the zero, and ahead of any later
+        // reader, which the job system orders behind it.
+        private EntityStorageInfoLookup m_Entities;
+        private ComponentLookup<PropertyRenter> m_PropertyRenters;
+        private BufferLookup<Efficiency> m_EfficiencyBuffers;
+
+        /// <summary>Hotels the last job raised to the floor.</summary>
+        private NativeReference<int> m_Supported;
+        private JobHandle m_LastJob;
+
+        /// <summary>Hotels currently held above the floor, as of the last pass. For diagnostics.</summary>
         public int HotelsSupported { get; private set; }
 
         /// <summary>
@@ -49,9 +64,11 @@ namespace TourismOverhaul.Systems
         {
             base.OnCreate();
 
+            m_Entities = GetEntityStorageInfoLookup();
             m_PropertyRenters = GetComponentLookup<PropertyRenter>(isReadOnly: true);
             // Read-write: the floor is applied by writing into this buffer (BuildingUtils.SetEfficiencyFactor).
             m_EfficiencyBuffers = GetBufferLookup<Efficiency>(isReadOnly: false);
+            m_Supported = new NativeReference<int>(Allocator.Persistent);
             m_HotelQuery = GetEntityQuery(
                 ComponentType.ReadOnly<LodgingProvider>(),
                 ComponentType.ReadOnly<PropertyRenter>(),
@@ -59,51 +76,71 @@ namespace TourismOverhaul.Systems
                 ComponentType.Exclude<Temp>());
         }
 
-
-        // Cached lookups: these paths ask the same questions for every household they walk, and going
-        // through EntityManager each time resolves the type and checks the jobs writing it every call.
-        private ComponentLookup<PropertyRenter> m_PropertyRenters;
-        private BufferLookup<Efficiency> m_EfficiencyBuffers;
-
-        /// <summary>Refreshes the cached lookups, once per update.</summary>
-        private void RefreshLookups()
+        protected override void OnDestroy()
         {
-            m_PropertyRenters.Update(this);
-            m_EfficiencyBuffers.Update(this);
+            m_LastJob.Complete();
+            m_Supported.Dispose();
+            base.OnDestroy();
         }
 
         protected override void OnUpdate()
         {
-            RefreshLookups();
+            // Finished 64 frames ago; this only reads its count.
+            m_LastJob.Complete();
+            HotelsSupported = m_Supported.Value;
 
             TourismOverhaulSetting settings = Mod.Settings;
 
-            if (settings == null || !settings.EnableHotelEfficiencyFloor)
+            if (settings == null || !settings.EnableHotelEfficiencyFloor || m_HotelQuery.IsEmptyIgnoreFilter)
             {
                 HotelsSupported = 0;
+                m_Supported.Value = 0;
                 return;
             }
 
-            if (m_HotelQuery.IsEmptyIgnoreFilter)
-            {
-                HotelsSupported = 0;
-                return;
-            }
+            m_Entities.Update(this);
+            m_PropertyRenters.Update(this);
+            m_EfficiencyBuffers.Update(this);
 
-            // A setting of 50 means "worst case 50% efficiency", i.e. a -50% penalty rather than
-            // the -100% the base game applies.
-            float floor = math.clamp(settings.HotelEfficiencyFloor, 0, 100) / 100f;
-            int supported = 0;
+            NativeList<Entity> hotels = m_HotelQuery.ToEntityListAsync(Allocator.TempJob, out JobHandle hotelsReady);
 
-            NativeArray<Entity> hotels = m_HotelQuery.ToEntityArray(Allocator.Temp);
-            try
+            JobHandle job = new FloorJob
             {
-                for (int i = 0; i < hotels.Length; i++)
+                m_Hotels = hotels,
+                // A setting of 50 means "worst case 50% efficiency", i.e. a -50% penalty rather than
+                // the -100% the base game applies.
+                m_Floor = math.clamp(settings.HotelEfficiencyFloor, 0, 100) / 100f,
+                m_Entities = m_Entities,
+                m_PropertyRenters = m_PropertyRenters,
+                m_EfficiencyBuffers = m_EfficiencyBuffers,
+                m_Supported = m_Supported,
+            }.Schedule(JobHandle.CombineDependencies(Dependency, hotelsReady));
+
+            hotels.Dispose(job);
+            m_LastJob = job;
+            Dependency = job;
+        }
+
+        [BurstCompile]
+        private struct FloorJob : IJob
+        {
+            [ReadOnly] public NativeList<Entity> m_Hotels;
+            public float m_Floor;
+            [ReadOnly] public EntityStorageInfoLookup m_Entities;
+            [ReadOnly] public ComponentLookup<PropertyRenter> m_PropertyRenters;
+            public BufferLookup<Efficiency> m_EfficiencyBuffers;
+            public NativeReference<int> m_Supported;
+
+            public void Execute()
+            {
+                int supported = 0;
+
+                for (int i = 0; i < m_Hotels.Length; i++)
                 {
-                    Entity property = m_PropertyRenters[hotels[i]].m_Property;
+                    Entity property = m_PropertyRenters[m_Hotels[i]].m_Property;
 
                     if (property == Entity.Null
-                        || !EntityManager.Exists(property)
+                        || !m_Entities.Exists(property)
                         || !m_EfficiencyBuffers.HasBuffer(property))
                     {
                         continue;
@@ -118,23 +155,19 @@ namespace TourismOverhaul.Systems
                             continue;
                         }
 
-                        if (efficiencies[e].m_Efficiency < floor)
+                        if (efficiencies[e].m_Efficiency < m_Floor)
                         {
                             BuildingUtils.SetEfficiencyFactor(
-                                efficiencies, EfficiencyFactor.LackResources, floor);
+                                efficiencies, EfficiencyFactor.LackResources, m_Floor);
                             supported++;
                         }
 
                         break;
                     }
                 }
-            }
-            finally
-            {
-                hotels.Dispose();
-            }
 
-            HotelsSupported = supported;
+                m_Supported.Value = supported;
+            }
         }
     }
 }

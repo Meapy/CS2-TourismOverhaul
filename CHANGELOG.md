@@ -5,7 +5,179 @@ All notable changes to CS2 Tourism Overhaul.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [semantic](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.9.1] — 2026-09-23
+
+### Fixed
+
+- **Cruise passengers who sailed home now actually leave.** `LandHomewardPassengers` only removed the
+  `CruisePassenger` tag when the ship reached its outside connection, on the assumption that last call
+  had already sent them away. It no longer does: last call is a Leisure trip to the connection, so
+  nothing ended the visit and the party sat in the connection as ordinary tourists, trying to reach an
+  attraction or leisure spot from the map edge every few seconds and failing at the cost limit each
+  time. CS2 Performance measured ~110 such citizens failing 55 times each in three minutes, 9.6% of all
+  route search work in a 665k city. They now get `MovingAway` to the connection they are in, the same
+  as a party written off at the deadline. Parties already stuck in an existing save lost their tag
+  before this fix, so it does not reach them. The new `StrandedVisitorSystem` does: every 4096
+  frames it looks for tourist parties with a hotel (not a `LodgingSeeker`), not moving away and not
+  cruise-tagged, whose citizens are all inside one outside connection, and sends home any still there
+  after 1.5 in-game hours. Queued cruise arrivals are `LodgingSeeker`s until they get a hotel and then
+  leave for it, so they never match.
+
+- **The cruise pier's prices now actually reach the pathfinder, and each closed call reports who
+  was aboard.** `WaitingPassengersSystem` (`:177-192`) rebuilds a stop's average wait every 256
+  frames from its history — `max(ongoing ÷ count, concluded ÷ successes)` — and tags the waypoint
+  `PathfindUpdated` only when that rebuild changes it; the pathfinder reads a stop's cost only after
+  such a tag. The mod wrote the figure alone and cleared the history, so whatever the game rebuilt
+  was the only value that ever reached the graph. It now writes a history that reproduces the
+  figure (concluded = figure, one success) and tags the waypoint whenever the live value differs.
+
+  Each closed call now logs the manifest, split into cruise passengers, other tourists and
+  residents. That is how the rest of this was found: a call closed with 2,678 of 2,800 aboard —
+  **1,072 of them residents** — and 270 parties left behind.
+
+  Pricing last call to keep residents off was tried and measured, and does not work. Where the
+  harbour is also served by an ordinary ferry to the same sea connection, the shore party has an
+  alternative too, and the price sent them to it: 1 of 1,015 parties reboarded. Price cannot tell
+  two groups apart when both have somewhere else to go, and restricting the ship to guests of the
+  harbour is not available either — pathfinding authorizes only a household's `PropertyRenter`
+  home (`TripNeededSystem:1100`, `ResidentAISystem:3096`), and a tourist's accommodation is
+  `TouristHousehold.m_Hotel`, which is never an authorization. Last call stays free. Room for
+  outsiders comes from the complement size: a **Cruise ship capacity** below the vessel's own
+  leaves seats for them, where one that fills the vessel means every resident who boards displaces
+  a returning passenger. Parties that miss the ship are not stranded — they leave the city through
+  the same connection by the ferry.
+
+- **Ordinary visitors no longer queue for the cruise ship.** Rebuilding a cruise line sent every
+  sea arrival onto it — a backlog of 9,000 visitors waiting for a vessel that calls rarely and sits
+  at the quay for hours. `ClearOutsideConnectionWait` holds the line's map-edge stop at zero
+  advertised wait so the cruise complement created there routes onto the ship; but ordinary
+  arrivals spawn at that same outside connection, and to them a free ride is the cheapest way to
+  their hotel. With ship arrivals at 40% that was a large share of all visitors. The arrival
+  spawner and arrival routing now skip any connection the cruise line calls at
+  (`CruiseVoyageSystem.ServesCruiseLine`), so ordinary visitors use the city's other connections;
+  a city whose only sea connection is the cruise line's gets its ship share spread over the other
+  modes.
+
+- **Hotels are no longer built without end, and tourists no longer run away to the maximum.** The
+  game's hotel test multiplies tourist *citizens* by a requirement (`TourismSystem:78`) and compares
+  it with *rooms* (`:90`), and a room holds a whole household; the vanilla 0.5
+  (`DemandPrefab:91`) is one room per two-person party. The mod's "rooms per tourist" setting was
+  meant per party — its description says above 1.0 leaves spare capacity — but was applied per
+  citizen, demanding about two rooms per party. Measured: 22,000 of 52,000 rooms empty while every
+  snapshot read `hotels will spawn: YES`. Endless hotels meant a permanent opening bonus, which adds
+  each new hotel's rooms to the tourist target for a week, so tourists climbed until
+  `MaximumTourists` caught them at 100,000. The requirement is now divided by the measured party
+  size.
+
+- **Tourists no longer walk into a park the park limit has closed.** In a session at the tourist
+  target (~99,000) the busiest park climbed to 721 visitors while *closed*, with 30 parks shut and
+  failed leisure searches nearly tripling — the worst of both. Two leaks.
+
+  **Tourists reach parks through a path the limit did not cover.** `SelectLeisureType:524-527`
+  sends a tourist to `Attractions` 30% of the time before any other roll; that goes through meetings
+  to `VisitAttractions` and `SetupAttractionJob`, whose candidates are every building with an
+  `AttractivenessProvider` (`CitizenPathfindSetup:853`), parks included, scored at
+  `-100 × attractiveness × random` (`:369`). It never looks at `LeisureProvider`, so closing a park
+  did nothing to it.
+
+  The only brake on that path, `AttractionCrowdingSystem`, never worked. It counted crowds by the
+  tourist *household's* `Target` — the hotel — so it barely saw anyone at a park; and the game
+  recomputes `m_Attractiveness` every 256 frames (`AttractionSystem:85-122`, interval 16 over 16
+  update groups), so a damped value written every 1,024 frames was overwritten within 256. That is
+  why "How busy a place gets before it puts people off" never visibly did anything.
+
+  It is rebuilt. Factors come from the visitors `ParkVisitorSpreadSystem` actually counts on site,
+  and a closed park drops to the 10% floor so the attraction path passes it over too. A Burst job
+  ordered after `AttractionSystem` applies them to exactly the chunks the game has just rewritten
+  (change filter), and damps a value only if it differs from the one it last wrote, so it can never
+  damp twice. The game supplies a fresh base every 256 frames, so there is no base to capture and
+  nothing to restore.
+
+  **Every save reopened every closed park for up to 512 frames.** The reopen is what keeps saves
+  clean, but the game has no post-save hook and the limit only re-closed on its next pass — so each
+  autosave opened every full park to every leisure search in that window, about 7,000 trips per
+  census. The park system now wakes every 16 frames and re-closes immediately after a save, while
+  still doing its full work every 512.
+
+  Crowded attractions now read as less attractive in the city's total too, so a city whose
+  attractions are packed draws slightly fewer new tourists. That was always the design; it simply
+  never took effect before.
+
+- **A cruise ship no longer sails while its own passengers are still walking back.** The hold on a
+  docked vessel is `PublicTransport.m_DepartureFrame`, and `StopBoarding`
+  (`TransportWatercraftAISystem:797-807`) reads it only while the stop's `BoardingVehicle` still
+  names that vessel. `BoardingVehicleSystem` blanks that field on every stop in the city after a
+  load, and whenever any waypoint is `Updated`, if it cannot match the vessel's `Target` back to the
+  stop — and with the field blank `:850` clears `Boarding` whatever the hold says. Measured: a ship
+  left its quay 62,613 frames into a call, leaving 1,100 ashore queuing for a vessel that had gone.
+  A ship that is still boarding, still targeting a waypoint connected to its call's terminal, is
+  alongside whatever that field says, so the claim is put back rather than the ship reported gone.
+  The state of every held ship is now logged on the first update after a load, since that is where
+  this was caught.
+
+- **The ship now waits for stragglers.** When shore leave ends with passengers still ashore, the
+  call is extended in steps rather than closed. The hold, the passengers' deadline and the sailing
+  time shown on the vessel panel all read the same frame, so all three move together. Capped at half
+  the shore leave, because a party that can never reach the quay would otherwise keep the ship in
+  port for ever; anyone still out after that is written off as before. Logged once per call.
+
+- **The quay is open for boarding from the moment the first party is called back.** Each party's
+  last call is measured from its own deadline, which is set up to a boarding grace plus an
+  early-return spread ahead of the ship's, so a window measured from the ship's departure opened
+  hours after the first passengers were already walking. This never showed while the pier's price
+  was not reaching the pathfinder; once it did, early returners found the quay priced out of reach,
+  walked to it and stood there — 0 of 1,033 parties aboard while the count of people waiting at the
+  pier climbed. The window is now the union of the parties' own.
+
+- **Returning passengers are no longer sent back to the start of their journey every few minutes.**
+  The recall is re-asserted periodically, and it used to clear the path of everyone it touched,
+  including parties already walking back or waiting at the pier. Any walk or route search that took
+  longer than the refresh was wiped and restarted, so only the few that finished inside one window
+  ever reached the ship: 678 of 1,070 parties were still ashore an hour before sailing. A party
+  already on its way is now left to finish.
+
+- **Passengers held indoors by an activity are recalled properly.** `TripNeededSystem` excludes any
+  citizen carrying a `TravelPurpose` from its query outright, so a tourist sitting in a museum with
+  the journey home already queued goes nowhere until that purpose is taken off — which is what the
+  recall does. Leaving alone everyone who had a trip queued, as the fix above first did, included
+  exactly these: about 280 parties per call sat indoors holding a trip that could never run, and the
+  log showed it — a queue that never moved, with none of them waiting on the pathfinder. "Already on
+  the way" now means walking to the ship, or idle with the trip ready to run; a party held by an
+  activity is recalled again.
+
+- **A party that reaches the sea another way counts as gone, not as ashore.** Boarding the cruise
+  ship is priced from the line's long vehicle interval — the same figure that holds the line to one
+  vessel — so where an ordinary ferry serves the same sea connection, it is far cheaper and some
+  parties take it. Their trip is to that connection, so it completes; they never board, and they
+  used to keep their tag, stay in the ashore count, be recalled to where they already stood, and
+  hold the ship's extended wait for nobody. They now leave the city properly and drop out of the
+  count. To have every passenger return to the ship itself, the cruise line needs a sea connection
+  no other line serves.
+
+- **The shore-leave log says where the parties actually are.** Each line now splits those still
+  ashore into walking, queued and idle; the walkers into bound for the ship, riding another vehicle
+  and elsewhere; and the queued into waiting on the pathfinder, busy indoors and nowhere. It is
+  written on a slow cadence as well as on recalls and boardings, so a return that is merely slow is
+  visible. Every one of the fixes above was found in these figures.
+
+- **The log says which build is running.** `OnLoad` now records the mod assembly's build time.
+  Copying a new build into the Mods folder while the game is running does nothing until the next
+  start, and several rounds of measurement were spent on builds that were never loaded.
+
+### Performance
+
+- **`TouristSpendingLedgerSystem` and `HotelEfficiencyFloorSystem` run as Burst jobs.** Timing each wait
+  separately showed each was almost entirely one component: the ledger waited 10-12 ms per update for
+  `Resources` (tourist wallets, written by the economy jobs) against 1-1.6 ms of work, and the floor
+  waited 6-10 ms for `Efficiency`, which it writes and so must wait for every reader too. Both passes
+  now run in jobs scheduled after those writers, reading and writing exactly what they did before. The
+  ledger publishes each sample's totals to the main thread on its next update, 128 frames later, so a
+  save made in between leaves out that one sample.
+
+- **`HotelRoomReclaimSystem` runs as a Burst job.** It checks every guest in every hotel (~51k) and every
+  tourist household (~57k): 27.7 ms per update on the main thread, felt as a hitch every 2048 frames.
+  The same two passes, in the same order with the same caps, now run in a job scheduled after the jobs
+  writing what it reads, so the main thread does no work and no waiting for it.
 
 ## [1.9.0] — 2026-09-21
 
@@ -82,7 +254,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
   cause obvious.
 
   The timing report stays in, logged every 256 updates, so the next regression is one log line away
-  instead of a guess.
+  instead of a guess. Measured on a 665k-citizen save with 8 vessels: serve ships 1.1-1.7 ms per update.
+
+  An `EntityManager` read waits for the jobs writing that component; a lookup read on the main thread
+  does not. So each converted system waits (`EntityManager.CompleteDependencyBeforeRO/RW<T>`) for
+  exactly the types whose data it reads, which is the wait the old calls did. `CompleteDependency()`
+  was tried first and waited for every registered type, presence-only ones included: 5-16 ms per update.
+  In `CruiseVoyageSystem`, timing each type showed the wait was almost entirely `Target` (about 3 ms per
+  refresh, since every creature and vehicle job writes it), whose data is read through the lookup in one
+  place, `KeepOffTheHotels`. That wait is now taken there, on sweep updates with a party that has a
+  `Target`, instead of on both refreshes of every update. Measured afterwards, the total did not fall
+  (5.7-8 ms per update): the same creature jobs write `Resident`, `CurrentTransport` and
+  `CurrentVehicle` too, so the wait moved to the next of those types. It is a wait for the frame's
+  creature jobs as a whole, and only running this work in a job, or later in the frame, would avoid it.
 
 ## [1.8.3] — 2026-09-14
 

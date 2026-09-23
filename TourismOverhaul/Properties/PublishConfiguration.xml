@@ -244,7 +244,7 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
   <Tag Value="Code Mod" />
 
   <ForumLink Value="https://forum.paradoxplaza.com/forum/threads/mod-tourism-overhaul-fix-tourism.1937099/" />
-  <ModVersion Value="1.9.0" />
+  <ModVersion Value="1.9.1" />
   <GameVersion Value="1.6.*" />
 
   <!--
@@ -252,12 +252,16 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
     accumulating history here republishes every past release with every upload. The full record
     belongs in CHANGELOG.md.
   -->
-  <ChangeLog>1.9.0
-Parks no longer turn into one solid crowd. In the base game a park never turns anyone away: every resident and tourist heading for a park picks the nearest one, however packed it is, so a popular park fills with a wall of cims while others sit empty. A full park is now passed over and visitors head for the next one instead. Nobody is moved out or hidden; the crowd thins as they finish and go home, and the park reopens. Visitors inside also spread off an over-full patch of lawn.
+  <ChangeLog>1.9.1
+Cruise passengers now come back to the ship. A call could end with most of the shore party still in the city: the ship left the quay early, the quay was closed to boarding while they were already walking back, the recall restarted their journey every few minutes, and anyone sitting indoors was never called at all. All four are fixed, and the ship now waits past its departure for passengers still ashore, up to half the shore leave again. Passengers who leave the city by another line are no longer counted as waiting for a ship they cannot board — give the cruise line a sea connection no other line serves and everyone returns to the ship.
 
-New settings: "Park visitor limit (per lot cell)" sets how full a park gets, and "How busy a place gets before it puts people off" is now visible.
+Tourists no longer run away to the maximum, and hotels stop being built without end. The "hotel rooms per tourist" setting was applied per person rather than per party, so the city asked for about twice the rooms it needed and every new hotel raised the tourist target again.
 
-Performance: cruise ship handling was walking every bus, tram and train in the city on every update. It now looks only at ships, which removes most of its cost in large cities.
+Tourists no longer walk into a park that is already full. The park limit covered leisure trips but not the attraction route tourists take 30% of the time; crowded attractions now lose their appeal properly, and a full park is passed over on both paths. Saving no longer reopens every closed park for several seconds.
+
+Ordinary visitors no longer queue at the cruise line's sea connection for a ship that calls rarely. Cruise passengers who sailed home no longer linger at the map edge searching for somewhere to go, which was a large share of all route searches in a big city.
+
+Performance: hotel room reclaim, the spending ledger and the hotel efficiency floor now run as background jobs instead of on the simulation thread.
   </ChangeLog>
 
   <ExternalLink Type="github" Url="https://github.com/Meapy/CS2-TourismOverhaul" />

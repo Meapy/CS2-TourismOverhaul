@@ -103,6 +103,15 @@ namespace TourismOverhaul.Systems
         private const uint kRecallRefreshFrames = 2048u;
 
         /// <summary>
+        /// Longest a ship waits past its shore leave for passengers still ashore, as a fraction of
+        /// the shore leave. Beyond it the stragglers are written off as before.
+        /// </summary>
+        private const float kMaxOverstayFraction = 0.5f;
+
+        /// <summary>How far each wait for stragglers pushes the sailing, in frames.</summary>
+        private const uint kOverstayStepFrames = 1024u;
+
+        /// <summary>
         /// Frames between shore-party sweeps. Four times the vessel's own cadence.
         ///
         /// The vessel needs sixteen because a hold has to be written inside the sixty-frame window
@@ -221,6 +230,9 @@ namespace TourismOverhaul.Systems
         /// is written once rather than every sixteen frames for a whole call.
         /// </summary>
         private Entity m_UnresolvedShip;
+
+        /// <summary>Set by a load; <see cref="ReportHoldsAfterLoad"/> clears it.</summary>
+        private bool m_ReportHoldsAfterLoad;
 
         /// <summary>Earliest frame the next queue batch may be ordered. Not saved; a reload simply
         /// allows one batch immediately, which is harmless.</summary>
@@ -376,6 +388,11 @@ namespace TourismOverhaul.Systems
         // kTimingReportUpdates updates so a profiler capture can be read against it.
         private long m_TicksSnapshot;
         private long m_TicksServeShips;
+        private long m_TicksWait;
+        private long m_TicksAppeal;
+        private long m_TicksQueue;
+        private long m_TicksHold;
+        private long m_TicksLoading;
         private long m_TicksReturnParties;
         private long m_TicksSweepParties;
         private long m_TicksSweepTerminals;
@@ -414,9 +431,12 @@ namespace TourismOverhaul.Systems
         private ComponentLookup<PrefabRef> m_PrefabRefs;
         private BufferLookup<TripNeeded> m_TripNeededBuffers;
 
+
         /// <summary>Refreshes the cached lookups. Called once per update, before any sweep reads them.</summary>
         private void RefreshLookups()
         {
+            long waitStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+
             m_HouseholdNeeds.Update(this);
             m_ExpectsPurchases.Update(this);
             m_PathInformations.Update(this);
@@ -437,6 +457,31 @@ namespace TourismOverhaul.Systems
             m_CurrentRoutes.Update(this);
             m_PrefabRefs.Update(this);
             m_TripNeededBuffers.Update(this);
+
+            // A lookup read on the main thread does not wait for the jobs writing it, which
+            // EntityManager.GetComponentData/GetBuffer did. So wait here for exactly the types whose
+            // data is read. Types only tested for presence need no wait (EntityManager.HasComponent
+            // never waited either), and CompleteDependency() waited for all of them: measured at
+            // 5-16 ms per update.
+            EntityManager.CompleteDependencyBeforeRO<TouristHousehold>();
+            EntityManager.CompleteDependencyBeforeRO<CurrentTransport>();
+            EntityManager.CompleteDependencyBeforeRO<Game.Creatures.CurrentVehicle>();
+            EntityManager.CompleteDependencyBeforeRO<Game.Creatures.Resident>();
+            EntityManager.CompleteDependencyBeforeRO<HouseholdMember>();
+            EntityManager.CompleteDependencyBeforeRO<HouseholdCitizen>();
+            EntityManager.CompleteDependencyBeforeRO<Passenger>();
+            EntityManager.CompleteDependencyBeforeRO<CurrentRoute>();
+            EntityManager.CompleteDependencyBeforeRO<PrefabRef>();
+            EntityManager.CompleteDependencyBeforeRO<TripNeeded>();
+            EntityManager.CompleteDependencyBeforeRW<Components.CruisePassenger>();
+            m_TicksWait += System.Diagnostics.Stopwatch.GetTimestamp() - waitStarted;
+        }
+
+        protected override void OnGameLoadingComplete(
+            Colossal.Serialization.Entities.Purpose purpose, GameMode mode)
+        {
+            base.OnGameLoadingComplete(purpose, mode);
+            m_ReportHoldsAfterLoad = mode == GameMode.Game;
         }
 
         protected override void OnUpdate()
@@ -453,6 +498,7 @@ namespace TourismOverhaul.Systems
 
             if (m_CruiseLineSystem == null || !m_CruiseLineSystem.LineCreated)
             {
+                m_CruiseConnections.Clear();
                 return;
             }
 
@@ -460,6 +506,7 @@ namespace TourismOverhaul.Systems
 
             if (cruiseLinePrefab == Entity.Null)
             {
+                m_CruiseConnections.Clear();
                 return;
             }
 
@@ -467,6 +514,8 @@ namespace TourismOverhaul.Systems
             // invalidates the lookups taken above.
             EnforceOneCruiseLine(cruiseLinePrefab);
             RefreshLookups();
+            RefreshCruiseConnections(cruiseLinePrefab);
+            ReportHoldsAfterLoad();
 
             started = System.Diagnostics.Stopwatch.GetTimestamp();
             m_LastVehiclesWalked = m_CruiseVehicleQuery.CalculateEntityCount();
@@ -526,7 +575,10 @@ namespace TourismOverhaul.Systems
                 $"CruiseVoyage timing over {m_TimedUpdates} updates ({m_TimedSweeps} with sweeps), "
                 + $"{m_LastPartiesAshore} parties ashore, {m_LastVehiclesWalked} vessels walked: "
                 + $"snapshot {ToMs(m_TicksSnapshot):0.000} ms, "
-                + $"serve ships {ToMs(m_TicksServeShips):0.000} ms, "
+                + $"serve ships {ToMs(m_TicksServeShips):0.000} ms "
+                + $"(appeal {ToMs(m_TicksAppeal):0.000}, queue {ToMs(m_TicksQueue):0.000}, "
+                + $"hold {ToMs(m_TicksHold):0.000}, loading {ToMs(m_TicksLoading):0.000}), "
+                + $"waiting for jobs {ToMs(m_TicksWait):0.000} ms, "
                 + $"return parties {ToMs(m_TicksReturnParties):0.000} ms, "
                 + $"sweep parties {ToMs(m_TicksSweepParties):0.000} ms, "
                 + $"sweep terminals {ToMs(m_TicksSweepTerminals):0.000} ms "
@@ -534,6 +586,11 @@ namespace TourismOverhaul.Systems
 
             m_TicksSnapshot = 0;
             m_TicksServeShips = 0;
+            m_TicksWait = 0;
+            m_TicksAppeal = 0;
+            m_TicksQueue = 0;
+            m_TicksHold = 0;
+            m_TicksLoading = 0;
             m_TicksReturnParties = 0;
             m_TicksSweepParties = 0;
             m_TicksSweepTerminals = 0;
@@ -560,6 +617,77 @@ namespace TourismOverhaul.Systems
         /// may be mid-call with a complement ashore; deleting that to keep a line drawn five seconds
         /// ago would throw away a working voyage.
         /// </summary>
+        /// <summary>
+        /// Outside connections the cruise line calls at. Ordinary arrivals must not be spawned at
+        /// these — see <see cref="ServesCruiseLine"/>.
+        /// </summary>
+        private readonly HashSet<Entity> m_CruiseConnections = new HashSet<Entity>();
+
+        /// <summary>
+        /// Whether a map-edge connection is one the cruise line calls at.
+        ///
+        /// ClearOutsideConnectionWait holds that stop's advertised wait at zero so the cruise
+        /// complement created there routes onto the ship. Any ordinary visitor spawned at the same
+        /// connection sees the same free ride and queues for it too: with ship arrivals at 40%, a
+        /// rebuilt line gathered a backlog of 9,000 visitors waiting for a vessel that calls rarely
+        /// and sits at the quay for hours. The arrival spawner and routing therefore skip these,
+        /// leaving the connection to the cruise line alone. Main thread only.
+        /// </summary>
+        internal bool ServesCruiseLine(Entity connection) => m_CruiseConnections.Contains(connection);
+
+        /// <summary>Re-derives the cruise line's map-edge connections from its route waypoints.</summary>
+        private void RefreshCruiseConnections(Entity cruiseLinePrefab)
+        {
+            m_CruiseConnections.Clear();
+
+            if (m_CruiseRouteQuery.IsEmptyIgnoreFilter)
+            {
+                return;
+            }
+
+            NativeArray<Entity> routes = m_CruiseRouteQuery.ToEntityArray(Allocator.Temp);
+
+            for (int r = 0; r < routes.Length; r++)
+            {
+                Entity route = routes[r];
+
+                if (!EntityManager.HasComponent<PrefabRef>(route)
+                    || EntityManager.GetComponentData<PrefabRef>(route).m_Prefab != cruiseLinePrefab
+                    || !EntityManager.HasBuffer<RouteWaypoint>(route))
+                {
+                    continue;
+                }
+
+                DynamicBuffer<RouteWaypoint> waypoints =
+                    EntityManager.GetBuffer<RouteWaypoint>(route, isReadOnly: true);
+
+                for (int i = 0; i < waypoints.Length; i++)
+                {
+                    Entity waypoint = waypoints[i].m_Waypoint;
+
+                    if (waypoint == Entity.Null || !EntityManager.Exists(waypoint)
+                        || !EntityManager.HasComponent<Connected>(waypoint))
+                    {
+                        continue;
+                    }
+
+                    Entity stop = EntityManager.GetComponentData<Connected>(waypoint).m_Connected;
+
+                    if (StopIsOutsideConnection(stop))
+                    {
+                        Entity connection = OutsideConnectionOf(stop);
+
+                        if (connection != Entity.Null)
+                        {
+                            m_CruiseConnections.Add(connection);
+                        }
+                    }
+                }
+            }
+
+            routes.Dispose();
+        }
+
         private void EnforceOneCruiseLine(Entity cruiseLinePrefab)
         {
             if (m_CruiseRouteQuery.IsEmptyIgnoreFilter)
@@ -1050,8 +1178,12 @@ namespace TourismOverhaul.Systems
                     // Both run wherever the vessel is, because both are about the stop rather than
                     // the ship: the queue has to be built while it is away, and the stop has to
                     // stay worth pathing to for that to happen.
+                    long phase = System.Diagnostics.Stopwatch.GetTimestamp();
                     MaintainOutsideConnectionAppeal(vehicle);
+                    long afterAppeal = System.Diagnostics.Stopwatch.GetTimestamp();
+                    m_TicksAppeal += afterAppeal - phase;
                     MaintainCruiseQueue(vehicle, frame, commandBuffer, created);
+                    m_TicksQueue += System.Diagnostics.Stopwatch.GetTimestamp() - afterAppeal;
 
                     // Where the ship is has to be established before deciding anything, including
                     // whether to hold it. Holding is only ever valid at the port the call belongs
@@ -1074,10 +1206,12 @@ namespace TourismOverhaul.Systems
                         bool atOwnTerminal =
                             alongside && !isOutsideConnection && stop == call.m_Terminal;
 
+                        long holdStarted = System.Diagnostics.Stopwatch.GetTimestamp();
                         HoldShipUntilReboard(
                             vehicle, ref transport, frame, atOwnTerminal,
                             alongside && isOutsideConnection, alongside, stop,
                             commandBuffer);
+                        m_TicksHold += System.Diagnostics.Stopwatch.GetTimestamp() - holdStarted;
                         continue;
                     }
 
@@ -1104,9 +1238,11 @@ namespace TourismOverhaul.Systems
 
                         if (!spent || (alongside && isOutsideConnection))
                         {
+                            long loadStarted = System.Diagnostics.Stopwatch.GetTimestamp();
                             ContinueLoading(
                                 vehicle, stop, ref transport, frame,
                                 alongside && isOutsideConnection, commandBuffer, created);
+                            m_TicksLoading += System.Diagnostics.Stopwatch.GetTimestamp() - loadStarted;
                             continue;
                         }
                     }
@@ -1141,8 +1277,10 @@ namespace TourismOverhaul.Systems
 
                     if (isOutsideConnection)
                     {
+                        long beginStarted = System.Diagnostics.Stopwatch.GetTimestamp();
                         BeginLoading(
                             vehicle, stop, ref transport, frame, commandBuffer, created);
+                        m_TicksLoading += System.Diagnostics.Stopwatch.GetTimestamp() - beginStarted;
                         continue;
                     }
 
@@ -1863,41 +2001,52 @@ namespace TourismOverhaul.Systems
                 // of travel and costs the player nothing.
                 bool boarding = !atMapEdge && ReturningToQuay(vehicle);
 
+                // Last call is free, and has to be. Pricing it was tried and measured: a city whose
+                // harbour also has an ordinary ferry to the same sea connection gives the shore
+                // party an alternative too, so the price sent them to the ferry — 1 of 1,015
+                // parties reboarded, while residents with no better route still boarded. Price
+                // cannot tell the two groups apart when both have somewhere else to go. Seats for
+                // outsiders are made by the complement size instead (CruiseShipCapacity below the
+                // vessel's own), not by the pier.
                 ushort wanted = (atMapEdge || boarding) ? (ushort)0 : kPierWaitingTime;
 
                 WaitingPassengers queue = EntityManager.GetComponentData<WaitingPassengers>(waypoint);
 
-                bool fresh = wanted == 0;
+                // Write the history that produces the figure, not just the figure, and tell the
+                // pathfinder.
+                //
+                // WaitingPassengersSystem:177-192 rebuilds the average every 256 frames as
+                //     max(ceil(ongoing / count), ceil(concluded / successes))
+                // and only tags the waypoint PathfindUpdated when that rebuild changes the value.
+                // The pathfinder reads the stop's cost only after such a tag. So a figure written
+                // on its own — as this used to do — never reached pathfinding at all, and clearing
+                // the history made every rebuild come out at zero and be the one that did: the
+                // pier read as free for the whole of last call, and 1,072 residents boarded.
+                //
+                // Setting concluded = wanted with a single success makes the game's own rebuild
+                // reproduce the figure, and tagging PathfindUpdated whenever the live value differs
+                // puts it into the graph. Ongoing is cleared so real waits cannot lift it past it.
+                int successes = wanted > 0 ? 1 : 0;
 
-                // Reset the history, not just the figure it produces.
-                //
-                // m_AverageWaitingTime is derived, not stored in isolation: ResidentAISystem
-                // accumulates into m_ConcludedAccumulation and m_SuccessAccumulation as passengers
-                // wait and board (:3795-3797, :3980-3993), and the average is recomputed from them.
-                // Writing the average alone is overwritten within seconds by a history that still
-                // remembers a stop nobody could use — which is why a cleared figure kept climbing
-                // back to 2500 and beyond.
-                //
-                // Clearing the accumulators as well makes the stop genuinely new: no remembered
-                // waits, no remembered failures, an average of zero that stays zero until real
-                // passengers give it a real one.
+                bool drifted = queue.m_AverageWaitingTime != wanted;
                 bool stale = queue.m_OngoingAccumulation != 0
-                             || queue.m_ConcludedAccumulation != 0
-                             || queue.m_SuccessAccumulation != 0;
+                             || queue.m_ConcludedAccumulation != wanted
+                             || queue.m_SuccessAccumulation != successes;
 
-                if (queue.m_AverageWaitingTime != wanted || (fresh && stale))
+                if (drifted || stale)
                 {
                     queue.m_AverageWaitingTime = wanted;
-
-                    if (fresh)
-                    {
-                        // All three, because any one of them rebuilds the average on its own.
-                        queue.m_OngoingAccumulation = 0;
-                        queue.m_ConcludedAccumulation = 0;
-                        queue.m_SuccessAccumulation = 0;
-                    }
+                    queue.m_OngoingAccumulation = 0;
+                    queue.m_ConcludedAccumulation = wanted;
+                    queue.m_SuccessAccumulation = (ushort)successes;
 
                     EntityManager.SetComponentData(waypoint, queue);
+
+                    if (drifted)
+                    {
+                        m_EndFrameBarrier.CreateCommandBuffer()
+                            .AddComponent<PathfindUpdated>(waypoint);
+                    }
                 }
 
                 SetBoardable(stop, atMapEdge || boarding);
@@ -1986,10 +2135,13 @@ namespace TourismOverhaul.Systems
         /// <summary>
         /// Whether this vessel's shore party is on its way back, so the pier should accept boarders.
         ///
-        /// True inside the last-call window of an open call — the same window
-        /// <see cref="ReturnFinishedParties"/> uses to send parties to the quay — so the stop opens
-        /// exactly when there is somebody walking towards it and closes again as soon as the call
-        /// ends.
+        /// True from the moment the earliest party of the call can be recalled. Each party's last
+        /// call is measured from its own deadline, which AdoptCarriedPassengers sets up to a
+        /// boarding grace plus an early-return spread ahead of the ship's — so measuring the pier's
+        /// window from the ship's reboard frame opened it long after the first parties were
+        /// walking back. That did not show while the pier's price never reached the pathfinder;
+        /// once it did, every early returner found the quay priced out and nobody boarded. The
+        /// window is now the union of the parties' own.
         /// </summary>
         private bool ReturningToQuay(Entity vehicle)
         {
@@ -2001,9 +2153,16 @@ namespace TourismOverhaul.Systems
             Components.CruiseCall call =
                 EntityManager.GetComponentData<Components.CruiseCall>(vehicle);
 
-            uint lastCall = (uint)math.max(1f, ShoreLeaveFrames() * kLastCallFraction);
+            uint shoreLeave = ShoreLeaveFrames();
+            long lastCall = (long)math.max(1f, shoreLeave * kLastCallFraction);
+            long grace = (long)math.max(1f, shoreLeave * kBoardingGraceFraction);
 
-            return m_SimulationSystem.frameIndex + lastCall >= call.m_ReboardFrame;
+            // The same arithmetic StartCall and AdoptCarriedPassengers used, from the call's start.
+            long ashoreUntil = (long)call.m_ReboardFrame - grace;
+            long spread = (long)math.max(
+                1f, (ashoreUntil - call.m_DisembarkedFrame) * kEarlyReturnFraction);
+
+            return m_SimulationSystem.frameIndex + lastCall >= ashoreUntil - spread;
         }
 
         /// <summary>Whether a stop, or anything that owns it, is an outside connection.</summary>
@@ -2078,6 +2237,46 @@ namespace TourismOverhaul.Systems
             }
 
             return aboard;
+        }
+
+        /// <summary>
+        /// Who is aboard, by kind — the figure that says whether the pier kept its seats for the
+        /// complement. Walked once per call, when it closes.
+        /// </summary>
+        private string ManifestBreakdown(Entity vehicle)
+        {
+            if (!m_PassengerBuffers.HasBuffer(vehicle))
+            {
+                return "manifest unavailable";
+            }
+
+            DynamicBuffer<Passenger> manifest = m_PassengerBuffers[vehicle];
+            int cruise = 0, tourists = 0, residents = 0, other = 0;
+
+            for (int i = 0; i < manifest.Length; i++)
+            {
+                Entity household = HouseholdOf(manifest[i].m_Passenger);
+
+                if (household == Entity.Null)
+                {
+                    other++;
+                }
+                else if (m_CruisePassengers.HasComponent(household))
+                {
+                    cruise++;
+                }
+                else if (m_TouristHouseholds.HasComponent(household))
+                {
+                    tourists++;
+                }
+                else
+                {
+                    residents++;
+                }
+            }
+
+            return $"aboard {manifest.Length}: {cruise} cruise passengers, {tourists} other tourists, "
+                + $"{residents} residents, {other} unidentified";
         }
 
         /// <summary>Lets a held vessel go now, by bringing its departure back to this frame.</summary>
@@ -2829,6 +3028,29 @@ namespace TourismOverhaul.Systems
             Components.CruiseCall call =
                 EntityManager.GetComponentData<Components.CruiseCall>(vehicle);
 
+            // Nobody is sailed away from. While any of the shore party is still ashore the call is
+            // extended a step at a time, which moves the hold and the write-off together — both
+            // read m_ReboardFrame. Bounded, so a party that can never make it (no path to the quay)
+            // cannot keep the ship in port for ever.
+            if (frame >= call.m_ReboardFrame
+                && call.m_Escaped == 0
+                && m_AshoreByShip.TryGetValue(vehicle, out AshoreCount ashore)
+                && ashore.m_People > 0
+                && frame < call.m_DisembarkedFrame
+                    + (uint)(ShoreLeaveFrames() * (1f + kMaxOverstayFraction)))
+            {
+                if (call.m_Overstayed == 0)
+                {
+                    Mod.Log.Info(
+                        $"Cruise ship {vehicle.Index} is waiting at terminal {call.m_Terminal.Index} "
+                        + $"for {ashore.m_People} passengers still ashore.");
+                }
+
+                call.m_ReboardFrame = frame + kOverstayStepFrames;
+                call.m_Overstayed = 1;
+                EntityManager.SetComponentData(vehicle, call);
+            }
+
             if (frame >= call.m_ReboardFrame)
             {
                 // Shore leave is over. Anyone still ashore is collected by ReturnFinishedParties on
@@ -2838,7 +3060,7 @@ namespace TourismOverhaul.Systems
 
                 Mod.Log.Info(
                     $"Cruise call closed at terminal {call.m_Terminal.Index}; "
-                    + $"{call.m_PartyCount} parties reboarded.");
+                    + $"{call.m_PartyCount} parties reboarded; {ManifestBreakdown(vehicle)}.");
 
                 return;
             }
@@ -2863,7 +3085,7 @@ namespace TourismOverhaul.Systems
                 EntityManager.SetComponentData(vehicle, transport);
             }
 
-            if (atOwnTerminal)
+            if (atOwnTerminal || ReclaimQuay(vehicle, transport, call.m_Terminal))
             {
                 return;
             }
@@ -2872,6 +3094,143 @@ namespace TourismOverhaul.Systems
             // has sailed, or it is still there and the game has stopped recognising it as boarding —
             // and those need different fixes, so they are told apart rather than guessed at.
             ReportEscape(vehicle, ref call, frame, alongside, stop, transport);
+        }
+
+        /// <summary>
+        /// Puts the ship's name back on its own quay when the game has dropped it mid-call.
+        ///
+        /// StopBoarding (TransportWatercraftAISystem:797-807) honours the held departure frame only
+        /// while the stop's BoardingVehicle names the vessel; with it blank, the next AI tick clears
+        /// Boarding and the ship sails with its shore party still ashore. BoardingVehicleSystem
+        /// blanks it on every stop after a load, and whenever any waypoint in the city is Updated,
+        /// if it cannot match the vessel's Target back to the stop. A vessel still boarding, still
+        /// targeting a waypoint connected to its call's terminal, is alongside whatever that field
+        /// says, so the claim is restored rather than the ship reported as gone.
+        /// </summary>
+        private bool ReclaimQuay(
+            Entity vehicle, Game.Vehicles.PublicTransport transport, Entity terminal)
+        {
+            if ((transport.m_State & PublicTransportFlags.Boarding) == 0
+                || !EntityManager.HasComponent<Target>(vehicle))
+            {
+                return false;
+            }
+
+            Entity waypoint = EntityManager.GetComponentData<Target>(vehicle).m_Target;
+
+            if (waypoint == Entity.Null
+                || !EntityManager.Exists(waypoint)
+                || !EntityManager.HasComponent<Connected>(waypoint))
+            {
+                return false;
+            }
+
+            Entity stop = EntityManager.GetComponentData<Connected>(waypoint).m_Connected;
+
+            if (stop == Entity.Null
+                || !EntityManager.HasComponent<BoardingVehicle>(stop)
+                || BuildingOf(stop) != terminal)
+            {
+                return false;
+            }
+
+            BoardingVehicle claim = EntityManager.GetComponentData<BoardingVehicle>(stop);
+
+            if (claim.m_Vehicle == vehicle)
+            {
+                return true;
+            }
+
+            if (claim.m_Vehicle != Entity.Null && EntityManager.Exists(claim.m_Vehicle))
+            {
+                // Another vessel holds the quay; taking it from a live ship is not ours to do.
+                return false;
+            }
+
+            claim.m_Vehicle = vehicle;
+            EntityManager.SetComponentData(stop, claim);
+
+            Mod.Log.Info(
+                $"Cruise ship {vehicle.Index} had lost its claim on terminal {terminal.Index}; "
+                + "restored it so the hold keeps the ship alongside.");
+
+            return true;
+        }
+
+        /// <summary>The building a stop belongs to — the same owner walk TryResolveCurrentStop makes.</summary>
+        private Entity BuildingOf(Entity stop)
+        {
+            Entity walk = stop;
+
+            for (int hop = 0; hop < 8; hop++)
+            {
+                if (EntityManager.HasComponent<Game.Objects.OutsideConnection>(walk)
+                    || !EntityManager.HasComponent<Owner>(walk))
+                {
+                    break;
+                }
+
+                Entity owner = EntityManager.GetComponentData<Owner>(walk).m_Owner;
+
+                if (owner == Entity.Null || !EntityManager.Exists(owner))
+                {
+                    break;
+                }
+
+                walk = owner;
+            }
+
+            return walk;
+        }
+
+        /// <summary>
+        /// Logs every held ship's hold on the first update after a load. The one measured early
+        /// departure came in the first minute after one; this records the state it left from.
+        /// </summary>
+        private void ReportHoldsAfterLoad()
+        {
+            if (!m_ReportHoldsAfterLoad)
+            {
+                return;
+            }
+
+            m_ReportHoldsAfterLoad = false;
+
+            if (m_ActiveCallQuery.IsEmptyIgnoreFilter)
+            {
+                return;
+            }
+
+            NativeArray<Entity> ships = m_ActiveCallQuery.ToEntityArray(Allocator.Temp);
+
+            for (int i = 0; i < ships.Length; i++)
+            {
+                Entity vehicle = ships[i];
+                Components.CruiseCall call =
+                    EntityManager.GetComponentData<Components.CruiseCall>(vehicle);
+                Game.Vehicles.PublicTransport transport =
+                    EntityManager.GetComponentData<Game.Vehicles.PublicTransport>(vehicle);
+
+                string path = EntityManager.HasComponent<Game.Pathfind.PathOwner>(vehicle)
+                    ? EntityManager.GetComponentData<Game.Pathfind.PathOwner>(vehicle).m_State.ToString()
+                    : "none";
+                string lane = EntityManager.HasComponent<Game.Vehicles.WatercraftCurrentLane>(vehicle)
+                    ? EntityManager.GetComponentData<Game.Vehicles.WatercraftCurrentLane>(vehicle).m_LaneFlags.ToString()
+                    : "none";
+                Entity target = EntityManager.HasComponent<Target>(vehicle)
+                    ? EntityManager.GetComponentData<Target>(vehicle).m_Target
+                    : Entity.Null;
+
+                Mod.Log.Info(
+                    $"After load: cruise ship {vehicle.Index} on call at terminal {call.m_Terminal.Index} "
+                    + $"(reboard {call.m_ReboardFrame}, now {m_SimulationSystem.frameIndex}): "
+                    + $"state {transport.m_State}, departure {transport.m_DepartureFrame}, "
+                    + $"path {path}, lane {lane}, target {target.Index}.");
+
+                LogBoardingHolders(vehicle);
+            }
+
+            ships.Dispose();
         }
 
         /// <summary>
@@ -3020,7 +3379,7 @@ namespace TourismOverhaul.Systems
                 }
 
                 Mod.Log.Warn(
-                    $"  waypoint [{i}] stop {connected.Index}: boarding vehicle {holder.Index}"
+                    $"  waypoint [{i}] {waypoint.Index} stop {connected.Index}: boarding vehicle {holder.Index}"
                     + (holder == vehicle ? " (ours)" : holder == Entity.Null ? " (none)" : "")
                     + $", {waiting}");
             }
@@ -3073,6 +3432,13 @@ namespace TourismOverhaul.Systems
             int walking = 0;
             int queued = 0;
             int idle = 0;
+            int walkingToShip = 0;
+            int walkingElsewhere = 0;
+            int ridingOther = 0;
+            int leftOtherWay = 0;
+            int awaitingPath = 0;
+            int busyIndoors = 0;
+            int nowhereAtAll = 0;
 
             try
             {
@@ -3150,6 +3516,25 @@ namespace TourismOverhaul.Systems
                             continue;
                         }
 
+                        // Already at the sea connection by some other way — an ordinary ferry to
+                        // the same connection is far cheaper to the pathfinder than the cruise
+                        // pier, whose boarding is priced from the one-ship line's long vehicle
+                        // interval. The recall's trip is to that connection, so it is complete and
+                        // the party will never board; recalling it again only sends it to where it
+                        // already stands, and keeping it tagged holds the ship for nobody. It has
+                        // left the city in every sense but the tag, so it leaves properly.
+                        if (passenger.m_Recalled != 0)
+                        {
+                            TryGetOutsideConnection(passenger.m_Ship, out Entity seawardNow, out int _);
+
+                            if (seawardNow != Entity.Null && PartyIsAt(entities[i], seawardNow))
+                            {
+                                ReleaseParty(entities[i], passenger, seawardNow, commandBuffer);
+                                leftOtherWay++;
+                                continue;
+                            }
+                        }
+
                         // Called back, not aboard: say where they actually are.
                         if (passenger.m_Recalled != 0)
                         {
@@ -3159,10 +3544,33 @@ namespace TourismOverhaul.Systems
                             if (hasBody)
                             {
                                 walking++;
+
+                                TryGetOutsideConnection(
+                                    passenger.m_Ship, out Entity seawardFor, out int _);
+
+                                switch (WhereIsParty(entities[i], seawardFor, passenger.m_Ship))
+                                {
+                                    case 1: walkingToShip++; break;
+                                    case 2: ridingOther++; break;
+                                    default: walkingElsewhere++; break;
+                                }
                             }
                             else if (hasTrip)
                             {
                                 queued++;
+
+                                if (PartyAwaitsPath(entities[i]))
+                                {
+                                    awaitingPath++;
+                                }
+                                else if (PartyIsBusyIndoors(entities[i], out bool nowhere))
+                                {
+                                    busyIndoors++;
+                                }
+                                else if (nowhere)
+                                {
+                                    nowhereAtAll++;
+                                }
                             }
                             else
                             {
@@ -3290,7 +3698,12 @@ namespace TourismOverhaul.Systems
                 chunks.Dispose();
             }
 
-            if (recalled > 5 || boarded > 5 || stranded > 0)
+            // Also on a slow cadence while anyone is out, so a return that is merely slow is
+            // visible between the bursts of recalls and boardings.
+            bool periodic = walking + queued + idle > 0
+                            && frame % 8192u < (uint)GetUpdateInterval(SystemUpdatePhase.GameSimulation);
+
+            if (recalled > 5 || boarded > 5 || stranded > 0 || leftOtherWay > 0 || periodic)
             {
                 // Stranded is the number that says the return is not working: a party that was
                 // called back, never got aboard, and was sent out of the city on foot when the
@@ -3300,8 +3713,12 @@ namespace TourismOverhaul.Systems
                 // is bringing them back at all.
                 Mod.Log.Info(
                     $"Cruise shore leave: {recalled} recalled, {boarded} aboard, "
-                    + $"{stranded} left behind; still ashore: {walking} walking, "
-                    + $"{queued} queued, {idle} idle.");
+                    + $"{stranded} left behind, {leftOtherWay} reached the sea by another route; "
+                    + $"still ashore: {walking} walking, "
+                    + $"{queued} queued ({awaitingPath} waiting on the pathfinder, "
+                    + $"{busyIndoors} busy indoors, {nowhereAtAll} nowhere), {idle} idle "
+                    + $"(walking: {walkingToShip} bound for the ship, "
+                    + $"{ridingOther} riding another vehicle, {walkingElsewhere} elsewhere).");
             }
         }
 
@@ -3384,7 +3801,8 @@ namespace TourismOverhaul.Systems
 
                 if (citizen == Entity.Null
                     || !EntityManager.Exists(citizen)
-                    || !m_TripNeededBuffers.HasBuffer(citizen))
+                    || !m_TripNeededBuffers.HasBuffer(citizen)
+                    || HeadedFor(citizen, destination))
                 {
                     continue;
                 }
@@ -3438,6 +3856,63 @@ namespace TourismOverhaul.Systems
         /// Only a citizen with a body has anything to animate. One indoors is skipped, and picks the
         /// flag up on the next pass once the trip has spawned them.
         /// </summary>
+        /// <summary>
+        /// Whether a citizen is already on its way to the recall destination — with the trip
+        /// queued, waiting on the pathfinder, walking, or standing at the quay.
+        ///
+        /// The recall is re-asserted every <see cref="kRecallRefreshFrames"/>, and idle citizens
+        /// are nudged every update. Both used to clear the path of anyone they touched, including
+        /// parties already heading back: a walk or a pathfind request that took longer than the
+        /// refresh was wiped and restarted, and only the few that finished inside one window ever
+        /// reached the ship. Measured as 678 of 1,070 parties still ashore an hour before sailing.
+        /// </summary>
+        private bool HeadedFor(Entity citizen, Entity destination)
+        {
+            // Out in the world: the body's own target is the honest answer, and a body walking
+            // somewhere else has to be turned round however its trips read.
+            if (m_CurrentTransports.HasComponent(citizen))
+            {
+                Entity walker = m_CurrentTransports[citizen].m_CurrentTransport;
+
+                return walker != Entity.Null
+                    && EntityManager.Exists(walker)
+                    && EntityManager.HasComponent<Target>(walker)
+                    && EntityManager.GetComponentData<Target>(walker).m_Target == destination;
+            }
+
+            // Indoors with an activity in progress: the trip cannot start, whatever it says.
+            // TripNeededSystem excludes TravelPurpose from its query outright, so a citizen sitting
+            // in a museum with a queued journey home is not going anywhere until the purpose is
+            // taken off. Protecting those from the recall left 280 parties holding a trip that
+            // could never run — the recall has to reach them.
+            if (EntityManager.HasComponent<TravelPurpose>(citizen)
+                || !EntityManager.HasComponent<CurrentBuilding>(citizen))
+            {
+                return false;
+            }
+
+            if (EntityManager.HasComponent<Target>(citizen)
+                && EntityManager.GetComponentData<Target>(citizen).m_Target == destination)
+            {
+                return true;
+            }
+
+            if (m_TripNeededBuffers.HasBuffer(citizen))
+            {
+                DynamicBuffer<TripNeeded> trips = m_TripNeededBuffers[citizen];
+
+                for (int i = 0; i < trips.Length; i++)
+                {
+                    if (trips[i].m_TargetAgent == destination)
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
         private void MakeRun(Entity citizen, EntityCommandBuffer commandBuffer)
         {
             if (!EntityManager.HasComponent<CurrentTransport>(citizen))
@@ -3575,7 +4050,8 @@ namespace TourismOverhaul.Systems
                 // body out in the world (CitizenTravelPurposeSystem:631 treats it and
                 // CurrentBuilding as alternatives). Skipping on that and acting on everything else
                 // interrupts every kind of indoors, named or not — which is what a last call is.
-                if (EntityManager.HasComponent<CurrentTransport>(citizen))
+                if (EntityManager.HasComponent<CurrentTransport>(citizen)
+                    || HeadedFor(citizen, destination))
                 {
                     continue;
                 }
@@ -3637,6 +4113,12 @@ namespace TourismOverhaul.Systems
             // attraction — is left strictly alone, so this cannot interrupt sightseeing.
             if (m_Targets.HasComponent(household))
             {
+                // Target is the one type whose wait was ever large (about 3 ms per lookup refresh,
+                // every one of the game's creature and vehicle jobs writes it), and this is the only
+                // place its data is read through the lookup. So the wait is taken here, on the first
+                // party that has a Target in a sweep, rather than on every refresh of every update.
+                // Repeated calls cost nothing once those jobs are complete.
+                EntityManager.CompleteDependencyBeforeRO<Target>();
                 Entity going = m_Targets[household].m_Target;
 
                 if (going != terminal
@@ -3700,6 +4182,8 @@ namespace TourismOverhaul.Systems
         {
             int released = 0;
 
+            TryGetOutsideConnection(vehicle, out Entity homePort, out int _);
+
             EntityTypeHandle entityHandle = GetEntityTypeHandle();
             ComponentTypeHandle<Components.CruisePassenger> passengerHandle =
                 GetComponentTypeHandle<Components.CruisePassenger>(isReadOnly: true);
@@ -3723,10 +4207,27 @@ namespace TourismOverhaul.Systems
                             continue;
                         }
 
-                        // Only the tag comes off. They were already sent on their way at last call,
-                        // and moving away a household that is already moving away would give it a
-                        // second departure trip.
                         commandBuffer.RemoveComponent<Components.CruisePassenger>(entities[i]);
+
+                        // And they leave. Last call sends them aboard on a Leisure trip, not
+                        // MovingAway (see RecallToHarbour), so nothing else ends the visit: without
+                        // this the party is set down in the ship's outside connection as an ordinary
+                        // tourist with nowhere to be, and tries to reach an attraction or a leisure
+                        // spot from the map edge every few seconds, failing each time at the cost
+                        // limit. Measured as ~110 such citizens, each failing 55 times in three
+                        // minutes, using 9.6% of all route search work in a 665k city.
+                        //
+                        // MovingAway to the connection they are already in completes on the spot
+                        // (the citizen reaches it, HouseholdMoveAwaySystem removes the household),
+                        // exactly as for a party written off at the deadline above.
+                        if (!EntityManager.HasComponent<Game.Agents.MovingAway>(entities[i]))
+                        {
+                            commandBuffer.AddComponent(entities[i], new Game.Agents.MovingAway
+                            {
+                                m_Target = homePort,
+                                m_Reason = Game.Agents.MoveAwayReason.None
+                            });
+                        }
 
                         released++;
                     }
@@ -3970,6 +4471,182 @@ namespace TourismOverhaul.Systems
         /// body for it yet. Neither means the trip is gone, which is the state that says something
         /// took it away rather than that the walk is slow.
         /// </summary>
+        /// <summary>
+        /// Whether the party is standing at an outside connection with nobody out in the world —
+        /// that is, it has already reached the edge of the map without the ship.
+        /// </summary>
+        private bool PartyIsAt(Entity household, Entity connection)
+        {
+            if (!m_HouseholdCitizenBuffers.HasBuffer(household))
+            {
+                return false;
+            }
+
+            DynamicBuffer<HouseholdCitizen> citizens = m_HouseholdCitizenBuffers[household];
+            bool atEdge = false;
+
+            for (int i = 0; i < citizens.Length; i++)
+            {
+                Entity citizen = citizens[i].m_Citizen;
+
+                if (citizen == Entity.Null || !EntityManager.Exists(citizen))
+                {
+                    continue;
+                }
+
+                if (m_CurrentTransports.HasComponent(citizen))
+                {
+                    return false;
+                }
+
+                if (EntityManager.HasComponent<CurrentBuilding>(citizen))
+                {
+                    Entity building =
+                        EntityManager.GetComponentData<CurrentBuilding>(citizen).m_CurrentBuilding;
+
+                    atEdge |= building == connection
+                              || (building != Entity.Null
+                                  && EntityManager.HasComponent<Game.Objects.OutsideConnection>(building));
+                }
+            }
+
+            return atEdge;
+        }
+
+        /// <summary>
+        /// Ends a party's shore leave without the ship: the tag and the harbour anchor come off, and
+        /// the household leaves the city through the connection it is already standing at.
+        /// </summary>
+        private void ReleaseParty(
+            Entity household,
+            Components.CruisePassenger passenger,
+            Entity connection,
+            EntityCommandBuffer commandBuffer)
+        {
+            commandBuffer.RemoveComponent<Components.CruisePassenger>(household);
+
+            if (m_TouristHouseholds.HasComponent(household))
+            {
+                TouristHousehold tourist = m_TouristHouseholds[household];
+
+                if (tourist.m_Hotel == passenger.m_Terminal)
+                {
+                    tourist.m_Hotel = Entity.Null;
+                    commandBuffer.SetComponent(household, tourist);
+                }
+            }
+
+            commandBuffer.AddComponent(household, new Game.Agents.MovingAway
+            {
+                m_Target = connection,
+                m_Reason = Game.Agents.MoveAwayReason.None
+            });
+        }
+
+        /// <summary>
+        /// For a queued party with nobody out in the world: whether a member is held by an activity
+        /// in progress (TripNeededSystem will not look at them until it is cleared), and whether a
+        /// member is in neither a building nor the world, which no trip can start from either.
+        /// </summary>
+        private bool PartyIsBusyIndoors(Entity household, out bool nowhere)
+        {
+            nowhere = false;
+
+            if (!m_HouseholdCitizenBuffers.HasBuffer(household))
+            {
+                return false;
+            }
+
+            DynamicBuffer<HouseholdCitizen> citizens = m_HouseholdCitizenBuffers[household];
+
+            for (int i = 0; i < citizens.Length; i++)
+            {
+                Entity citizen = citizens[i].m_Citizen;
+
+                if (citizen == Entity.Null || !EntityManager.Exists(citizen))
+                {
+                    continue;
+                }
+
+                if (EntityManager.HasComponent<TravelPurpose>(citizen))
+                {
+                    return true;
+                }
+
+                nowhere |= !EntityManager.HasComponent<CurrentBuilding>(citizen);
+            }
+
+            return false;
+        }
+
+        /// <summary>Whether any of the party is waiting on an unanswered pathfind.</summary>
+        private bool PartyAwaitsPath(Entity household)
+        {
+            if (!m_HouseholdCitizenBuffers.HasBuffer(household))
+            {
+                return false;
+            }
+
+            DynamicBuffer<HouseholdCitizen> citizens = m_HouseholdCitizenBuffers[household];
+
+            for (int i = 0; i < citizens.Length; i++)
+            {
+                Entity citizen = citizens[i].m_Citizen;
+
+                if (citizen != Entity.Null
+                    && EntityManager.HasComponent<Game.Pathfind.PathInformation>(citizen)
+                    && (EntityManager.GetComponentData<Game.Pathfind.PathInformation>(citizen).m_State
+                        & Game.Pathfind.PathFlags.Pending) != 0)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// For a party with someone out in the world: 1 if that body is heading for the ship's
+        /// connection, 2 if it is aboard a vehicle other than the ship, 0 for anywhere else.
+        /// </summary>
+        private int WhereIsParty(Entity household, Entity destination, Entity ship)
+        {
+            if (!m_HouseholdCitizenBuffers.HasBuffer(household))
+            {
+                return 0;
+            }
+
+            DynamicBuffer<HouseholdCitizen> citizens = m_HouseholdCitizenBuffers[household];
+
+            for (int i = 0; i < citizens.Length; i++)
+            {
+                Entity citizen = citizens[i].m_Citizen;
+
+                if (citizen == Entity.Null || !m_CurrentTransports.HasComponent(citizen))
+                {
+                    continue;
+                }
+
+                Entity creature = m_CurrentTransports[citizen].m_CurrentTransport;
+
+                if (creature != Entity.Null
+                    && EntityManager.HasComponent<Game.Creatures.CurrentVehicle>(creature))
+                {
+                    Entity vehicle = EntityManager
+                        .GetComponentData<Game.Creatures.CurrentVehicle>(creature).m_Vehicle;
+
+                    if (vehicle != ship)
+                    {
+                        return 2;
+                    }
+                }
+
+                return destination != Entity.Null && HeadedFor(citizen, destination) ? 1 : 0;
+            }
+
+            return 0;
+        }
+
         private void ClassifyRecalledParty(Entity household, out bool hasBody, out bool hasTrip)
         {
             hasBody = false;
