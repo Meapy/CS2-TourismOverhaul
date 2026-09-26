@@ -93,6 +93,12 @@ namespace TourismOverhaul.Systems
         /// </summary>
         private const int kMaxPerUpdate = 2048;
 
+        /// <summary>Maximum pending pathfind requests before throttling new submissions.</summary>
+        private const int kMaxPendingRequests = 8192;
+
+        /// <summary>How many frames to tolerate a pending pathfind request before treating it as timed out.</summary>
+        private const int kPendingTimeoutFrames = 4096;
+
         private EntityQuery m_SeekerQuery;
         private ComponentTypeSet m_PathfindTypes;
 
@@ -102,6 +108,11 @@ namespace TourismOverhaul.Systems
 
         /// <summary>Attempts made per household, so retries can be bounded.</summary>
         private NativeHashMap<Entity, int> m_Attempts;
+
+        /// <summary>Frame index when a pending path request was issued for a household.</summary>
+        private NativeHashMap<Entity, int> m_PendingRequests;
+
+        private SimulationSystem m_SimulationSystem;
 
         private bool m_NativeDisabled;
 
@@ -137,9 +148,11 @@ namespace TourismOverhaul.Systems
             m_EndFrameBarrier = World.GetOrCreateSystemManaged<EndFrameBarrier>();
             m_PathfindSetupSystem = World.GetOrCreateSystemManaged<PathfindSetupSystem>();
             m_NativeSystem = World.GetOrCreateSystemManaged<TouristFindTargetSystem>();
+            m_SimulationSystem = World.GetOrCreateSystemManaged<SimulationSystem>();
 
             m_PathfindTypes = new ComponentTypeSet(ComponentType.ReadWrite<PathInformation>());
             m_Attempts = new NativeHashMap<Entity, int>(1024, Allocator.Persistent);
+            m_PendingRequests = new NativeHashMap<Entity, int>(1024, Allocator.Persistent);
 
             // Cruise passengers are excluded outright, and this is the fix for them going to hotels
             // rather than another attempt to undo it afterwards.
@@ -168,6 +181,11 @@ namespace TourismOverhaul.Systems
             if (m_Attempts.IsCreated)
             {
                 m_Attempts.Dispose();
+            }
+
+            if (m_PendingRequests.IsCreated)
+            {
+                m_PendingRequests.Dispose();
             }
 
             RestoreNativeSystem();
@@ -266,6 +284,40 @@ namespace TourismOverhaul.Systems
             // Still searching.
             if ((path.m_State & PathFlags.Pending) != 0)
             {
+                // Check for a timed-out pending request and treat it as a failure so it can retry.
+                if (m_PendingRequests.IsCreated && m_PendingRequests.TryGetValue(household, out int startFrame))
+                {
+                    int currentFrame = (int)m_SimulationSystem.frameIndex;
+
+                    if (currentFrame - startFrame > kPendingTimeoutFrames)
+                    {
+                        m_Attempts.TryGetValue(household, out int currentAttempt);
+                        Mod.Log.Warn(
+                            $"TouristTargetSearchSystem: path request for household {GetEntityDebugName(household)} " +
+                            $"timed out after {kPendingTimeoutFrames} frames, attempt {currentAttempt + 1} of {kMaxAttempts}");
+                        // Timed out: remove pending tracking and the stale PathInformation and count an attempt.
+                        m_PendingRequests.Remove(household);
+
+                        commandBuffer.RemoveComponent<PathInformation>(household);
+
+                        currentAttempt++;
+
+                        if (currentAttempt < kMaxAttempts)
+                        {
+                            m_Attempts[household] = currentAttempt;
+                        }
+                        else
+                        {
+                            m_Attempts.Remove(household);
+                            Evictions++;
+
+                            CitizenUtils.HouseholdMoveAway(commandBuffer, household, MoveAwayReason.TouristNoTarget);
+                        }
+
+                        return true;
+                    }
+                }
+
                 return false;
             }
 
@@ -353,7 +405,23 @@ namespace TourismOverhaul.Systems
             PathUtils.UpdateOwnedVehicleMethods(
                 household, ref m_OwnedVehicles, ref parameters, ref origin, ref destination);
 
+            // Throttle new submissions if the pending queue is already large.
+            if (m_PendingRequests.IsCreated && m_PendingRequests.Count >= kMaxPendingRequests)
+            {
+                // Skip enqueueing for now; the household will be retried on the next update.
+                Mod.Log.Info(
+                    $"TouristTargetSearchSystem: throttled path request for household {GetEntityDebugName(household)}, " +
+                    $"pending queue at {m_PendingRequests.Count}/{kMaxPendingRequests}");
+                return;
+            }
+
             queue.Enqueue(new SetupQueueItem(household, parameters, origin, destination));
+
+            // Record when the request was issued so we can time out stuck requests.
+            if (m_PendingRequests.IsCreated)
+            {
+                m_PendingRequests.TryAdd(household, (int)m_SimulationSystem.frameIndex);
+            }
         }
 
         /// <summary>
@@ -366,6 +434,43 @@ namespace TourismOverhaul.Systems
             TargetsFound++;
 
             Entity hotel = Entity.Null;
+
+            // Defensive check: destination must exist and not be deleted/temp before accepting.
+            if (destination == Entity.Null || !EntityManager.Exists(destination) ||
+                EntityManager.HasComponent<Deleted>(destination) || EntityManager.HasComponent<Temp>(destination))
+            {
+                string reason = "unknown";
+                if (destination == Entity.Null)
+                {
+                    reason = "null destination";
+                }
+                else if (!EntityManager.Exists(destination))
+                {
+                    reason = "entity does not exist";
+                }
+                else if (EntityManager.HasComponent<Deleted>(destination))
+                {
+                    reason = "entity marked for deletion";
+                }
+                else if (EntityManager.HasComponent<Temp>(destination))
+                {
+                    reason = "entity is temporary";
+                }
+
+                Mod.Log.Warn(
+                    $"TouristTargetSearchSystem: rejected invalid destination {GetBuildingName(destination)} " +
+                    $"for household {GetEntityDebugName(household)} ({reason})");
+
+                // Clean up any stale pending record and PathInformation so the seeker can retry.
+                if (m_PendingRequests.IsCreated && m_PendingRequests.TryGetValue(household, out _))
+                {
+                    m_PendingRequests.Remove(household);
+                }
+
+                commandBuffer.RemoveComponent<PathInformation>(household);
+                // Let the retry logic in ProcessSeeker handle attempts/eviction on the next pass.
+                return;
+            }
 
             if (EntityManager.HasBuffer<Renter>(destination))
             {
@@ -398,6 +503,51 @@ namespace TourismOverhaul.Systems
             }
 
             commandBuffer.AddComponent(household, new Target(destination));
+        }
+
+        /// <summary>
+        /// Builds a debug string for an entity, including its prefab name if available.
+        /// </summary>
+        private string GetEntityDebugName(Entity entity)
+        {
+            if (entity == Entity.Null)
+            {
+                return "Entity.Null";
+            }
+
+            string baseName = entity.ToString();
+
+            try
+            {
+                if (EntityManager.HasComponent<PrefabRef>(entity))
+                {
+                    Entity prefabRef = EntityManager.GetComponentData<PrefabRef>(entity).m_Prefab;
+                    if (prefabRef != Entity.Null)
+                    {
+                        baseName = $"{entity} (prefab:{prefabRef})";
+                    }
+                }
+            }
+            catch
+            {
+                // If anything fails, just return the entity ID
+            }
+
+            return baseName;
+        }
+
+        /// <summary>
+        /// Extracts human-readable building name from entity if available.
+        /// </summary>
+        private string GetBuildingName(Entity entity)
+        {
+            if (!EntityManager.HasComponent<Building>(entity))
+            {
+                return GetEntityDebugName(entity);
+            }
+
+            string prefabName = GetEntityDebugName(entity);
+            return $"{prefabName} (building)";
         }
     }
 }
