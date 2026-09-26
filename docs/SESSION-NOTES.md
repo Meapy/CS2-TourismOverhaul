@@ -992,3 +992,48 @@ Writing a waiting figure is also not the same as pricing the stop. `WaitingPasse
 rebuilds the average from the stop's history every 256 frames and tags the waypoint `PathfindUpdated`
 only when that rebuild changes the value; the pathfinder reads the cost only after such a tag. A
 figure written on its own never reaches the graph at all.
+
+## A citizen can be nowhere, and then no trip can reach it
+
+`TripNeededSystem`'s citizen query requires `CurrentBuilding`. A citizen whose body is deleted other
+than by arriving loses its `CurrentTransport` (`ReferencesSystem`) and is given no building, so a trip
+queued for it is never looked at. `ResidentAISystem.ReturnHome` does exactly that to a body with no
+path home (`NoPathToHome`). A tourist's home is its hotel, which for a cruise party is the terminal,
+so a party that wanders somewhere without a path back produces these.
+
+Measured at a cruise deadline: 435 parties, about 1,300 people, with a trip queued and neither a
+building nor a body. The count grew through last call, and re-issuing the trip did nothing. What they
+carried: `Arrived`, `Citizen`, `HouseholdMember`, `TripNeeded`, `UpdateFrame` and the usual owners and
+flags, with no `CurrentBuilding`, `CurrentTransport` or `TravelPurpose`.
+
+Giving such a citizen a `CurrentBuilding` is not moving a body, because there is none to move. The
+game spawns a body at that building when it serves the trip. The recall uses the last building the
+sweep saw the citizen in, so the player sees it walk back, and the terminal on a second failure,
+because a second failure means there is no path from that building either.
+
+## Moving a main-thread read into a job moves the wait, not just the work
+
+The first main-thread read of a component type that a job in flight writes completes every job
+writing it. On a busy frame the creature and vehicle chain writes `Target`, `CurrentTransport`,
+`CurrentVehicle`, `Resident` and `PublicTransport`, so any one of those reads cost 5-8 ms regardless
+of how little was read. Narrowing `CompleteDependency()` to `CompleteDependencyBeforeRO<T>()` for the
+exact types helped where a system touched few types. For the cruise system it only moved the wait:
+taking the shore sweep off the main thread made the vessel code's first `PublicTransport` read the
+new wait, and "serve ships" went from 0.02 to 4-6 ms per update.
+
+The fix was to put every reader of that chain's output in jobs scheduled after it (`ShorePartyJob`,
+`VesselJob`), and to have the main thread decide from the previous job's observations and this mod's
+own components, which nothing else writes. A decision made one update (16 frames) late was
+acceptable everywhere except where the game gives a fixed window: the boarding hold has to land
+inside the 60 frames `TransportBoardingHelpers:368` allows, so holds go to the job as requests and it
+applies them in the same frame.
+
+## `ResetTrip` is how you turn a walking body round
+
+A queued `TripNeeded` for a citizen whose body is already out on an errand is served only once the
+errand ends. To re-target a body in the world, create an entity with `Event` and
+`Game.Creatures.ResetTrip` naming the creature and the new target, as `TripNeededSystem.ResetTrip`
+does. `TripResetSystem` drops any detour, clears the arrived and hang-around flags, marks the path
+obsolete, and sets the new target and travel purpose, and `ResidentAISystem.FindNewPath` re-paths it
+with pedestrian, taxi and public transport. Leave a body that is riding a vehicle alone: every game
+system that emits `ResetTrip` does, and the vehicle's own AI owns it until it steps off.

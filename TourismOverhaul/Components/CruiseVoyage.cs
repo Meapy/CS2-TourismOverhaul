@@ -48,12 +48,8 @@ namespace TourismOverhaul.Components
         public byte m_Escaped;
 
         /// <summary>
-        /// Passengers this call is meant to land, in people.
-        ///
-        /// Held on the call because the shortfall is corrected over several updates rather than in
-        /// one go — households are not given citizens the instant they are created, so the only
-        /// honest way to hit a head count is to keep counting who actually arrived and top up. See
-        /// CruiseVoyageSystem.TopUpCall.
+        /// Passengers this call landed, in people: the complement the ship actually brought, which is
+        /// the figure the call's reboarding is judged against.
         /// </summary>
         public int m_TargetPassengers;
 

@@ -57,6 +57,11 @@ namespace TourismOverhaul.Systems
 
         protected override void OnUpdate()
         {
+            // Chunk and lookup data read on the main thread is not waited for automatically, and
+            // the game's jobs and this mod's own (rebooking, room reclaim, the cruise sweep) write
+            // these, so wait for exactly those writers before reading.
+            EntityManager.CompleteDependencyBeforeRW<TouristHousehold>();
+
             TourismOverhaulSetting settings = Mod.Settings;
             if (settings == null || !settings.FixLengthOfStay)
             {

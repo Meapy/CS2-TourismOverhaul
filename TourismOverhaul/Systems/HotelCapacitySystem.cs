@@ -408,6 +408,13 @@ namespace TourismOverhaul.Systems
         /// </summary>
         private void RunLodgingUpdate(int multiplier)
         {
+            // Chunk and lookup data read on the main thread is not waited for automatically, and
+            // the game's jobs and this mod's own (rebooking, room reclaim, the cruise sweep) write
+            // these, so wait for exactly those writers before reading.
+            EntityManager.CompleteDependencyBeforeRW<LodgingProvider>();
+            EntityManager.CompleteDependencyBeforeRW<Renter>();
+            EntityManager.CompleteDependencyBeforeRW<ServiceAvailable>();
+
             uint updateFrame = SimulationUtils.GetUpdateFrame(m_SimulationSystem.frameIndex, kUpdatesPerDay, 16);
 
             LeisureParametersData leisure = m_LeisureParameterQuery.GetSingleton<LeisureParametersData>();

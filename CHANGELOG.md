@@ -5,6 +5,173 @@ All notable changes to CS2 Tourism Overhaul.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [semantic](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [1.10.0] — 2026-09-26
+
+### Added
+
+- **The cruise line runs its own Cruise Ship.** The stock passenger ship's capacity is authored on its
+  prefab, which every ordinary passenger ship line shares, so the cruise line could not carry more than
+  2,300-2,800 without changing them all. `CruiseLineSystem` now copies that ship with the game's own
+  `PrefabBase.Clone` into a "Cruise Ship" prefab — same meshes and materials, since a mod cannot author
+  new 3D art — whose capacity is the **Cruise ship passengers** setting, kept in step on the baked prefab
+  so a change applies to the ship already sailing. The cruise route names it as its vehicle model, which
+  the game's selection always prefers and `TransportLineSystem.CheckVehicles` enforces by replacing the
+  line's current ship; that is only set between voyages (no call open, nobody tagged), so no shore party
+  is stranded. It requires the theme the city is not using, and `VehicleSelectRequirementData` passes that
+  only for a line that has chosen it, so ordinary ferry lines never pick it. The copy drops the stock
+  ship's `ObsoleteIdentifiers` (its old names, kept so older saves still find it), which it would
+  otherwise have claimed as well.
+
+### Performance
+
+- **The cruise shore-party sweep runs as a Burst job.** Everything `ReturnFinishedParties` did for each
+  party ashore — keeping them off the hotels, detecting who is aboard, last call and its refresh,
+  nudging idle citizens, writing off stragglers, releasing parties that reached the sea another way —
+  is now `CruiseVoyageSystem.ShorePartyJob`. On the main thread it first had to wait for the frame's
+  creature and vehicle jobs, which write `Target`, `CurrentTransport`, `CurrentVehicle` and `Resident`:
+  5-8 ms per update against well under a millisecond of work, and narrowing the wait to fewer
+  component types only moved it to the next one. The job is scheduled after those same writers, so it
+  reads the same world; its commands go into an `EndFrameBarrier` buffer created at the same point in
+  the update as before, so they play back in the same order; and chunks are walked in query order on
+  one thread, as the loop did. Only the summary log line moves, to the next update.
+
+  `CancelHotelTrip`, `EquipTerminalWithLodging` and `ClearCitizenPathState` have one implementation, in
+  `ShorePartyAccess`, shared by the job and the main thread.
+
+- **Serving the cruise ships runs as a Burst job too.** Moving the sweep alone only moved the wait: the
+  vessel code's first read of `PublicTransport` waited for every vehicle and creature job in the frame,
+  and "serve ships" went from ~0.02 to 4-6 ms per update. `CruiseVoyageSystem.VesselJob` now does, in the
+  same frame and after those jobs, everything that reads or writes the game's vehicle and stop data:
+  applying and re-asserting every hold on `m_DepartureFrame` (so a hold still lands inside the 60
+  frames `TransportBoardingHelpers:368` gives a boarding ship), keeping the stops priced
+  (`ClearOutsideConnectionWait`), reclaiming a lost quay (`ReclaimQuay`), counting outbound passengers,
+  and recording one observation per ship.
+
+  The main thread keeps the decisions that log, spawn tourists or start and end things, and makes them
+  from the last observation plus this mod's own components read live. Deadlines (a load's timeout, a
+  call's close and overstay) need only the frame and those components, so they still happen on the same
+  update, with the job applying the release. Starting a load or a call happens one update (16 frames)
+  after the ship is seen: detection plus hold still fits inside the 60-frame window, and reading the
+  mod's components live means nothing is started twice. Holds and releases decided on the main thread
+  reach the job as requests.
+
+- **`TouristRebookSystem` runs as a Burst job.** It walks every tourist household to find the few
+  without a room: 6-10 ms per update on the main thread, spiking to 40 ms.
+
+### Fixed
+
+- **A cruise ship waits for its shore party again.** The overstay (holding the ship while passengers
+  are still ashore) was decided only once the reboard frame had passed, but the hold *is* the ship's
+  departure frame, set to that same reboard frame, and the vessel sails the moment it arrives. With the
+  system running every sixteen frames the ship could leave first: measured as "waiting for 1175
+  passengers" followed one update later by "left terminal before shore leave ended", and 291 parties
+  written off. The extension is now decided two updates ahead of the deadline and rolls forward, so the
+  hold is always raised before the ship reaches it.
+
+  It waits only while it helps, and never more than one in-game hour past its scheduled departure, for as
+  long as the ashore head count keeps reaching new lows, and it sails once nobody else has got back for
+  8192 frames (about 45 in-game minutes), so a party with no way to the quay cannot hold it indefinitely.
+  The ship's departure logs how long it waited and how many were still ashore.
+
+  At the measured deadline the stragglers were mostly finishing errands elsewhere before their recall
+  trip could start (about 150 parties) or riding other vehicles (about 30); the wait is what brings
+  those back. About 100 more were "nowhere" — a trip queued, but no building and no body, so no trip can
+  start; see the next entry.
+
+- **Passengers stuck "nowhere" are put back where they were last.** At the last measured deadline 1,100+
+  were still ashore, and they were not walking: walkers fell from 454 to 39 in time. 435 parties (about
+  1,300 people) had a trip queued but no building and no body, a number that grew through last call.
+  `TripNeededSystem` only serves citizens with a `CurrentBuilding` (its query requires one), so their
+  trip could never start however often the recall queued it. A citizen lands there when its body is
+  deleted other than by arriving — `ResidentAISystem.ReturnHome` deletes a body with no path home, and
+  `ReferencesSystem` then drops the citizen's `CurrentTransport` without giving it a building. The
+  recall now gives such a citizen a building again before issuing the trip: the last building it was
+  seen in during shore leave, so its body comes out of that shop or attraction and is seen walking back
+  to the ship. Only once — a citizen that goes nowhere again has no path from there, so the second
+  time (or if that building is gone) it is put at the harbour terminal instead, a short sure walk
+  aboard. Nothing visible vanishes, as it had no body. The full
+  recall is also re-asserted every 1024 frames instead of 2048. The shore-leave log counts how many were
+  put back where they were and how many at the terminal.
+
+- **Last call turns passengers round where they are.** The recall used to queue a trip to the ship,
+  which the game serves only once the current errand ends, so parties finished their shopping or
+  sightseeing across the city first: about 150 parties at the measured deadline. A recalled citizen out
+  in the world on foot is now re-targeted on the spot with a `ResetTrip` event — the game's own
+  mechanism (`TripNeededSystem.ResetTrip` uses it to give a walking body a new trip; `TripResetSystem`
+  drops any detour, clears the arrived and hang-around flags, marks the path obsolete and sets the new
+  target and travel purpose) — and its queued errands are cleared. The body re-paths with pedestrian,
+  taxi and public transport methods (`ResidentAISystem.FindNewPath`), walks to the pier and boards.
+  Citizens indoors already had their activity cancelled by the recall. A citizen riding a vehicle is
+  left to the vehicle, as every game system that emits `ResetTrip` leaves it, and is turned round on
+  the first sweep after it steps off. The shore-leave log now counts how many were turned round.
+
+- **A full ship sails straight away.** At a city quay, once none of the call's shore party is left
+  ashore (parties aboard, released or written off no longer count), the ship sails at once instead of
+  sitting out the rest of the shore leave; not in the call's first two sweeps, while the new tags are
+  still being counted. At the map edge, a load ends early when the passenger buffer reaches the
+  vessel's own authored capacity, since nobody else can board — the physical figure, deliberately not
+  the complement target, which counts locals riding through and once sailed a ship a tenth of a second
+  into its load. Closing a call now also releases the hold, so an early close leaves at once rather than
+  at the old departure frame.
+
+  A load also ends as soon as the **Cruise ship passengers** setting's worth of visitors is aboard (the
+  target booked on the manifest: the setting capped at the vessel's own size). Only tourist households
+  outbound count, so residents riding the line cannot trip it. The setting is therefore the ship's size in
+  effect, up to the model's own capacity; raising it past that would need a vessel prefab of the mod's
+  own, since the stock passenger ship's capacity is shared by every ordinary ferry line. Its description
+  no longer promises a ±500 swing by city attractiveness, which the code never did.
+
+  At the harbour too: once last call has begun, a ship whose passenger buffer has reached its authored
+  capacity (2800/2800) sails at once, and the overstay no longer holds a full ship, since nobody still
+  ashore could board it. Not before last call, because a ship arriving at the harbour is full of the
+  complement still to step off. Anyone still ashore is written off as at any departure and leaves
+  through the sea connection; the log says how many.
+
+- **Last call scales with the stay on a log curve.** It was half the shore leave before each party's
+  own deadline, with deadlines spread over a third of the stay, which suited a recall that had to wait
+  for errands to end: with walkers turned round on the spot, a ten-hour call recalled its first parties
+  40 minutes in and had most back with five hours to go. A fixed 20% then proved too late. The first
+  parties are now recalled 4.5 h x ln(1 + stay / 4 h) before sailing — 8 h: 4.9 h, 12 h: 6.2 h,
+  24 h: 8.8 h, 48 h: 11.5 h — and the rest over the next fifth of that lead; the boarding grace is
+  capped at 40% of it, so no part of the timing grows without bound on a long stay. The pier's boarding
+  window opens with the first recall, and the overstay still holds the ship for anyone on the way.
+
+- **The cruise queue no longer runs away when nobody reaches the stop.** Its only bound was one batch
+  per 512 frames, which assumes the people ordered turn up and close the shortfall. After a cruise line
+  was rebuilt, twice in a row nobody did until the line was rebuilt again, and the queue ordered a full
+  complement every batch — about 45,000 households in six minutes. After four batches with nobody
+  waiting and nobody aboard, it now slows to one batch per 4096 frames and logs a warning once; the first
+  person to appear restores the normal rate. In working service people are waiting within a batch or
+  two (measured: 0, 59, 132, 693), so it never engages.
+
+- **Cruise parties are no longer booked into hotels.** `TouristRebookSystem` treated any tourist whose
+  hotel was not a live lodging provider as displaced, cruise parties included. The game takes each
+  party's harbour anchor away every 1024 frames (they are deliberately not in the terminal's Renter
+  list) and the shore sweep restores it within 64, so a rebooking pass in that window gave the party a
+  real room, a renter entry and a walk to the hotel. The sweep then cancelled the walk and re-anchored
+  them to the harbour, but the room and the renter entry were never given back. Cruise parties are now
+  excluded.
+
+- **Main-thread readers wait for the data they read.** `TouristShoppingSystem`, `HotelCapacitySystem`,
+  `HotelWelcomeSystem`, `TourismPanelUISystem`, `TouristDemandSystem`, `TouristDemandUISystem`,
+  `TourismDiagnosticsSystem` and `TouristStaySystem` read `Renter`, `LodgingProvider`,
+  `TouristHousehold`, `HouseholdNeed`, `Resources` and the cruise tag through chunk handles or lookups on
+  the main thread without waiting for the jobs writing them — the game's own, and now this mod's
+  rebooking, room-reclaim and cruise jobs. Each now waits for exactly the types it touches. All of them
+  run every 256-512 frames or less, so the waits are rare.
+
+- **Stale comments corrected.** Several named methods that no longer exist (`ReturnFinishedParties`,
+  `RecallToShip`, `TopUpCall`), and the cruise capacity setting's code comment still promised a ±500
+  swing by attractiveness. An unused constant (`kPierComfortFactor`) is gone.
+
+- **Corrected a comment that misdescribed the harbour anchor.** It said the game only checks that the
+  terminal has a Renter buffer; it also checks that the household is in it
+  (`TouristHouseholdBehaviorSystem:82-89`), which is why about one party in sixteen briefly shows no
+  accommodation until the shore sweep restores it. The `CruiseVoyage timing` line now reports how many
+  anchors each sweep restored.
+
 ## [1.9.1] — 2026-09-23
 
 ### Fixed

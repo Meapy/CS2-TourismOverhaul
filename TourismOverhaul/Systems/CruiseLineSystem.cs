@@ -1,9 +1,11 @@
 using Game;
+using Game.City;
 using Game.Prefabs;
 using Unity.Collections;
 using Unity.Entities;
 using Unity.Mathematics;
 using UnityEngine;
+using SizeClass = Game.Vehicles.SizeClass;
 
 namespace TourismOverhaul.Systems
 {
@@ -49,6 +51,9 @@ namespace TourismOverhaul.Systems
     {
         private const string kLineName = "TourismOverhaul PassengerCruiseLine";
 
+        /// <summary>The mod's own cruise ship, a copy of the stock passenger ship. See <see cref="CreateCruiseShip"/>.</summary>
+        private const string kShipName = "TourismOverhaul CruiseShip";
+
         // Served from the mod's own UI folder, same route as the zone icons: the file lives in
         // ui/src/images and reaches this path because webpack's asset/resource rule emits it to
         // images/ with publicPath coui://ui-mods/. Prefixed because ui-mods is shared across every
@@ -77,6 +82,40 @@ namespace TourismOverhaul.Systems
 
         private TransportLinePrefab m_CruiseLine;
         private bool m_Attempted;
+
+        private WatercraftPrefab m_CruiseShip;
+        private bool m_ShipAttempted;
+        private EntityQuery m_PassengerShipQuery;
+        private EntityQuery m_ThemeQuery;
+        private CityConfigurationSystem m_CityConfiguration;
+
+        /// <summary>The theme the ship's requirement currently names, so it is only rewritten when that changes.</summary>
+        private Entity m_RequirementTheme;
+        private bool m_WarnedNoOtherTheme;
+
+        /// <summary>
+        /// The prefab entity for the cruise ship, or Entity.Null before it is baked.
+        /// CruiseVoyageSystem names it as the cruise route's vehicle model.
+        /// </summary>
+        public Entity ShipPrefabEntity
+        {
+            get
+            {
+                if (m_CruiseShip == null || m_PrefabSystem == null)
+                {
+                    return Entity.Null;
+                }
+
+                try
+                {
+                    return m_PrefabSystem.GetEntity(m_CruiseShip);
+                }
+                catch (System.Exception)
+                {
+                    return Entity.Null;
+                }
+            }
+        }
 
         /// <summary>Whether the cruise line prefab exists. For diagnostics.</summary>
         public bool LineCreated => m_CruiseLine != null;
@@ -109,9 +148,9 @@ namespace TourismOverhaul.Systems
             }
         }
 
-        // Nothing to do per-frame; the work is a one-off at preload. The interval only governs how
-        // quickly the retry in OnGameLoadingComplete is followed up if preload ran too early.
-        public override int GetUpdateInterval(SystemUpdatePhase phase) => 4096;
+        // The prefabs are a one-off at preload. What runs on an interval is keeping the ship's capacity
+        // on the setting and its theme requirement on the city's other theme, both cheap.
+        public override int GetUpdateInterval(SystemUpdatePhase phase) => 512;
 
         protected override void OnCreate()
         {
@@ -122,6 +161,14 @@ namespace TourismOverhaul.Systems
             m_TransportLinePrefabQuery = GetEntityQuery(
                 ComponentType.ReadOnly<TransportLineData>(),
                 ComponentType.ReadOnly<RouteData>());
+
+            m_PassengerShipQuery = GetEntityQuery(
+                ComponentType.ReadOnly<WatercraftData>(),
+                ComponentType.ReadOnly<PublicTransportVehicleData>(),
+                ComponentType.ReadOnly<PrefabData>());
+
+            m_ThemeQuery = GetEntityQuery(ComponentType.ReadOnly<ThemeData>());
+            m_CityConfiguration = World.GetOrCreateSystemManaged<CityConfigurationSystem>();
         }
 
         protected override void OnGamePreload(Colossal.Serialization.Entities.Purpose purpose, GameMode mode)
@@ -129,6 +176,7 @@ namespace TourismOverhaul.Systems
             base.OnGamePreload(purpose, mode);
 
             CreateCruiseLine();
+            CreateCruiseShip();
         }
 
         protected override void OnGameLoadingComplete(
@@ -139,10 +187,224 @@ namespace TourismOverhaul.Systems
             // Free second attempt, for the case where the transport line prefabs were not yet baked
             // at preload. Costs nothing when the first attempt worked.
             CreateCruiseLine();
+            CreateCruiseShip();
+            MaintainCruiseShip();
         }
 
         protected override void OnUpdate()
         {
+            MaintainCruiseShip();
+        }
+
+        /// <summary>The Cruise ship passengers setting, which is this ship's capacity.</summary>
+        private static int SettingCapacity() =>
+            Mod.Settings != null ? math.clamp(Mod.Settings.CruiseShipCapacity, 100, 5000) : 2000;
+
+        /// <summary>
+        /// Creates the cruise ship: the stock passenger ship, copied, with the setting as its capacity.
+        ///
+        /// Only its capacity differs, and that is the point. The stock ship's capacity is authored on its
+        /// prefab (PublicTransport.m_PassengerCapacity), which every ordinary passenger ship line in the
+        /// city shares, so it cannot be changed for the cruise line alone; a prefab of our own can. The
+        /// look is the stock ship's — PrefabBase.Clone copies every component by value, so the meshes
+        /// and materials are referenced, not duplicated — because a mod cannot author new 3D art.
+        ///
+        /// Two things keep it where it belongs, both through the game's own vehicle selection
+        /// (TransportVehicleSelectData.GetRandomVehicle):
+        ///
+        ///   - The cruise route names it as its vehicle model (CruiseVoyageSystem). A model the route
+        ///     names gets priority 2 and always wins, and TransportLineSystem.CheckVehicles abandons any
+        ///     vehicle on the line that is not of it, so the line swaps its ship for this one.
+        ///   - It requires the theme the city is not using (<see cref="MaintainCruiseShip"/>).
+        ///     VehicleSelectRequirementData.CheckRequirements passes a theme requirement only when it is
+        ///     the city's default theme, or when the line has explicitly chosen this model — so no
+        ///     ordinary ferry line ever picks it, and the cruise line always can. Any theme the stock
+        ///     ship itself carried is dropped for that reason.
+        ///
+        /// Created at preload, with the line, for the same reason: a prefab has to exist before the save
+        /// that references it is loaded.
+        /// </summary>
+        private void CreateCruiseShip()
+        {
+            if (m_CruiseShip != null)
+            {
+                return;
+            }
+
+            WatercraftPrefab template = FindPassengerShipTemplate();
+
+            if (template == null)
+            {
+                if (!m_ShipAttempted)
+                {
+                    m_ShipAttempted = true;
+                    return;
+                }
+
+                Mod.Log.Warn("No passenger ship prefab found to base the cruise ship on; the cruise line uses the stock ship.");
+                return;
+            }
+
+            m_ShipAttempted = true;
+
+            try
+            {
+                WatercraftPrefab ship = (WatercraftPrefab)template.Clone(kShipName);
+                PublicTransport transport = ship.GetComponent<PublicTransport>();
+                int authored = transport.m_PassengerCapacity;
+                transport.m_PassengerCapacity = SettingCapacity();
+
+                if (ship.GetComponent<ThemeObject>() != null)
+                {
+                    ship.Remove<ThemeObject>();
+                }
+
+                // And the stock ship's old names. ObsoleteIdentifiers lists the IDs a prefab used to
+                // have ("Passenger Ship", "ShipPassenger01_Propping") so older saves still find it;
+                // copied, the cruise ship claimed them too — the game logged "Duplicate prefab ID" for
+                // both — and a saved ordinary passenger ship could have resolved to the cruise ship.
+                if (ship.GetComponent<ObsoleteIdentifiers>() != null)
+                {
+                    ship.Remove<ObsoleteIdentifiers>();
+                }
+
+                if (!m_PrefabSystem.AddPrefab(ship))
+                {
+                    Mod.Log.Warn($"PrefabSystem rejected the cruise ship prefab \"{kShipName}\".");
+                    return;
+                }
+
+                m_CruiseShip = ship;
+
+                var parts = new System.Collections.Generic.List<string>();
+
+                foreach (ComponentBase component in ship.components)
+                {
+                    parts.Add(component.GetType().Name);
+                }
+
+                Mod.Log.Info(
+                    $"Created vehicle prefab \"{kShipName}\" from \"{template.name}\" "
+                    + $"(capacity {authored} -> {transport.m_PassengerCapacity}, size class {ship.m_SizeClass}; "
+                    + $"components: {string.Join(", ", parts)}).");
+            }
+            catch (System.Exception e)
+            {
+                Mod.Log.Warn($"Could not create the cruise ship prefab: {e.Message}");
+            }
+        }
+
+        /// <summary>
+        /// The stock passenger ship to copy: a transport-line watercraft of the cruise line's size class,
+        /// the largest if there are several, never our own copy.
+        /// </summary>
+        private WatercraftPrefab FindPassengerShipTemplate()
+        {
+            SizeClass sizeClass = m_CruiseLine != null ? m_CruiseLine.m_SizeClass : SizeClass.Large;
+            NativeArray<Entity> prefabs = m_PassengerShipQuery.ToEntityArray(Allocator.Temp);
+            WatercraftPrefab best = null;
+            int bestCapacity = -1;
+
+            try
+            {
+                for (int i = 0; i < prefabs.Length; i++)
+                {
+                    PublicTransportVehicleData data = EntityManager.GetComponentData<PublicTransportVehicleData>(prefabs[i]);
+                    WatercraftData watercraft = EntityManager.GetComponentData<WatercraftData>(prefabs[i]);
+
+                    if ((data.m_PurposeMask & PublicTransportPurpose.TransportLine) == 0
+                        || watercraft.m_SizeClass != sizeClass
+                        || data.m_PassengerCapacity <= bestCapacity
+                        || !m_PrefabSystem.TryGetPrefab(prefabs[i], out WatercraftPrefab prefab)
+                        || prefab == null
+                        || prefab.name == kShipName)
+                    {
+                        continue;
+                    }
+
+                    best = prefab;
+                    bestCapacity = data.m_PassengerCapacity;
+                }
+            }
+            catch (System.Exception e)
+            {
+                Mod.Log.Warn($"Could not search for a passenger ship template: {e.Message}");
+            }
+            finally
+            {
+                prefabs.Dispose();
+            }
+
+            return best;
+        }
+
+        /// <summary>
+        /// Keeps the ship's capacity on the setting, and its theme requirement on a theme the city is not
+        /// using. Both are written to the baked prefab entity, which is what vehicle selection and
+        /// boarding read: PublicTransportVehicleData.m_PassengerCapacity is the space a passenger checks
+        /// in ResidentAISystem.TryEnterVehicle, for ships already sailing as much as for new ones.
+        /// </summary>
+        private void MaintainCruiseShip()
+        {
+            Entity ship = ShipPrefabEntity;
+
+            if (ship == Entity.Null || !EntityManager.Exists(ship))
+            {
+                return;
+            }
+
+            int capacity = SettingCapacity();
+
+            if (EntityManager.HasComponent<PublicTransportVehicleData>(ship))
+            {
+                PublicTransportVehicleData data = EntityManager.GetComponentData<PublicTransportVehicleData>(ship);
+
+                if (data.m_PassengerCapacity != capacity)
+                {
+                    data.m_PassengerCapacity = capacity;
+                    EntityManager.SetComponentData(ship, data);
+                    m_CruiseShip.GetComponent<PublicTransport>().m_PassengerCapacity = capacity;
+                    Mod.Log.Info($"Cruise ship capacity set to {capacity}.");
+                }
+            }
+
+            Entity defaultTheme = m_CityConfiguration != null ? m_CityConfiguration.defaultTheme : Entity.Null;
+            Entity other = Entity.Null;
+            NativeArray<Entity> themes = m_ThemeQuery.ToEntityArray(Allocator.Temp);
+
+            for (int i = 0; i < themes.Length && other == Entity.Null; i++)
+            {
+                if (themes[i] != defaultTheme)
+                {
+                    other = themes[i];
+                }
+            }
+
+            themes.Dispose();
+
+            if (other == Entity.Null)
+            {
+                if (!m_WarnedNoOtherTheme)
+                {
+                    m_WarnedNoOtherTheme = true;
+                    Mod.Log.Warn("Only one theme is loaded, so ordinary passenger ship lines may also pick the cruise ship.");
+                }
+
+                return;
+            }
+
+            if (other == m_RequirementTheme)
+            {
+                return;
+            }
+
+            DynamicBuffer<ObjectRequirementElement> requirements = EntityManager.HasBuffer<ObjectRequirementElement>(ship)
+                ? EntityManager.GetBuffer<ObjectRequirementElement>(ship)
+                : EntityManager.AddBuffer<ObjectRequirementElement>(ship);
+
+            requirements.Clear();
+            requirements.Add(new ObjectRequirementElement(other, 0, ObjectRequirementType.IgnoreExplicit));
+            m_RequirementTheme = other;
         }
 
         private void CreateCruiseLine()

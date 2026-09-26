@@ -179,7 +179,15 @@ A `TransportLinePrefab` created at runtime from the passenger ship line, appeari
 Drawn from a sea outside connection to a harbour, one per city — `Game.Prefabs.Locked` is toggled on
 the prefab so the tool disappears while a line exists.
 
-**Nothing is moved by hand.** Three attempts to place bodies directly all failed, each more loudly
+The line runs its own **Cruise Ship**, a `PrefabBase.Clone` of the largest stock passenger ship with
+its capacity set from the **Cruise ship passengers** setting. The stock ship's capacity is authored on
+a prefab every ordinary ferry line shares, so it could not be changed for the cruise line alone. The
+route names the copy as its vehicle model, which `TransportLineSystem.CheckVehicles` enforces; the
+model is only switched between voyages, so no shore party is stranded. The copy requires a theme the
+city is not using, so ordinary ferry lines never select it, and it drops the stock ship's
+`ObsoleteIdentifiers` so the two prefabs do not claim the same old names.
+
+**No body is moved by hand.** Three attempts to place bodies directly all failed, each more loudly
 than the last, and the rule they establish is in `docs/SESSION-NOTES.md`: bodies and routes belong to
 the game, and a mod's job is to give citizens reasons. So the cycle is built out of the game's own
 mechanisms — `LodgingSeeker` to earn a destination, `TripNeeded` to earn a body and a journey,
@@ -203,17 +211,35 @@ refresh ever reached the ship. A party held by a `TravelPurpose` is recalled eve
 `TripNeededSystem` excludes those citizens from its query entirely and their queued journey cannot
 start until the purpose comes off.
 
+Last call starts 4.5 h x ln(1 + stay / 4 h) before sailing, so it scales with the shore leave without
+growing out of hand on a long one. A recalled citizen already walking somewhere is turned round on the
+spot with a `ResetTrip` event, the game's own way of re-targeting a body. A citizen whose body the game
+deleted without giving it a building (no path home, in `ResidentAISystem`) can never start a trip,
+because `TripNeededSystem` only serves citizens with a `CurrentBuilding`. The recall gives it back the
+last building it was seen in, so it is seen walking out of that shop or attraction to the ship; if it
+goes missing a second time, it is given the harbour terminal instead. Only the bodiless citizen is
+placed. No body is moved.
+
 The vessel is held at the quay by `PublicTransport.m_DepartureFrame`, which `StopBoarding` honours
 only while the stop's `BoardingVehicle` names it — a field the game blanks after a load and on
 unrelated waypoint changes, so the mod puts its claim back rather than letting the ship sail. If
-shore leave ends with passengers still out, the call is extended in steps, up to half the shore leave
-again. A party that reaches the sea connection by some other line leaves the city there: it can never
+shore leave ends with passengers still out, the call is extended in steps while they are still coming
+back, at most one in-game hour past the scheduled departure. The ship sails early once the whole
+shore party is back, or once it is physically full after last call; at the map edge it sails as soon
+as the setting's worth of visitors is aboard. A party that reaches the sea connection by some other line leaves the city there: it can never
 board, so it is released rather than counted ashore and waited for. Giving the cruise line a sea
 connection no other line serves is what makes every passenger come back to the ship itself.
 
 Passengers ashore are anchored to the terminal by a zero-price `LodgingProvider` and an empty
-`Renter` buffer — the buffer is what makes `TouristHouseholdBehaviorSystem:74` believe the anchor,
-and it stays empty because a building's utility demand follows its renters.
+`Renter` buffer. The game checks that the household is in that buffer
+(`TouristHouseholdBehaviorSystem:82-89`) and clears the anchor every 1024 frames when it is not; the
+shore sweep restores it within 64. The buffer stays empty because a building's utility demand follows
+its renters.
+
+Almost none of this runs on the simulation thread. The shore-party sweep (`ShorePartyJob`) and
+everything that reads or writes the game's vehicle and stop data (`VesselJob`) are Burst jobs scheduled
+after the creature and vehicle jobs that write what they read. The main thread keeps only the
+decisions that log, spawn tourists or open and close a call, made from the jobs' last observations.
 
 ## Translations
 

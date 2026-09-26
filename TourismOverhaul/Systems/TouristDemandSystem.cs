@@ -475,6 +475,12 @@ namespace TourismOverhaul.Systems
         /// </summary>
         private void CleanUpLeakedHouseholds()
         {
+            // Chunk and lookup data read on the main thread is not waited for automatically, and
+            // the game's jobs and this mod's own (rebooking, room reclaim, the cruise sweep) write
+            // these, so wait for exactly those writers before reading.
+            EntityManager.CompleteDependencyBeforeRO<HouseholdCitizen>();
+            EntityManager.CompleteDependencyBeforeRO<PrefabRef>();
+
             const int kMaxRemovalsPerUpdate = 64;
 
             if (m_LeakedHouseholdQuery.IsEmptyIgnoreFilter)
@@ -951,6 +957,12 @@ namespace TourismOverhaul.Systems
         /// </summary>
         private void CountConvertedArrivals()
         {
+            // Chunk and lookup data read on the main thread is not waited for automatically, and
+            // the game's jobs and this mod's own (rebooking, room reclaim, the cruise sweep) write
+            // these, so wait for exactly those writers before reading.
+            EntityManager.CompleteDependencyBeforeRO<Components.ArrivalMode>();
+            EntityManager.CompleteDependencyBeforeRO<HouseholdCitizen>();
+
             if (m_ArrivedQuery.IsEmptyIgnoreFilter)
             {
                 return;
@@ -1059,6 +1071,12 @@ namespace TourismOverhaul.Systems
         /// <summary>Total hotel rooms citywide, occupied plus free.</summary>
         private int CountHotelRooms()
         {
+            // Chunk and lookup data read on the main thread is not waited for automatically, and
+            // the game's jobs and this mod's own (rebooking, room reclaim, the cruise sweep) write
+            // these, so wait for exactly those writers before reading.
+            EntityManager.CompleteDependencyBeforeRO<LodgingProvider>();
+            EntityManager.CompleteDependencyBeforeRO<Renter>();
+
             TourismOverhaulSetting settings = Mod.Settings;
 
             if (settings == null || settings.HotelRoomDemandOccupancy <= 0)
@@ -1112,6 +1130,11 @@ namespace TourismOverhaul.Systems
         /// <summary>Citizens across the query's households, and how many households hold any.</summary>
         private int CountCitizensIn(EntityQuery query, out int occupiedHouseholds)
         {
+            // Chunk and lookup data read on the main thread is not waited for automatically, and
+            // the game's jobs and this mod's own (rebooking, room reclaim, the cruise sweep) write
+            // these, so wait for exactly those writers before reading.
+            EntityManager.CompleteDependencyBeforeRO<HouseholdCitizen>();
+
             int count = 0;
             occupiedHouseholds = 0;
 
@@ -1275,6 +1298,12 @@ namespace TourismOverhaul.Systems
         /// </summary>
         private void SpawnTouristHouseholds(int count, TourismOverhaulSetting settings)
         {
+            // Chunk and lookup data read on the main thread is not waited for automatically, and
+            // the game's jobs and this mod's own (rebooking, room reclaim, the cruise sweep) write
+            // these, so wait for exactly those writers before reading.
+            EntityManager.CompleteDependencyBeforeRO<OutsideConnectionData>();
+            EntityManager.CompleteDependencyBeforeRO<PrefabRef>();
+
             NativeArray<Entity> prefabEntities = m_HouseholdPrefabQuery.ToEntityArray(Allocator.Temp);
             NativeArray<ArchetypeData> archetypes =
                 m_HouseholdPrefabQuery.ToComponentDataArray<ArchetypeData>(Allocator.Temp);

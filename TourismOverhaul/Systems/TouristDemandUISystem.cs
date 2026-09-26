@@ -365,6 +365,12 @@ namespace TourismOverhaul.Systems
         /// </summary>
         private void CountRooms(out int free, out int total)
         {
+            // Chunk and lookup data read on the main thread is not waited for automatically, and
+            // the game's jobs and this mod's own (rebooking, room reclaim, the cruise sweep) write
+            // these, so wait for exactly those writers before reading.
+            EntityManager.CompleteDependencyBeforeRO<LodgingProvider>();
+            EntityManager.CompleteDependencyBeforeRO<Renter>();
+
             free = 0;
             total = 0;
 

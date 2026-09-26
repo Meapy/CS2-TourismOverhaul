@@ -160,6 +160,15 @@ namespace TourismOverhaul.Systems
 
         private void AssignNeeds(int chance, NativeArray<Resource> options, ref Random random)
         {
+            // Chunk data read on the main thread is not waited for automatically. HouseholdNeed and
+            // Resources are written by the game's economy jobs, and CruiseVoyageSystem's shore-party
+            // sweep writes CruisePassenger.m_Recalled in a job, so wait for exactly those writers.
+            EntityManager.CompleteDependencyBeforeRW<HouseholdNeed>();
+            EntityManager.CompleteDependencyBeforeRO<Game.Economy.Resources>();
+            EntityManager.CompleteDependencyBeforeRO<HouseholdCitizen>();
+            EntityManager.CompleteDependencyBeforeRO<Household>();
+            EntityManager.CompleteDependencyBeforeRO<Components.CruisePassenger>();
+
             EntityTypeHandle entityHandle = GetEntityTypeHandle();
             ComponentTypeHandle<HouseholdNeed> needHandle = GetComponentTypeHandle<HouseholdNeed>();
             ComponentTypeHandle<Components.CruisePassenger> cruiseHandle =
@@ -215,7 +224,7 @@ namespace TourismOverhaul.Systems
 
                         // Recalled to the ship. Giving this household a reason to visit a shop now
                         // would send it away from the quay, because the need is checked before
-                        // anything else — see CruiseVoyageSystem.RecallToShip, which clears it for
+                        // anything else — see ShorePartyJob.RecallToHarbour, which clears it for
                         // exactly this reason.
                         if (isCruise && cruisePassengers[i].m_Recalled != 0)
                         {
