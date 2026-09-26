@@ -49,6 +49,12 @@ namespace TourismOverhaul
                 },
 
                 { "Assets.NAME[TourismOverhaul PassengerCruiseLine]", "Passenger Cruise Line" },
+                { "Assets.NAME[TourismOverhaul CruiseShip]", "Cruise Ship" },
+                {
+                    "Assets.DESCRIPTION[TourismOverhaul CruiseShip]",
+                    "The cruise line's own ship. It carries as many passengers as the Cruise ship " +
+                    "passengers setting says, and only ever serves the cruise line."
+                },
                 {
                     "Assets.DESCRIPTION[TourismOverhaul PassengerCruiseLine]",
                     "Connects navigation points and harbors to create a cruise ship route over a " +
@@ -552,10 +558,12 @@ namespace TourismOverhaul
                     m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.CruiseShoreLeaveHours)),
                     "How long a cruise ship's passengers spend in your city before going back " +
                     "aboard, in hours.\n\n" +
-                    "The ship waits at the quay for the whole time, so a long shore leave means " +
+                    "The ship waits at the quay for up to this long, so a long shore leave means " +
                     "fewer sailings and other ships on the line queueing behind it. Passengers are " +
-                    "sent back to the quay for the last quarter of their stay, so give them enough " +
-                    "time to walk there and back.\n\n" +
+                    "called back a few hours before it sails - about half the stay for a short " +
+                    "visit, a smaller share for a long one - and drop whatever they are doing to " +
+                    "head for the quay. The ship sails early once everyone is back or it is full, " +
+                    "and waits at most an hour past its time for stragglers.\n\n" +
                     "Cruise passengers sleep on the ship, so they never need a hotel room and never " +
                     "compete with your other visitors for one."
                 },
@@ -565,12 +573,11 @@ namespace TourismOverhaul
                 },
                 {
                     m_Setting.GetOptionDescLocaleID(nameof(TourismOverhaulSetting.CruiseShipCapacity)),
-                    "How many passengers a cruise ship brings when it calls at your city.\n\n" +
-                    "A cruise arrives roughly full — its passengers booked the voyage long before " +
-                    "it reached you — so this is the figure the ship sails with. Your city then " +
-                    "swings it by up to 500 either way: an attractive port with room for more " +
-                    "visitors fills its ships, a dull or already-crowded one sees them arrive " +
-                    "half empty.\n\n" +
+                    "How many passengers the cruise ship holds.\n\n" +
+                    "The cruise line runs its own Cruise Ship, which looks like the passenger ship " +
+                    "but carries exactly this many. Visitors gather at the sea connection while it " +
+                    "is away, and it sails for your city as soon as this many are aboard (or when " +
+                    "its loading time runs out). Changes apply to the ship already sailing.\n\n" +
                     "These visitors sleep aboard, so they never take a hotel room. They come " +
                     "ashore to shop and to see the sights, and head back to the quay before the " +
                     "ship sails."

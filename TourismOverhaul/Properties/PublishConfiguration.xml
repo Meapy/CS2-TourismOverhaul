@@ -64,21 +64,23 @@ The bar is drawn by the game rather than by the mod, so it matches the others pr
 ## Cruise ships call at your city
 
 A new Passenger Cruise Line tool sits beside the passenger ship line. Draw it from a sea outside
-connection to a harbour and a cruise ship works the route: it fills with visitors out at the map
-edge, sails in, ties up at your quay for the day, and leaves with them when shore leave ends.
+connection to a harbour and the line's own Cruise Ship works the route: it fills with visitors out at
+the map edge, sails in, ties up at your quay for the day, and leaves with them when shore leave ends.
 
 Cruise passengers sleep aboard. They never take a hotel room and never compete with your other
 visitors for one — they come ashore to shop, to visit your attractions and to spend an evening in
 your leisure venues, then walk back to the ship when last call goes out. If your harbour is a long
 way from the sights, some of them will be running.
 
-Select a docked ship and the panel tells you when it sails and how many of its passengers are still
-out in the city.
+When last call goes out, passengers drop what they are doing and head for the quay. The ship
+sails early once everyone is back or it is full, and waits at most an hour past its time for
+stragglers. Select a docked ship and the panel tells you when it sails and how many of its passengers
+are still out in the city.
 
 Nobody is teleported. The passengers are ordinary visitors who happen to arrive by ship — the game
 gives them bodies, routes them, boards them and lands them with its own machinery, exactly as it does
-for everyone else. Shore leave and how many a call brings are both adjustable, though the ship's own
-capacity has the final say.
+for everyone else. Shore leave is adjustable, and so is the size of the ship: the Cruise Ship looks
+like the passenger ship but carries as many as you set, without changing your ordinary ferries.
 
 One cruise line per city, from a sea connection to a single harbour. The tool disappears once you
 have drawn one and comes back if you delete it. A harbour shared with an ordinary passenger ship line
@@ -244,7 +246,7 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
   <Tag Value="Code Mod" />
 
   <ForumLink Value="https://forum.paradoxplaza.com/forum/threads/mod-tourism-overhaul-fix-tourism.1937099/" />
-  <ModVersion Value="1.9.1" />
+  <ModVersion Value="1.10.0" />
   <GameVersion Value="1.6.*" />
 
   <!--
@@ -252,16 +254,16 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
     accumulating history here republishes every past release with every upload. The full record
     belongs in CHANGELOG.md.
   -->
-  <ChangeLog>1.9.1
-Cruise passengers now come back to the ship. A call could end with most of the shore party still in the city: the ship left the quay early, the quay was closed to boarding while they were already walking back, the recall restarted their journey every few minutes, and anyone sitting indoors was never called at all. All four are fixed, and the ship now waits past its departure for passengers still ashore, up to half the shore leave again. Passengers who leave the city by another line are no longer counted as waiting for a ship they cannot board — give the cruise line a sea connection no other line serves and everyone returns to the ship.
+  <ChangeLog>1.10.0
+The cruise line runs its own Cruise Ship. It looks like the passenger ship but carries as many passengers as the Cruise ship passengers setting, without changing your ordinary ferry lines. At the map edge it sails as soon as that many visitors are aboard.
 
-Tourists no longer run away to the maximum, and hotels stop being built without end. The "hotel rooms per tourist" setting was applied per person rather than per party, so the city asked for about twice the rooms it needed and every new hotel raised the tourist target again.
+Cruise passengers get back to the ship. When last call goes out they drop whatever they are doing and head for the quay, instead of finishing their shopping first. Passengers the game had left with nowhere to be — no building and no body, so no trip could ever start — reappear where they were last and walk back, so you can watch them go. Last call scales with the length of the stay, earlier for a long visit but never out of hand.
 
-Tourists no longer walk into a park that is already full. The park limit covered leisure trips but not the attraction route tourists take 30% of the time; crowded attractions now lose their appeal properly, and a full park is passed over on both paths. Saving no longer reopens every closed park for several seconds.
+The ship sails early once everyone is back, or when it is full, and waits at most an hour past its time for anyone still coming back. It no longer occasionally sails before its passengers could return.
 
-Ordinary visitors no longer queue at the cruise line's sea connection for a ship that calls rarely. Cruise passengers who sailed home no longer linger at the map edge searching for somewhere to go, which was a large share of all route searches in a big city.
+Cruise parties are no longer booked into hotel rooms. The cruise queue no longer runs away after a line is rebuilt.
 
-Performance: hotel room reclaim, the spending ledger and the hotel efficiency floor now run as background jobs instead of on the simulation thread.
+Performance: the cruise system, tourist rebooking and several other systems now run as background jobs instead of on the simulation thread. The cruise system went from 2-6 ms per frame to under 0.1 ms in a large city.
   </ChangeLog>
 
   <ExternalLink Type="github" Url="https://github.com/Meapy/CS2-TourismOverhaul" />

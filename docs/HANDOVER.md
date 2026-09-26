@@ -10,13 +10,20 @@ diverged from it in one fundamental way, described below.
 
 ## Where the repo stands
 
-Stamped **1.8.0** — `PublishConfiguration.xml`, its `ChangeLog` field and `CHANGELOG.md` all agree.
-Not yet published, and not yet pushed.
+Stamped **1.10.0** — `PublishConfiguration.xml`, its `ChangeLog` field and `CHANGELOG.md` all agree.
 
-Before uploading: the mod has not had a clean end-to-end playthrough since the last few changes to
-the return leg, and `GameVersion` in `PublishConfiguration.xml` still reads `1.6.*` — check it
-against the build shown on the main menu, because Paradox rejects the package on a mismatch. The
-verb is `NewVersion`, run from the managed project directory so the media paths resolve.
+`CruiseVoyageSystem` is split across three files: the main system (decisions, logging, spawning),
+`CruiseVoyageSystem.ShoreParty.cs` (the Burst `ShorePartyJob` and the `ShorePartyAccess` helpers it
+shares with the main thread) and `CruiseVoyageSystem.Vessels.cs` (the Burst `VesselJob`, which owns
+every read and write of the game's vehicle and stop data). The main thread no longer reads
+`PublicTransport`, `Target`, `CurrentTransport` or `CurrentVehicle` on the hot path; it works from the
+jobs' observations and sends holds and releases back as requests. Keep it that way: the first
+main-thread read of a type the frame's jobs write waits for all of them, and narrowing the wait only
+moves it to the next type.
+
+`GameVersion` in `PublishConfiguration.xml` reads `1.6.*` — check it against the build shown on the
+main menu before an upload, because Paradox rejects the package on a mismatch. The verb is
+`NewVersion`, run from the managed project directory so the media paths resolve.
 
 ## How the feature actually works
 
@@ -34,13 +41,20 @@ The cycle as built:
 2. **The map-edge stop is held maximally attractive** and the city pier maximally unattractive, both
    through `PathUtils.GetTransportStopSpecification`. See SESSION-NOTES for every term.
 3. **The ship arrives, `BeginLoading` holds it** for `kLoadTimeoutFrames`. The queue boards natively
-   throughout. Only the deadline ends the load.
+   throughout. The load ends at the deadline, when the vessel is physically full, or when the
+   **Cruise ship passengers** setting's worth of tourist households is aboard. The ship is the mod's
+   own Cruise Ship prefab (`CruiseLineSystem`), whose capacity is that setting.
 4. **At the city quay**, `AdoptCarriedPassengers` makes the shore party out of whoever the vessel
    carried, anchors their lodging to the terminal and cancels the hotel errand they arrived with.
    `StartCall` holds the ship for the shore leave.
-5. **At last call** (`kLastCallFraction`, 33%) each citizen is issued a `TripNeeded` naming the
-   terminal, re-issued every update to anyone not already walking.
-6. **At the reboard frame** the call closes and the parties leave via `MovingAway`.
+5. **At last call** (4.5 h x ln(1 + stay / 4 h) before sailing, spread over a fifth of that) each
+   citizen is issued a `TripNeeded` naming the ship's sea connection. Walkers are turned round on the
+   spot with a `ResetTrip` event; citizens left with no building and no body are given back the last
+   building they were seen in (the terminal if that fails twice), since `TripNeededSystem` serves only
+   citizens with a `CurrentBuilding`. The recall is re-asserted every 1024 frames.
+6. **At the reboard frame** the call closes and the parties leave via `MovingAway`. The ship sails
+   early once the whole party is back, or once it is full after last call, and waits at most one
+   in-game hour past its time for anyone still coming back.
 
 ## Verified working
 
@@ -57,10 +71,12 @@ The cycle as built:
 
 ### 1. The harbour lodging anchor oscillates
 
-`TouristHouseholdBehaviorSystem:74` nulls `TouristHousehold.m_Hotel` when the hotel has no `Renter`
-buffer, which a harbour has not got. `KeepOffTheHotels` rewrites it every update. Parties are
-therefore intermittently re-marked `LodgingSeeker`. This is the root of anything hotel-related that
-looks flaky. Written up in SESSION-NOTES with both candidate fixes and why each needs care.
+`TouristHouseholdBehaviorSystem:82-89` nulls `TouristHousehold.m_Hotel` every 1024 frames when the
+household is not in the hotel's `Renter` list, and cruise parties deliberately are not (a building's
+utility demand follows its renters). The shore sweep restores it within 64 frames, so about one party
+in sixteen briefly shows no accommodation; the `CruiseVoyage timing` log line reports how many anchors
+each sweep restored. `TouristRebookSystem` excludes cruise parties, so the gap no longer books them a
+real room. Written up in SESSION-NOTES with both candidate fixes and why each needs care.
 
 ### 2. Possible orphaned hotel reservations
 
@@ -72,8 +88,9 @@ destination. Adoption overwrites `m_Hotel` with the terminal, which may leave th
 ### 3. The passenger buffer counts everyone
 
 `CountOutboundAboard` reads the vessel's whole `Passenger` buffer, so commuters riding the line are
-counted as complement — measured at "1635 aboard of 1000". Nothing depends on it now that the load
-ends on a deadline, but any future logic keyed to it will be wrong.
+counted as complement — measured at "1635 aboard of 1000". It now also returns the tourist households
+alone, and that figure is the one the "complement aboard" early sailing uses. "Physically full"
+compares the whole buffer with the vessel's capacity, since everyone aboard really does take a place.
 
 ### 4. Queue yield is roughly a fifth
 
@@ -94,8 +111,8 @@ scheme handles appended fields, not deleted ones.
 
 ### 7. Translations
 
-`LeisureCostPercent`, `CruiseShoreLeaveHours`, `CruiseShipCapacity` and the two panel labels are
-English-only. Keys are appended at the end of `Translations.Keys`, so the locale arrays are simply
+`LeisureCostPercent`, `CruiseShoreLeaveHours`, `CruiseShipCapacity`, the two panel labels and the
+Cruise Ship's name and description are English-only. Keys are appended at the end of `Translations.Keys`, so the locale arrays are simply
 shorter and fall back to English.
 
 ## Working rules that earned their place

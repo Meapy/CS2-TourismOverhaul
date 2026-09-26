@@ -5,8 +5,10 @@ using Game.Citizens;
 using Game.Common;
 using Game.Companies;
 using Game.Tools;
+using Unity.Burst;
 using Unity.Collections;
 using Unity.Entities;
+using Unity.Jobs;
 using Unity.Mathematics;
 
 namespace TourismOverhaul.Systems
@@ -38,6 +40,19 @@ namespace TourismOverhaul.Systems
 
         private EndFrameBarrier m_EndFrameBarrier;
 
+        // Both passes walk every tourist household in the city (58k in a 665k save) to find the few
+        // without a room: 6-10 ms per update on the main thread, spiking to 40 ms. They now run as one
+        // Burst job, with the same walk in the same order.
+        private EntityStorageInfoLookup m_Entities;
+        private ComponentLookup<LodgingProvider> m_LodgingProviders;
+        private ComponentLookup<PropertyRenter> m_PropertyRenters;
+        private ComponentLookup<TouristHousehold> m_TouristHouseholds;
+        private BufferLookup<Renter> m_Renters;
+
+        /// <summary>Households the last job rehoused; added to <see cref="Rebooked"/> on the next update.</summary>
+        private NativeReference<int> m_LastRebooked;
+        private JobHandle m_LastJob;
+
         /// <summary>Households rehoused since load. For diagnostics.</summary>
         public int Rebooked { get; private set; }
 
@@ -49,15 +64,27 @@ namespace TourismOverhaul.Systems
         {
             base.OnCreate();
 
-            m_LodgingProviders = GetComponentLookup<LodgingProvider>(isReadOnly: true);
+            m_Entities = GetEntityStorageInfoLookup();
+            m_LodgingProviders = GetComponentLookup<LodgingProvider>(isReadOnly: false);
             m_PropertyRenters = GetComponentLookup<PropertyRenter>(isReadOnly: true);
-            m_TouristHouseholds = GetComponentLookup<TouristHousehold>(isReadOnly: true);
+            m_TouristHouseholds = GetComponentLookup<TouristHousehold>(isReadOnly: false);
+            m_Renters = GetBufferLookup<Renter>(isReadOnly: false);
+            m_LastRebooked = new NativeReference<int>(Allocator.Persistent);
             m_EndFrameBarrier = World.GetOrCreateSystemManaged<EndFrameBarrier>();
 
-            // Tourists with citizens but no room. Households already on their way out are left be.
+            // Tourists with citizens but no room. Households already on their way out are left be,
+            // and so are cruise parties.
+            //
+            // A cruise party's anchor is the harbour, and the game takes it away from each party
+            // every 1024 frames (TouristHouseholdBehaviorSystem:74-92, because they are deliberately
+            // not in the terminal's Renter list) until the shore-party sweep restores it, up to 64
+            // frames later. A pass landing in that window booked the party into a real hotel — a
+            // room taken and a renter entry added — which the sweep then cancelled without giving
+            // either back. A cruise passenger sleeps on the ship and must never take a room.
             m_DisplacedQuery = GetEntityQuery(
                 ComponentType.ReadWrite<TouristHousehold>(),
                 ComponentType.ReadOnly<HouseholdCitizen>(),
+                ComponentType.Exclude<Components.CruisePassenger>(),
                 ComponentType.Exclude<MovingAway>(),
                 ComponentType.Exclude<Deleted>(),
                 ComponentType.Exclude<Temp>());
@@ -70,32 +97,19 @@ namespace TourismOverhaul.Systems
                 ComponentType.Exclude<Temp>());
         }
 
-
-        // Cached lookups: these paths ask the same questions for every household they walk, and going
-        // through EntityManager each time resolves the type and checks the jobs writing it every call.
-        private ComponentLookup<LodgingProvider> m_LodgingProviders;
-        private ComponentLookup<PropertyRenter> m_PropertyRenters;
-        private ComponentLookup<TouristHousehold> m_TouristHouseholds;
-
-        /// <summary>Refreshes the cached lookups, once per update.</summary>
-        private void RefreshLookups()
+        protected override void OnDestroy()
         {
-            m_LodgingProviders.Update(this);
-            m_PropertyRenters.Update(this);
-            m_TouristHouseholds.Update(this);
-
-            // A lookup read on the main thread does not wait for the jobs writing it, which
-            // EntityManager.GetComponentData/GetBuffer did. So wait here for exactly the types whose
-            // data is read. Types only tested for presence need no wait (EntityManager.HasComponent
-            // never waited either), and CompleteDependency() waited for all of them: measured at
-            // 5-16 ms per update.
-            EntityManager.CompleteDependencyBeforeRO<PropertyRenter>();
-            EntityManager.CompleteDependencyBeforeRO<TouristHousehold>();
+            m_LastJob.Complete();
+            m_LastRebooked.Dispose();
+            base.OnDestroy();
         }
 
         protected override void OnUpdate()
         {
-            RefreshLookups();
+            // Scheduled 128 frames ago; this only collects its count.
+            m_LastJob.Complete();
+            Rebooked += m_LastRebooked.Value;
+            m_LastRebooked.Value = 0;
 
             TourismOverhaulSetting settings = Mod.Settings;
 
@@ -109,47 +123,85 @@ namespace TourismOverhaul.Systems
                 return;
             }
 
-            NativeList<Entity> displaced = CollectDisplaced(settings.MaxRebookingsPerUpdate);
-            try
+            m_Entities.Update(this);
+            m_LodgingProviders.Update(this);
+            m_PropertyRenters.Update(this);
+            m_TouristHouseholds.Update(this);
+            m_Renters.Update(this);
+
+            NativeList<ArchetypeChunk> touristChunks =
+                m_DisplacedQuery.ToArchetypeChunkListAsync(Allocator.TempJob, out JobHandle touristsReady);
+            NativeList<ArchetypeChunk> hotelChunks =
+                m_HotelQuery.ToArchetypeChunkListAsync(Allocator.TempJob, out JobHandle hotelsReady);
+
+            JobHandle job = new RebookJob
             {
+                m_TouristChunks = touristChunks,
+                m_HotelChunks = hotelChunks,
+                m_EntityType = GetEntityTypeHandle(),
+                m_CitizenType = GetBufferTypeHandle<HouseholdCitizen>(isReadOnly: true),
+                m_Entities = m_Entities,
+                m_LodgingProviders = m_LodgingProviders,
+                m_PropertyRenters = m_PropertyRenters,
+                m_TouristHouseholds = m_TouristHouseholds,
+                m_Renters = m_Renters,
+                m_CommandBuffer = m_EndFrameBarrier.CreateCommandBuffer(),
+                m_Limit = settings.MaxRebookingsPerUpdate,
+                m_Rebooked = m_LastRebooked,
+            }.Schedule(JobHandle.CombineDependencies(Dependency, touristsReady, hotelsReady));
+
+            touristChunks.Dispose(job);
+            hotelChunks.Dispose(job);
+            m_EndFrameBarrier.AddJobHandleForProducer(job);
+            m_LastJob = job;
+            Dependency = job;
+        }
+
+        [BurstCompile]
+        private struct RebookJob : IJob
+        {
+            [ReadOnly] public NativeList<ArchetypeChunk> m_TouristChunks;
+            [ReadOnly] public NativeList<ArchetypeChunk> m_HotelChunks;
+            [ReadOnly] public EntityTypeHandle m_EntityType;
+            [ReadOnly] public BufferTypeHandle<HouseholdCitizen> m_CitizenType;
+            [ReadOnly] public EntityStorageInfoLookup m_Entities;
+            [ReadOnly] public ComponentLookup<PropertyRenter> m_PropertyRenters;
+            public ComponentLookup<LodgingProvider> m_LodgingProviders;
+            public ComponentLookup<TouristHousehold> m_TouristHouseholds;
+            public BufferLookup<Renter> m_Renters;
+            public EntityCommandBuffer m_CommandBuffer;
+            public int m_Limit;
+            public NativeReference<int> m_Rebooked;
+
+            public void Execute()
+            {
+                NativeList<Entity> displaced = CollectDisplaced();
+
                 if (displaced.Length > 0)
                 {
                     Rehouse(displaced);
                 }
-            }
-            finally
-            {
+
                 displaced.Dispose();
             }
-        }
 
-        /// <summary>Tourist households holding no room, capped so a mass closure is spread out.</summary>
-        private NativeList<Entity> CollectDisplaced(int limit)
-        {
-            NativeList<Entity> displaced = new NativeList<Entity>(64, Allocator.Temp);
-
-            EntityTypeHandle entityHandle = GetEntityTypeHandle();
-            ComponentTypeHandle<TouristHousehold> touristHandle =
-                GetComponentTypeHandle<TouristHousehold>(isReadOnly: true);
-            BufferTypeHandle<HouseholdCitizen> citizenHandle =
-                GetBufferTypeHandle<HouseholdCitizen>(isReadOnly: true);
-
-            NativeArray<ArchetypeChunk> chunks = m_DisplacedQuery.ToArchetypeChunkArray(Allocator.Temp);
-            try
+            /// <summary>Tourist households holding no room, capped so a mass closure is spread out.</summary>
+            private NativeList<Entity> CollectDisplaced()
             {
-                for (int c = 0; c < chunks.Length && displaced.Length < limit; c++)
-                {
-                    ArchetypeChunk chunk = chunks[c];
-                    NativeArray<Entity> entities = chunk.GetNativeArray(entityHandle);
-                    NativeArray<TouristHousehold> tourists = chunk.GetNativeArray(ref touristHandle);
-                    BufferAccessor<HouseholdCitizen> citizens = chunk.GetBufferAccessor(ref citizenHandle);
+                NativeList<Entity> displaced = new NativeList<Entity>(64, Allocator.Temp);
 
-                    for (int i = 0; i < chunk.Count && displaced.Length < limit; i++)
+                for (int c = 0; c < m_TouristChunks.Length && displaced.Length < m_Limit; c++)
+                {
+                    ArchetypeChunk chunk = m_TouristChunks[c];
+                    NativeArray<Entity> entities = chunk.GetNativeArray(m_EntityType);
+                    BufferAccessor<HouseholdCitizen> citizens = chunk.GetBufferAccessor(ref m_CitizenType);
+
+                    for (int i = 0; i < chunk.Count && displaced.Length < m_Limit; i++)
                     {
+                        Entity hotel = m_TouristHouseholds[entities[i]].m_Hotel;
+
                         // A household still holding a live hotel is fine.
-                        if (tourists[i].m_Hotel != Entity.Null
-                            && EntityManager.Exists(tourists[i].m_Hotel)
-                            && m_LodgingProviders.HasComponent(tourists[i].m_Hotel))
+                        if (hotel != Entity.Null && m_Entities.Exists(hotel) && m_LodgingProviders.HasComponent(hotel))
                         {
                             continue;
                         }
@@ -162,101 +214,72 @@ namespace TourismOverhaul.Systems
                         displaced.Add(entities[i]);
                     }
                 }
-            }
-            finally
-            {
-                chunks.Dispose();
+
+                return displaced;
             }
 
-            return displaced;
-        }
-
-        /// <summary>
-        /// Books displaced households into hotels that still have space, largest first so guests
-        /// spread across the city rather than piling into the first hotel found.
-        /// </summary>
-        private void Rehouse(NativeList<Entity> displaced)
-        {
-            EntityCommandBuffer commandBuffer = m_EndFrameBarrier.CreateCommandBuffer();
-
-            ComponentTypeHandle<LodgingProvider> providerHandle =
-                GetComponentTypeHandle<LodgingProvider>(isReadOnly: false);
-            BufferTypeHandle<Renter> renterHandle = GetBufferTypeHandle<Renter>(isReadOnly: false);
-            EntityTypeHandle entityHandle = GetEntityTypeHandle();
-
-            int next = 0;
-
-            NativeArray<ArchetypeChunk> chunks = m_HotelQuery.ToArchetypeChunkArray(Allocator.Temp);
-            try
+            /// <summary>
+            /// Books displaced households into hotels that still have space, filling each hotel's
+            /// spare rooms before moving on. Mirrors HotelReserveJob (TouristFindTargetSystem.cs:182-192):
+            /// take a free room, add the household to the renter list, point the household at the
+            /// hotel, drop LodgingSeeker, and send them there.
+            /// </summary>
+            private void Rehouse(NativeList<Entity> displaced)
             {
-                for (int c = 0; c < chunks.Length && next < displaced.Length; c++)
+                int next = 0;
+
+                for (int c = 0; c < m_HotelChunks.Length && next < displaced.Length; c++)
                 {
-                    ArchetypeChunk chunk = chunks[c];
-                    NativeArray<Entity> hotels = chunk.GetNativeArray(entityHandle);
-                    NativeArray<LodgingProvider> providers = chunk.GetNativeArray(ref providerHandle);
-                    BufferAccessor<Renter> renters = chunk.GetBufferAccessor(ref renterHandle);
+                    ArchetypeChunk chunk = m_HotelChunks[c];
+                    NativeArray<Entity> hotels = chunk.GetNativeArray(m_EntityType);
 
                     for (int i = 0; i < chunk.Count && next < displaced.Length; i++)
                     {
-                        LodgingProvider provider = providers[i];
-
-                        if (provider.m_FreeRooms <= 0)
-                        {
-                            continue;
-                        }
-
                         Entity hotel = hotels[i];
+                        LodgingProvider provider = m_LodgingProviders[hotel];
 
-                        if (!m_PropertyRenters.HasComponent(hotel))
+                        if (provider.m_FreeRooms <= 0 || !m_PropertyRenters.HasComponent(hotel))
                         {
                             continue;
                         }
 
                         Entity property = m_PropertyRenters[hotel].m_Property;
+                        DynamicBuffer<Renter> renterList = m_Renters[hotel];
 
-                        DynamicBuffer<Renter> renterList = renters[i];
-
-                        // Fill this hotel's spare rooms before moving to the next.
                         while (provider.m_FreeRooms > 0 && next < displaced.Length)
                         {
                             Entity household = displaced[next++];
 
-                            if (!EntityManager.Exists(household)
-                                || !m_TouristHouseholds.HasComponent(household))
+                            if (!m_Entities.Exists(household) || !m_TouristHouseholds.HasComponent(household))
                             {
                                 continue;
                             }
 
-                            // Mirrors HotelReserveJob (TouristFindTargetSystem.cs:182-192).
                             provider.m_FreeRooms--;
                             renterList.Add(new Renter { m_Renter = household });
 
-                            TouristHousehold tourist =
-                                m_TouristHouseholds[household];
+                            TouristHousehold tourist = m_TouristHouseholds[household];
                             tourist.m_Hotel = hotel;
-                            // Clear the stay timer so TouristStaySystem gives them a fresh visit
-                            // rather than expiring them on the old hotel's schedule.
-                            tourist.m_LeavingTime = 0u;
-                            EntityManager.SetComponentData(household, tourist);
 
-                            commandBuffer.RemoveComponent<LodgingSeeker>(household);
+                            // Clear the stay timer so TouristStaySystem gives them a fresh visit rather
+                            // than expiring them on the old hotel's schedule.
+                            tourist.m_LeavingTime = 0u;
+                            m_TouristHouseholds[household] = tourist;
+
+                            m_CommandBuffer.RemoveComponent<LodgingSeeker>(household);
 
                             // Send them to the new hotel, as TouristFindTargetSystem would.
-                            if (property != Entity.Null && EntityManager.Exists(property))
+                            if (property != Entity.Null && m_Entities.Exists(property))
                             {
-                                commandBuffer.AddComponent(household, new Target(property));
+                                m_CommandBuffer.AddComponent(household, new Target(property));
                             }
 
-                            Rebooked++;
+                            m_Rebooked.Value++;
                         }
 
-                        providers[i] = provider;
+                        m_LodgingProviders[hotel] = provider;
                     }
                 }
-            }
-            finally
-            {
-                chunks.Dispose();
             }
         }
     }

@@ -184,6 +184,11 @@ namespace TourismOverhaul.Systems
         /// </summary>
         private string DescribeSpending()
         {
+            // Chunk and lookup data read on the main thread is not waited for automatically, and
+            // the game's jobs and this mod's own (rebooking, room reclaim, the cruise sweep) write
+            // these, so wait for exactly those writers before reading.
+            EntityManager.CompleteDependencyBeforeRO<Game.Economy.Resources>();
+
             long held = 0;
 
             BufferTypeHandle<Game.Economy.Resources> resourceHandle =
@@ -296,6 +301,12 @@ namespace TourismOverhaul.Systems
         /// </summary>
         private void TrackDepartures()
         {
+            // Chunk and lookup data read on the main thread is not waited for automatically, and
+            // the game's jobs and this mod's own (rebooking, room reclaim, the cruise sweep) write
+            // these, so wait for exactly those writers before reading.
+            EntityManager.CompleteDependencyBeforeRO<HouseholdCitizen>();
+            EntityManager.CompleteDependencyBeforeRO<MovingAway>();
+
             EntityTypeHandle entityHandle = GetEntityTypeHandle();
             ComponentTypeHandle<MovingAway> movingAwayHandle =
                 GetComponentTypeHandle<MovingAway>(isReadOnly: true);
@@ -444,6 +455,13 @@ namespace TourismOverhaul.Systems
         /// </summary>
         private void CountEmptyByCause(out int dynamicPrefab, out int otherPrefab, out int noCurrentBuilding)
         {
+            // Chunk and lookup data read on the main thread is not waited for automatically, and
+            // the game's jobs and this mod's own (rebooking, room reclaim, the cruise sweep) write
+            // these, so wait for exactly those writers before reading.
+            EntityManager.CompleteDependencyBeforeRO<CurrentBuilding>();
+            EntityManager.CompleteDependencyBeforeRO<HouseholdCitizen>();
+            EntityManager.CompleteDependencyBeforeRO<PrefabRef>();
+
             dynamicPrefab = 0;
             otherPrefab = 0;
             noCurrentBuilding = 0;
@@ -506,6 +524,11 @@ namespace TourismOverhaul.Systems
 
         private void CountHouseholds(out int households, out int withCitizens, out int citizens)
         {
+            // Chunk and lookup data read on the main thread is not waited for automatically, and
+            // the game's jobs and this mod's own (rebooking, room reclaim, the cruise sweep) write
+            // these, so wait for exactly those writers before reading.
+            EntityManager.CompleteDependencyBeforeRO<HouseholdCitizen>();
+
             households = 0;
             withCitizens = 0;
             citizens = 0;
@@ -547,6 +570,11 @@ namespace TourismOverhaul.Systems
 
         private void CountLeaveReasons(out int noTarget, out int noHotel, out int noMoney, out int other)
         {
+            // Chunk and lookup data read on the main thread is not waited for automatically, and
+            // the game's jobs and this mod's own (rebooking, room reclaim, the cruise sweep) write
+            // these, so wait for exactly those writers before reading.
+            EntityManager.CompleteDependencyBeforeRO<MovingAway>();
+
             noTarget = 0;
             noHotel = 0;
             noMoney = 0;
@@ -582,6 +610,11 @@ namespace TourismOverhaul.Systems
 
         private int CountFreeRooms()
         {
+            // Chunk and lookup data read on the main thread is not waited for automatically, and
+            // the game's jobs and this mod's own (rebooking, room reclaim, the cruise sweep) write
+            // these, so wait for exactly those writers before reading.
+            EntityManager.CompleteDependencyBeforeRO<LodgingProvider>();
+
             int free = 0;
 
             ComponentTypeHandle<LodgingProvider> providerHandle =

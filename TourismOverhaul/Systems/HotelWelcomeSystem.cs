@@ -276,6 +276,13 @@ namespace TourismOverhaul.Systems
         /// </summary>
         private void UpdateBonus(TourismOverhaulSetting settings, uint frame)
         {
+            // Chunk and lookup data read on the main thread is not waited for automatically, and
+            // the game's jobs and this mod's own (rebooking, room reclaim, the cruise sweep) write
+            // these, so wait for exactly those writers before reading.
+            EntityManager.CompleteDependencyBeforeRO<HotelWelcome>();
+            EntityManager.CompleteDependencyBeforeRO<LodgingProvider>();
+            EntityManager.CompleteDependencyBeforeRO<Renter>();
+
             int bonusRooms = 0;
             int opening = 0;
 
