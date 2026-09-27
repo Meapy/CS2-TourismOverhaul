@@ -1037,3 +1037,25 @@ does. `TripResetSystem` drops any detour, clears the arrived and hang-around fla
 obsolete, and sets the new target and travel purpose, and `ResidentAISystem.FindNewPath` re-paths it
 with pedestrian, taxi and public transport. Leave a body that is riding a vehicle alone: every game
 system that emits `ResetTrip` does, and the vehicle's own AI owns it until it steps off.
+
+## Every rule around the hotel trigger has to count rooms and people the same way
+
+The game builds a hotel while `tourists x m_HotelRoomPercentRequirement > rooms`
+(`CommercialDemandSystem:187`): citizens on the left, rooms on the right, and a room takes a whole
+party (`HotelReserveJob` decrements `m_FreeRooms` once per household). Three of the mod's own figures
+feed that inequality, and each one has been wrong in a different direction:
+
+- **The requirement.** Applied per citizen until 1.9.1, it asked for about two rooms per party, so
+  hotels were built at roughly 36% occupancy and never stopped. Now rooms per party / party size.
+- **The bed ceiling on the tourist target.** A head count capped at the room count held occupancy at
+  1.4 / 2.3 = 61%, below the 83% the per-party requirement needs, so after 1.9.1 no hotel was ever
+  built again once a city had one. Reported by players within a day of the release. Fixed in 1.10.1
+  by capping at rooms x party size.
+- **The "Hotel rooms attract tourists" term** (`roomDriven` in `ComputeTarget`): rooms x occupancy
+  setting, also a head count taken from rooms, so the default 80% is really about 35% of beds. Left
+  alone deliberately. Converting it to beds would put the target above the 83% trigger by itself, and
+  since the term grows with rooms, every hotel built would call for the next one: the runaway again.
+
+Before changing any of them, work the equilibrium through: where occupancy settles, and whether the
+trigger fires there. A change that is correct in isolation can switch hotel building off, or on
+forever.

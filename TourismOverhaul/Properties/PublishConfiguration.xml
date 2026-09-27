@@ -246,7 +246,7 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
   <Tag Value="Code Mod" />
 
   <ForumLink Value="https://forum.paradoxplaza.com/forum/threads/mod-tourism-overhaul-fix-tourism.1937099/" />
-  <ModVersion Value="1.10.0" />
+  <ModVersion Value="1.10.1" />
   <GameVersion Value="1.6.*" />
 
   <!--
@@ -254,16 +254,10 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
     accumulating history here republishes every past release with every upload. The full record
     belongs in CHANGELOG.md.
   -->
-  <ChangeLog>1.10.0
-The cruise line runs its own Cruise Ship. It looks like the passenger ship but carries as many passengers as the Cruise ship passengers setting, without changing your ordinary ferry lines. At the map edge it sails as soon as that many visitors are aboard.
+  <ChangeLog>1.10.1
+Hotel and motel zones build again. Since 1.9.1, a city that already had a hotel never built another, however high the tourist demand bar read: the mod held visitor numbers at about 60% of the beds, and the game only builds hotels once rooms are more than about 83% full. Visitors can now fill the hotels, and new hotels and motels are built as they do.
 
-Cruise passengers get back to the ship. When last call goes out they drop whatever they are doing and head for the quay, instead of finishing their shopping first. Passengers the game had left with nowhere to be — no building and no body, so no trip could ever start — reappear where they were last and walk back, so you can watch them go. Last call scales with the length of the stay, earlier for a long visit but never out of hand.
-
-The ship sails early once everyone is back, or when it is full, and waits at most an hour past its time for anyone still coming back. It no longer occasionally sails before its passengers could return.
-
-Cruise parties are no longer booked into hotel rooms. The cruise queue no longer runs away after a line is rebuilt.
-
-Performance: the cruise system, tourist rebooking and several other systems now run as background jobs instead of on the simulation thread. The cruise system went from 2-6 ms per frame to under 0.1 ms in a large city.
+Cities short of hotel beds will hold more tourists than before, up to full hotels. The Maximum tourists setting still caps them.
   </ChangeLog>
 
   <ExternalLink Type="github" Url="https://github.com/Meapy/CS2-TourismOverhaul" />

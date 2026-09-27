@@ -10,7 +10,7 @@ diverged from it in one fundamental way, described below.
 
 ## Where the repo stands
 
-Stamped **1.10.0** — `PublishConfiguration.xml`, its `ChangeLog` field and `CHANGELOG.md` all agree.
+Stamped **1.10.1** — `PublishConfiguration.xml`, its `ChangeLog` field and `CHANGELOG.md` all agree.
 
 `CruiseVoyageSystem` is split across three files: the main system (decisions, logging, spawning),
 `CruiseVoyageSystem.ShoreParty.cs` (the Burst `ShorePartyJob` and the `ShorePartyAccess` helpers it

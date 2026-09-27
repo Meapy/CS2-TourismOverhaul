@@ -148,6 +148,13 @@ demand falls to zero, and `ZoneSpawnSystem:319` then rejects every hotel prefab 
 the requirement by the same multiplier, so the setting changes how many guests a hotel holds without
 also claiming the city is oversupplied.
 
+The requirement is set per party: **Rooms wanted per travelling party** (1.2) divided by the measured
+party size (about 2.3), because the game multiplies tourist *citizens* by it and compares against
+*rooms*, and a room takes a whole party. With 1.2 the game builds hotels only while occupancy is
+above about 83%, so the tourist target must be able to fill the rooms. Its bed ceiling in
+`TouristDemandSystem.ComputeTarget` therefore counts beds as people (rooms x party size). Counting
+rooms held occupancy near 61% and no hotel was ever built again once a city had one (1.9.1-1.10.0).
+
 ## Tourist demand
 
 A seventh demand bar, in the Demand page and the toolbar stack. `TouristDemandUISystem` mirrors
@@ -156,8 +163,8 @@ A seventh demand bar, in the Demand page and the toolbar stack. `TouristDemandUI
 than it rises), and a factor array refreshed on a 256-tick `UIUpdateState`, capped at five and
 sorted by absolute weight as `FactorInfo.CompareTo` does.
 
-Demand is `max(0, (IntrinsicTarget - CurrentTourists) - roomsFree) / IntrinsicTarget` — visitors who
-would come and have nowhere to sleep. `IntrinsicTarget` rather than `TargetTourists` because the
+Demand is `max(0, (IntrinsicTarget - CurrentTourists) - freeRooms x 2.3) / IntrinsicTarget` — visitors
+who would come and have nowhere to sleep, with free rooms counted as the people they can sleep. `IntrinsicTarget` rather than `TargetTourists` because the
 latter is lodging-capped and would read zero exactly when hotels fill, which is the opposite error.
 
 Free rooms are subtracted from the figure itself, not merely listed as a factor beside it. Measuring
