@@ -7,6 +7,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 
+## [1.10.1] — 2026-09-27
+
+### Fixed
+
+- **Hotel and motel zones build again.** Since 1.9.1 a city that already had a hotel never built
+  another, however high the tourist demand bar read. The game builds hotels only while tourists x the
+  room requirement exceeds the rooms (`CommercialDemandSystem:187`), and 1.9.1 made that requirement
+  per party (1.2 rooms per party / 2.3 people), so it needs occupancy above about 83%. But the mod's
+  bed ceiling capped the tourist target at the number of rooms, counting people against rooms, which
+  held occupancy near 61% (1.4 headroom / 2.3 people per room). The ceiling now counts beds as people
+  (rooms x the measured party size), so visitors fill the rooms, and the game builds hotels once
+  occupancy passes the setting's threshold and stops there.
+
 ## [1.10.0] — 2026-09-26
 
 ### Added

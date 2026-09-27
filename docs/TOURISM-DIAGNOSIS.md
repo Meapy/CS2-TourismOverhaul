@@ -343,6 +343,13 @@ building also raises `m_Lodging.y`, which the city reads as oversupply. Multiply
 therefore switches hotel construction off — the intervention defeats itself unless the requirement
 is scaled by the same factor.
 
+The test also mixes units: `m_CurrentTourists` is citizens and `m_Lodging.y` is rooms, and a room
+takes a whole household. Any rule the mod builds around it has to convert the same way. In 1.9.1 the
+requirement became rooms per party divided by party size, which puts the trigger at about 83%
+occupancy, while the mod's tourist target was still capped at the room count, a head count against a
+room count, holding occupancy near 61%. The trigger could never fire and no hotel was built once a
+city had one. 1.10.1 caps the target at rooms x party size.
+
 ---
 
 ## Finding 12 — New zones start with an empty height range and an unassigned index

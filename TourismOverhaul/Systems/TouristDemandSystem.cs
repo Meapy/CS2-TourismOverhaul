@@ -78,12 +78,9 @@ namespace TourismOverhaul.Systems
         /// forty per cent above its own label. Moving it one step earlier leaves every other number
         /// exactly where it was and makes the ceiling the last word, which is what a ceiling is.
         ///
-        /// Deliberately still after the bed ceiling, rather than the tidier position before it.
-        /// That ceiling compares a target counted in citizens against a room count that is closer
-        /// to households — a room holds a party of two or three — so it already bites harder than
-        /// its comment claims, and this factor is part of what offsets it. Correcting the units is
-        /// worth doing and is not this change: doing it here would cut visitor numbers in every
-        /// bed-limited city while fixing a setting.
+        /// Deliberately still after the bed ceiling. In a city short of rooms the target is then
+        /// above the beds, so arrivals keep every room taken rather than settling a little short of
+        /// full, and a full city is what the game's hotel trigger needs to see (see ComputeTarget).
         /// </summary>
         private const float kTargetHeadroom = 1.4f;
 
@@ -374,7 +371,8 @@ namespace TourismOverhaul.Systems
             // steady state, and ApplyMaximum is deliberately outside both: MaximumTourists is an
             // upper bound on tourist citizens, so nothing may be added after it.
             TargetTourists = ApplyMaximum(
-                ComputeTarget(settings, attractiveness, population, CountHotelRooms()) + welcomeBonus,
+                ComputeTarget(settings, attractiveness, population, CountHotelRooms(), PeoplePerRoom())
+                + welcomeBonus,
                 settings);
 
             if (!settings.FixTouristDemand)
@@ -586,7 +584,8 @@ namespace TourismOverhaul.Systems
         }
 
         private static int ComputeTarget(
-            TourismOverhaulSetting settings, int attractiveness, int population, int hotelRooms)
+            TourismOverhaulSetting settings, int attractiveness, int population, int hotelRooms,
+            float peoplePerRoom)
         {
             int vanillaTarget = TourismSystem.GetTargetTourists(math.max(0, attractiveness));
 
@@ -623,9 +622,18 @@ namespace TourismOverhaul.Systems
             // targeting beyond hotel capacity does not raise the tourist count — it just runs the
             // spawner flat out, burning pathfinding on arrivals that leave immediately. Capacity is
             // the real ceiling, so aim at it rather than past it.
+            //
+            // Beds are people, not rooms: a room takes a whole party (HotelReserveJob decrements
+            // m_FreeRooms once per household). Capping a head count at the room count held the
+            // city to about 1.4 / 2.3 = 61% occupancy, and that stopped hotels being built at all.
+            // The game builds one only while tourists x m_HotelRoomPercentRequirement > rooms
+            // (CommercialDemandSystem:187), and the requirement is rooms per party divided by party
+            // size (TouristEconomySystem), so with the default 1.2 it needs occupancy above about
+            // 83%. That is unreachable at 61%, so once a city had any hotel, the hotel and motel
+            // zones never built again however high the tourist demand bar read.
             if (hotelRooms > 0)
             {
-                target = math.min(target, hotelRooms);
+                target = math.min(target, (int)math.round(hotelRooms * peoplePerRoom));
             }
             else if (target == 0)
             {
@@ -1111,6 +1119,20 @@ namespace TourismOverhaul.Systems
             }
 
             return rooms;
+        }
+
+        /// <summary>
+        /// People a hotel room sleeps: the measured tourist party size, or the usual 2.3 before any
+        /// tourists are counted. Rounded and clamped the way TouristEconomySystem rounds it for the
+        /// room requirement, so the bed ceiling and the hotel trigger agree on what a room holds.
+        /// </summary>
+        private float PeoplePerRoom()
+        {
+            float partySize = AveragePartySize;
+
+            return partySize >= 1f
+                ? math.clamp(math.round(partySize * 10f) / 10f, 1f, 4f)
+                : kAveragePartySize;
         }
 
         /// <summary>
