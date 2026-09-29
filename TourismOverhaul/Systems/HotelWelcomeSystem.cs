@@ -7,8 +7,11 @@ using Game.Prefabs;
 using Game.Simulation;
 using Game.Tools;
 using TourismOverhaul.Components;
+using Unity.Burst;
+using Unity.Burst.Intrinsics;
 using Unity.Collections;
 using Unity.Entities;
+using Unity.Jobs;
 using Unity.Mathematics;
 
 namespace TourismOverhaul.Systems
@@ -43,6 +46,16 @@ namespace TourismOverhaul.Systems
 
         private bool m_NeedsBaseline = true;
 
+        private ComponentLookup<PrefabRef> m_PrefabRefs;
+        private ComponentLookup<IndustrialProcessData> m_ProcessData;
+        private ComponentLookup<StorageLimitData> m_StorageLimits;
+        private BufferLookup<Game.Economy.Resources> m_Resources;
+
+        /// <summary>Written by the last update's BonusJob: rooms in opening hotels, and how many.</summary>
+        private NativeArray<int> m_BonusCounts;
+        private JobHandle m_LastJob;
+        private bool m_BonusPending;
+
         /// <summary>Extra tourists currently allowed by hotels inside their opening period.</summary>
         public int WelcomeBonus { get; private set; }
 
@@ -60,6 +73,12 @@ namespace TourismOverhaul.Systems
             m_SimulationSystem = World.GetOrCreateSystemManaged<SimulationSystem>();
             m_EndFrameBarrier = World.GetOrCreateSystemManaged<EndFrameBarrier>();
 
+            m_PrefabRefs = GetComponentLookup<PrefabRef>(isReadOnly: true);
+            m_ProcessData = GetComponentLookup<IndustrialProcessData>(isReadOnly: true);
+            m_StorageLimits = GetComponentLookup<StorageLimitData>(isReadOnly: true);
+            m_Resources = GetBufferLookup<Game.Economy.Resources>(isReadOnly: false);
+            m_BonusCounts = new NativeArray<int>(2, Allocator.Persistent);
+
             // LodgingProvider alone identifies a hotel company. PropertyRenter and Renter used to
             // be required as well, which quietly excluded hotels in signature buildings: those are
             // placed by the player rather than zoned, so the company does not occupy the building
@@ -73,7 +92,7 @@ namespace TourismOverhaul.Systems
             // cruise terminal a stand-in LodgingProvider so its passengers count as lodged for
             // TouristLeaveSystem:68, and because bare LodgingProvider is what identifies a hotel
             // here, that harbour otherwise reads as a hotel that has just opened — gets a welcome
-            // boost, gets stocked with lodging it cannot sell, and then throws in UpdateBonus
+            // boost, gets stocked with lodging it cannot sell, and then throws in the bonus count
             // because a harbour has no Renter buffer.
             m_HotelQuery = GetEntityQuery(
                 ComponentType.ReadOnly<LodgingProvider>(),
@@ -90,12 +109,20 @@ namespace TourismOverhaul.Systems
                 ComponentType.Exclude<Temp>());
         }
 
+        protected override void OnDestroy()
+        {
+            m_LastJob.Complete();
+            m_BonusCounts.Dispose();
+            base.OnDestroy();
+        }
+
         protected override void OnGameLoadingComplete(Colossal.Serialization.Entities.Purpose purpose, GameMode mode)
         {
             base.OnGameLoadingComplete(purpose, mode);
 
             // Hotels that already exist in a loaded city are not new arrivals.
             m_NeedsBaseline = true;
+            m_BonusPending = false;
             WelcomeBonus = 0;
             OpeningHotels = 0;
         }
@@ -109,6 +136,17 @@ namespace TourismOverhaul.Systems
                 WelcomeBonus = 0;
                 OpeningHotels = 0;
                 return;
+            }
+
+            // Scheduled 512 frames ago; this only collects its counts.
+            m_LastJob.Complete();
+
+            if (m_BonusPending)
+            {
+                m_BonusPending = false;
+                OpeningHotels = m_BonusCounts[1];
+                WelcomeBonus = (int)math.round(
+                    m_BonusCounts[0] * (math.clamp(settings.HotelWelcomeBoost, 0, 200) / 100f));
             }
 
             uint frame = m_SimulationSystem.frameIndex;
@@ -126,8 +164,22 @@ namespace TourismOverhaul.Systems
             uint duration = (uint)math.max(1, settings.HotelWelcomeDays) * kFramesPerDay;
             MarkUnseenHotels(frame + duration);
 
-            UpdateBonus(settings, frame);
-            StockOpeningHotels(settings, frame);
+            if (m_HotelQuery.IsEmptyIgnoreFilter)
+            {
+                WelcomeBonus = 0;
+                OpeningHotels = 0;
+                return;
+            }
+
+            m_BonusCounts[0] = 0;
+            m_BonusCounts[1] = 0;
+
+            JobHandle job = ScheduleBonusCount(frame, Dependency);
+            job = ScheduleStocking(settings, frame, job);
+
+            m_BonusPending = true;
+            m_LastJob = job;
+            Dependency = job;
         }
 
         /// <summary>
@@ -143,59 +195,83 @@ namespace TourismOverhaul.Systems
         /// nothing — a deliberate grace, the trading equivalent of opening stock — and once the
         /// period lapses the hotel supplies itself through the normal buyer path like any other
         /// company.
+        ///
+        /// A Burst job, like the room count: writing a Resources buffer from the main thread first
+        /// waits for every job that reads or writes any company's resources.
         /// </summary>
-        private void StockOpeningHotels(TourismOverhaulSetting settings, uint frame)
+        private JobHandle ScheduleStocking(TourismOverhaulSetting settings, uint frame, JobHandle dependency)
         {
             int stock = math.max(0, settings.HotelWelcomeStock);
 
             if (stock == 0 || m_HotelQuery.IsEmptyIgnoreFilter)
             {
-                return;
+                return dependency;
             }
 
-            NativeArray<Entity> hotels = m_HotelQuery.ToEntityArray(Allocator.Temp);
-            try
+            m_PrefabRefs.Update(this);
+            m_ProcessData.Update(this);
+            m_StorageLimits.Update(this);
+            m_Resources.Update(this);
+
+            return new StockJob
             {
-                for (int i = 0; i < hotels.Length; i++)
+                m_EntityType = GetEntityTypeHandle(),
+                m_WelcomeType = GetComponentTypeHandle<HotelWelcome>(isReadOnly: true),
+                m_PrefabRefs = m_PrefabRefs,
+                m_ProcessData = m_ProcessData,
+                m_StorageLimits = m_StorageLimits,
+                m_Resources = m_Resources,
+                m_Frame = frame,
+                m_Stock = stock,
+            }.Schedule(m_HotelQuery, dependency);
+        }
+
+        [BurstCompile]
+        private struct StockJob : IJobChunk
+        {
+            [ReadOnly] public EntityTypeHandle m_EntityType;
+            [ReadOnly] public ComponentTypeHandle<HotelWelcome> m_WelcomeType;
+            [ReadOnly] public ComponentLookup<PrefabRef> m_PrefabRefs;
+            [ReadOnly] public ComponentLookup<IndustrialProcessData> m_ProcessData;
+            [ReadOnly] public ComponentLookup<StorageLimitData> m_StorageLimits;
+            public BufferLookup<Game.Economy.Resources> m_Resources;
+            public uint m_Frame;
+            public int m_Stock;
+
+            public void Execute(
+                in ArchetypeChunk chunk, int unfilteredChunkIndex, bool useEnabledMask, in v128 chunkEnabledMask)
+            {
+                NativeArray<Entity> hotels = chunk.GetNativeArray(m_EntityType);
+                NativeArray<HotelWelcome> welcomes = chunk.GetNativeArray(ref m_WelcomeType);
+
+                for (int i = 0; i < chunk.Count; i++)
                 {
                     Entity hotel = hotels[i];
 
-                    if (EntityManager.GetComponentData<HotelWelcome>(hotel).m_EndFrame <= frame)
-                    {
-                        continue;
-                    }
-
-                    if (!EntityManager.HasComponent<PrefabRef>(hotel)
-                        || !EntityManager.HasBuffer<Game.Economy.Resources>(hotel))
-                    {
-                        continue;
-                    }
-
-                    Entity prefab = EntityManager.GetComponentData<PrefabRef>(hotel).m_Prefab;
-
-                    if (!EntityManager.HasComponent<IndustrialProcessData>(prefab))
+                    if (welcomes[i].m_EndFrame <= m_Frame
+                        || !m_PrefabRefs.TryGetComponent(hotel, out PrefabRef prefabRef)
+                        || !m_Resources.HasBuffer(hotel)
+                        || !m_ProcessData.TryGetComponent(prefabRef.m_Prefab, out IndustrialProcessData process))
                     {
                         continue;
                     }
 
                     // Whatever this hotel actually consumes, rather than assuming Food.
-                    Resource input = EntityManager.GetComponentData<IndustrialProcessData>(prefab)
-                        .m_Input1.m_Resource;
+                    Resource input = process.m_Input1.m_Resource;
 
                     if (input == Resource.NoResource)
                     {
                         continue;
                     }
 
-                    DynamicBuffer<Game.Economy.Resources> resources =
-                        EntityManager.GetBuffer<Game.Economy.Resources>(hotel);
+                    DynamicBuffer<Game.Economy.Resources> resources = m_Resources[hotel];
 
                     // Scale the opening stock to the hotel's own larder. A flat 200 is a sensible
                     // start for a zoned hotel and a rounding error for a signature building with
                     // thousands of rooms, which burns through it long before its first delivery.
                     // Half a tank is enough to trade on without simply gifting a full one.
-                    int limit = GetStorageLimit(hotel, prefab);
-                    int target = math.max(stock, limit / 2);
+                    int limit = GetStorageLimit(hotel, prefabRef.m_Prefab);
+                    int target = math.max(m_Stock, limit / 2);
 
                     if (limit > 0)
                     {
@@ -210,32 +286,25 @@ namespace TourismOverhaul.Systems
                     }
                 }
             }
-            finally
-            {
-                hotels.Dispose();
-            }
-        }
 
-        /// <summary>
-        /// The hotel's storage capacity, or 0 when it cannot be determined.
-        ///
-        /// StorageLimitData lives on the company, but is authored on the company prefab, so it may
-        /// sit on either entity depending on how the company was created. Checking both is cheaper
-        /// than assuming, and returning 0 simply falls back to the flat opening stock.
-        /// </summary>
-        private int GetStorageLimit(Entity company, Entity prefab)
-        {
-            if (EntityManager.HasComponent<StorageLimitData>(company))
+            /// <summary>
+            /// The hotel's storage capacity, or 0 when it cannot be determined.
+            ///
+            /// StorageLimitData lives on the company, but is authored on the company prefab, so it
+            /// may sit on either entity depending on how the company was created. Checking both is
+            /// cheaper than assuming, and returning 0 simply falls back to the flat opening stock.
+            /// </summary>
+            private int GetStorageLimit(Entity company, Entity prefab)
             {
-                return EntityManager.GetComponentData<StorageLimitData>(company).m_Limit;
-            }
+                if (m_StorageLimits.TryGetComponent(company, out StorageLimitData own))
+                {
+                    return own.m_Limit;
+                }
 
-            if (EntityManager.HasComponent<StorageLimitData>(prefab))
-            {
-                return EntityManager.GetComponentData<StorageLimitData>(prefab).m_Limit;
+                return m_StorageLimits.TryGetComponent(prefab, out StorageLimitData authored)
+                    ? authored.m_Limit
+                    : 0;
             }
-
-            return 0;
         }
 
         /// <summary>
@@ -271,66 +340,60 @@ namespace TourismOverhaul.Systems
         }
 
         /// <summary>
-        /// Sums the rooms of hotels still inside their opening period and converts them into an
-        /// extra tourist allowance.
+        /// Sums the rooms of hotels still inside their opening period, into m_BonusCounts, for
+        /// the next update to turn into an extra tourist allowance.
+        ///
+        /// Counted by a Burst job rather than on the main thread, where reading LodgingProvider and
+        /// Renter waited for every job writing either (43 ms per update, up to 72 ms). The figure is
+        /// therefore one update (512 frames) old when it is used, well inside an opening period of
+        /// days.
         /// </summary>
-        private void UpdateBonus(TourismOverhaulSetting settings, uint frame)
+        private JobHandle ScheduleBonusCount(uint frame, JobHandle dependency)
         {
-            // Chunk and lookup data read on the main thread is not waited for automatically, and
-            // the game's jobs and this mod's own (rebooking, room reclaim, the cruise sweep) write
-            // these, so wait for exactly those writers before reading.
-            EntityManager.CompleteDependencyBeforeRO<HotelWelcome>();
-            EntityManager.CompleteDependencyBeforeRO<LodgingProvider>();
-            EntityManager.CompleteDependencyBeforeRO<Renter>();
-
-            int bonusRooms = 0;
-            int opening = 0;
-
-            ComponentTypeHandle<HotelWelcome> welcomeHandle =
-                GetComponentTypeHandle<HotelWelcome>(isReadOnly: true);
-            ComponentTypeHandle<LodgingProvider> providerHandle =
-                GetComponentTypeHandle<LodgingProvider>(isReadOnly: true);
-            BufferTypeHandle<Renter> renterHandle = GetBufferTypeHandle<Renter>(isReadOnly: true);
-
-            NativeArray<ArchetypeChunk> chunks = m_HotelQuery.ToArchetypeChunkArray(Allocator.Temp);
-            try
+            return new BonusJob
             {
-                for (int c = 0; c < chunks.Length; c++)
+                m_WelcomeType = GetComponentTypeHandle<HotelWelcome>(isReadOnly: true),
+                m_ProviderType = GetComponentTypeHandle<LodgingProvider>(isReadOnly: true),
+                m_RenterType = GetBufferTypeHandle<Renter>(isReadOnly: true),
+                m_Frame = frame,
+                m_Counts = m_BonusCounts,
+            }.Schedule(m_HotelQuery, dependency);
+        }
+
+        [BurstCompile]
+        private struct BonusJob : IJobChunk
+        {
+            [ReadOnly] public ComponentTypeHandle<HotelWelcome> m_WelcomeType;
+            [ReadOnly] public ComponentTypeHandle<LodgingProvider> m_ProviderType;
+            [ReadOnly] public BufferTypeHandle<Renter> m_RenterType;
+            public uint m_Frame;
+
+            /// <summary>[0] rooms in opening hotels, [1] opening hotels.</summary>
+            public NativeArray<int> m_Counts;
+
+            public void Execute(
+                in ArchetypeChunk chunk, int unfilteredChunkIndex, bool useEnabledMask, in v128 chunkEnabledMask)
+            {
+                NativeArray<HotelWelcome> welcomes = chunk.GetNativeArray(ref m_WelcomeType);
+                NativeArray<LodgingProvider> providers = chunk.GetNativeArray(ref m_ProviderType);
+
+                // Renter is not part of the query, so a chunk need not have the buffer: a signature
+                // hotel is placed rather than zoned, so it can carry LodgingProvider without the
+                // renting components.
+                bool hasRenters = chunk.Has(ref m_RenterType);
+                BufferAccessor<Renter> renters = hasRenters ? chunk.GetBufferAccessor(ref m_RenterType) : default;
+
+                for (int i = 0; i < chunk.Count; i++)
                 {
-                    ArchetypeChunk chunk = chunks[c];
-                    NativeArray<HotelWelcome> welcomes = chunk.GetNativeArray(ref welcomeHandle);
-                    NativeArray<LodgingProvider> providers = chunk.GetNativeArray(ref providerHandle);
-
-                    // Renter is not part of the query, so a chunk need not have the buffer and
-                    // GetBufferAccessor returns a default accessor that throws on indexing. This is
-                    // the same guard CleanUpLeakedHouseholds uses, and it matters here for the very
-                    // reason the query was widened above: a signature hotel is placed rather than
-                    // zoned, so it can carry LodgingProvider without the renting components.
-                    bool hasRenters = chunk.Has(ref renterHandle);
-                    BufferAccessor<Renter> renters =
-                        hasRenters ? chunk.GetBufferAccessor(ref renterHandle) : default;
-
-                    for (int i = 0; i < chunk.Count; i++)
+                    if (welcomes[i].m_EndFrame <= m_Frame)
                     {
-                        if (welcomes[i].m_EndFrame <= frame)
-                        {
-                            continue;
-                        }
-
-                        bonusRooms += math.max(0, providers[i].m_FreeRooms)
-                                      + (hasRenters ? renters[i].Length : 0);
-                        opening++;
+                        continue;
                     }
+
+                    m_Counts[0] += math.max(0, providers[i].m_FreeRooms) + (hasRenters ? renters[i].Length : 0);
+                    m_Counts[1]++;
                 }
             }
-            finally
-            {
-                chunks.Dispose();
-            }
-
-            OpeningHotels = opening;
-            WelcomeBonus = (int)math.round(
-                bonusRooms * (math.clamp(settings.HotelWelcomeBoost, 0, 200) / 100f));
         }
     }
 }

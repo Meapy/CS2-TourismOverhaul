@@ -156,6 +156,9 @@ namespace TourismOverhaul.Systems
         /// <summary>Whether this park is currently closed to new leisure trips.</summary>
         internal bool IsClosed(Entity park) => m_Gated.Contains(park);
 
+        /// <summary>The last count and apply jobs, which fill m_Counters and m_ParkOccupancy.</summary>
+        private JobHandle m_LastJob;
+
         protected override void OnCreate()
         {
             base.OnCreate();
@@ -243,7 +246,7 @@ namespace TourismOverhaul.Systems
 
                 if (spread)
                 {
-                    CompleteDependency();
+                    m_LastJob.Complete();
                     Gate(perCell);
                 }
             }
@@ -312,6 +315,7 @@ namespace TourismOverhaul.Systems
             if (!spread)
             {
                 Dependency = occupancy.Dispose(counted);
+                m_LastJob = Dependency;
                 return;
             }
 
@@ -332,6 +336,7 @@ namespace TourismOverhaul.Systems
                 m_Query, counted);
 
             Dependency = occupancy.Dispose(applied);
+            m_LastJob = Dependency;
         }
 
         /// <summary>
@@ -439,7 +444,9 @@ namespace TourismOverhaul.Systems
         /// </summary>
         private void Report()
         {
-            CompleteDependency();
+            // Only this system's own last jobs, which had 512 frames to finish. CompleteDependency
+            // here waited for every job in the frame that touches a resident creature, up to 118 ms.
+            m_LastJob.Complete();
 
             if (Mod.Settings != null && Mod.Settings.DiagnosticLogging
                 && ++m_UpdatesSinceLog >= kLogEvery)

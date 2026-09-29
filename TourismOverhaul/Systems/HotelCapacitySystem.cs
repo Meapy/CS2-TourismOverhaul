@@ -7,11 +7,12 @@ using Game.Economy;
 using Game.Prefabs;
 using Game.Simulation;
 using Game.Tools;
+using Unity.Burst;
+using Unity.Burst.Intrinsics;
 using Unity.Collections;
 using Unity.Entities;
 using Unity.Jobs;
 using Unity.Mathematics;
-using UnityEngine;
 
 namespace TourismOverhaul.Systems
 {
@@ -63,6 +64,19 @@ namespace TourismOverhaul.Systems
 
         private bool m_NativeDisabled;
 
+        private HotelLookups m_Lookups;
+        private BufferLookup<Renter> m_Renters;
+        private ComponentLookup<TouristHousehold> m_TouristHouseholds;
+        private ComponentLookup<TouristHousehold> m_TouristWrite;
+        private BufferLookup<Game.Economy.Resources> m_Resources;
+        private ComponentLookup<CompanyStatisticData> m_Statistics;
+
+        /// <summary>Written by the last update's job: [0] charged to guests, [1] total rooms.</summary>
+        private NativeArray<long> m_Results;
+        private JobHandle m_LastJob;
+        private bool m_ResultsPending;
+        private bool m_RoomsPending;
+
         /// <summary>Total rooms across all managed hotels at the last update. For diagnostics.</summary>
         public int TotalRooms { get; private set; }
 
@@ -77,6 +91,22 @@ namespace TourismOverhaul.Systems
             m_ResourceSystem = World.GetOrCreateSystemManaged<ResourceSystem>();
             m_CityProductionStatisticSystem = World.GetOrCreateSystemManaged<CityProductionStatisticSystem>();
             m_NativeLodgingProvider = World.GetOrCreateSystemManaged<LodgingProviderSystem>();
+
+            m_Lookups = new HotelLookups
+            {
+                m_PropertyRenters = GetComponentLookup<PropertyRenter>(isReadOnly: true),
+                m_PrefabRefs = GetComponentLookup<PrefabRef>(isReadOnly: true),
+                m_BuildingData = GetComponentLookup<BuildingData>(isReadOnly: true),
+                m_PropertyData = GetComponentLookup<BuildingPropertyData>(isReadOnly: true),
+                m_SpawnableData = GetComponentLookup<SpawnableBuildingData>(isReadOnly: true),
+                m_SignatureData = GetComponentLookup<SignatureBuildingData>(isReadOnly: true),
+            };
+            m_Renters = GetBufferLookup<Renter>(isReadOnly: true);
+            m_TouristHouseholds = GetComponentLookup<TouristHousehold>(isReadOnly: true);
+            m_TouristWrite = GetComponentLookup<TouristHousehold>(isReadOnly: false);
+            m_Resources = GetBufferLookup<Game.Economy.Resources>(isReadOnly: false);
+            m_Statistics = GetComponentLookup<CompanyStatisticData>(isReadOnly: false);
+            m_Results = new NativeArray<long>(2, Allocator.Persistent);
 
             // Mirrors LodgingProviderSystem.m_ProviderQuery (:278).
             m_ProviderQuery = GetEntityQuery(
@@ -102,6 +132,8 @@ namespace TourismOverhaul.Systems
 
         protected override void OnDestroy()
         {
+            m_LastJob.Complete();
+            m_Results.Dispose();
             RestoreNativeSystem();
             base.OnDestroy();
         }
@@ -115,8 +147,29 @@ namespace TourismOverhaul.Systems
             m_LastWrittenServiceMultiplier = -1;
         }
 
+        /// <summary>
+        /// Both the mirrored update and the observation run as Burst jobs. What they measure is
+        /// collected here on the next update, 512 frames later.
+        /// </summary>
         protected override void OnUpdate()
         {
+            m_LastJob.Complete();
+
+            if (m_ResultsPending)
+            {
+                LodgingChargedSinceReset += m_Results[0];
+                m_ResultsPending = false;
+            }
+
+            if (m_RoomsPending)
+            {
+                TotalRooms = (int)m_Results[1];
+                m_RoomsPending = false;
+            }
+
+            m_Results[0] = 0;
+            m_Results[1] = 0;
+
             TourismOverhaulSetting settings = Mod.Settings;
 
             int multiplier = settings != null ? math.clamp(settings.HotelRoomMultiplier, 1, 10) : 1;
@@ -129,14 +182,14 @@ namespace TourismOverhaul.Systems
                 RestoreNativeSystem();
 
                 // The native system is doing the billing. Watch it rather than replacing it, so
-                // the finance view still has a lodging figure. See ObserveNativeLodgingCharges.
-                ObserveNativeLodgingCharges();
+                // the finance view still has a lodging figure. See ScheduleObservation.
+                ScheduleObservation();
                 return;
             }
 
             DisableNativeSystem();
             ScaleServiceCapacity(multiplier);
-            RunLodgingUpdate(multiplier);
+            ScheduleLodgingUpdate(multiplier);
         }
 
         /// <summary>
@@ -283,10 +336,10 @@ namespace TourismOverhaul.Systems
         /// consumption into the city accumulator, no ServiceCompanyData scaling: every one of
         /// those is serialized company state that the native system owns while it is enabled, and
         /// writing any of it would either double-bill guests or fight the system that is running.
-        /// Renters and buffers are read through EntityManager, which settles the native job's
-        /// writes before the read rather than racing them.
+        /// The job is scheduled after the native job's writes, so it reads them rather than racing
+        /// them.
         /// </summary>
-        private void ObserveNativeLodgingCharges()
+        private void ScheduleObservation()
         {
             if (m_NativeLodgingProvider == null || !m_NativeLodgingProvider.Enabled)
             {
@@ -303,9 +356,6 @@ namespace TourismOverhaul.Systems
             {
                 return;
             }
-
-            uint updateFrame = SimulationUtils.GetUpdateFrame(
-                m_SimulationSystem.frameIndex, kUpdatesPerDay, 16);
 
             LeisureParametersData leisure = m_LeisureParameterQuery.GetSingleton<LeisureParametersData>();
             ResourcePrefabs resourcePrefabs = m_ResourceSystem.GetPrefabs();
@@ -325,301 +375,341 @@ namespace TourismOverhaul.Systems
                 return;
             }
 
-            long charged = 0;
+            UpdateLookups();
+            m_Renters.Update(this);
+            m_TouristHouseholds.Update(this);
 
-            NativeArray<Entity> companies = m_ProviderQuery.ToEntityArray(Allocator.Temp);
-            try
+            JobHandle job = new ObserveJob
             {
-                for (int i = 0; i < companies.Length; i++)
-                {
-                    charged += (long)chargePerGuest * GuestsBilledThisUpdate(companies[i], updateFrame);
-                }
-            }
-            finally
-            {
-                companies.Dispose();
-            }
+                m_Lookups = m_Lookups,
+                m_Renters = m_Renters,
+                m_TouristHouseholds = m_TouristHouseholds,
+                m_UpdateFrameType = GetSharedComponentTypeHandle<UpdateFrame>(),
+                m_EntityType = GetEntityTypeHandle(),
+                m_UpdateFrame = SimulationUtils.GetUpdateFrame(m_SimulationSystem.frameIndex, kUpdatesPerDay, 16),
+                m_ChargePerGuest = chargePerGuest,
+                m_Results = m_Results,
+            }.Schedule(m_ProviderQuery, Dependency);
 
-            LodgingChargedSinceReset += charged;
+            m_ResultsPending = true;
+            m_LastJob = job;
+            Dependency = job;
         }
 
         /// <summary>
-        /// How many guests the native job will charge at this hotel on this update, or 0 if it is
-        /// not this hotel's turn. Read-only throughout.
+        /// How many guests the native job charges on this update, times the charge, summed into
+        /// m_Results[0]. Read-only throughout; a Burst job because reading every hotel's renters on
+        /// the main thread waited for every job writing Renter (48 ms per update, up to 161 ms).
         /// </summary>
-        private int GuestsBilledThisUpdate(Entity company, uint updateFrame)
+        [BurstCompile]
+        private struct ObserveJob : IJobChunk
         {
-            // UpdateFrame sharding, native :97. A hotel outside this frame's shard is untouched.
-            if (EntityManager.GetSharedComponent<UpdateFrame>(company).m_Index != updateFrame)
+            public HotelLookups m_Lookups;
+            [ReadOnly] public BufferLookup<Renter> m_Renters;
+            [ReadOnly] public ComponentLookup<TouristHousehold> m_TouristHouseholds;
+            [ReadOnly] public SharedComponentTypeHandle<UpdateFrame> m_UpdateFrameType;
+            [ReadOnly] public EntityTypeHandle m_EntityType;
+            public uint m_UpdateFrame;
+            public int m_ChargePerGuest;
+            public NativeArray<long> m_Results;
+
+            public void Execute(
+                in ArchetypeChunk chunk, int unfilteredChunkIndex, bool useEnabledMask, in v128 chunkEnabledMask)
             {
-                return 0;
-            }
-
-            // Native :166-173 — a lodging company with no property has its renters cleared and
-            // bills nobody.
-            if (!EntityManager.HasComponent<PropertyRenter>(company)
-                || !EntityManager.HasBuffer<Renter>(company))
-            {
-                return 0;
-            }
-
-            Entity property = EntityManager.GetComponentData<PropertyRenter>(company).m_Property;
-
-            if (!EntityManager.HasComponent<PrefabRef>(property))
-            {
-                return 0;
-            }
-
-            Entity prefab = EntityManager.GetComponentData<PrefabRef>(property).m_Prefab;
-
-            if (!EntityManager.HasComponent<BuildingData>(prefab)
-                || !EntityManager.HasComponent<BuildingPropertyData>(prefab)
-                || !EntityManager.HasComponent<SpawnableBuildingData>(prefab))
-            {
-                return 0;
-            }
-
-            // The vanilla room count, with no multiplier: the native system is the one running.
-            int roomCount = LodgingProviderSystem.GetRoomCount(
-                EntityManager.GetComponentData<BuildingData>(prefab).m_LotSize,
-                EntityManager.GetComponentData<SpawnableBuildingData>(prefab).m_Level,
-                EntityManager.GetComponentData<BuildingPropertyData>(prefab));
-
-            DynamicBuffer<Renter> renters = EntityManager.GetBuffer<Renter>(company, isReadOnly: true);
-
-            // Native :117-123 — only tourist households are guests.
-            int guests = 0;
-
-            for (int n = 0; n < renters.Length; n++)
-            {
-                if (EntityManager.HasComponent<TouristHousehold>(renters[n].m_Renter))
+                // UpdateFrame sharding, native :97. A hotel outside this frame's shard is untouched.
+                if (chunk.GetSharedComponent(m_UpdateFrameType).m_Index != m_UpdateFrame)
                 {
-                    guests++;
+                    return;
+                }
+
+                NativeArray<Entity> companies = chunk.GetNativeArray(m_EntityType);
+
+                for (int i = 0; i < chunk.Count; i++)
+                {
+                    Entity company = companies[i];
+
+                    // Native :166-173 — a lodging company with no property has its renters cleared
+                    // and bills nobody.
+                    if (!m_Renters.TryGetBuffer(company, out DynamicBuffer<Renter> renters)
+                        || !m_Lookups.TryGetRoomCount(company, out int roomCount, out _))
+                    {
+                        continue;
+                    }
+
+                    // Native :117-123 — only tourist households are guests.
+                    int guests = 0;
+
+                    for (int n = 0; n < renters.Length; n++)
+                    {
+                        if (m_TouristHouseholds.HasComponent(renters[n].m_Renter))
+                        {
+                            guests++;
+                        }
+                    }
+
+                    // Native :124-137 — the overflow above capacity is evicted before anyone is
+                    // billed. The vanilla room count, with no multiplier: the native system is the
+                    // one running.
+                    m_Results[0] += (long)m_ChargePerGuest * math.min(guests, roomCount);
                 }
             }
-
-            // Native :124-137 — the overflow above capacity is evicted before anyone is billed.
-            return math.min(guests, roomCount);
         }
 
         /// <summary>
-        /// Main-thread mirror of LodgingProviderJob.Execute (:95-175). Hotel counts are in the
-        /// hundreds, and this runs 32 times per in-game day, so a job is not warranted.
+        /// Mirror of LodgingProviderJob.Execute (:95-175), as a single-threaded Burst job over the
+        /// same chunks: it writes the guests' and the company's resources and the city's usage
+        /// accumulator, so it must not run in parallel with itself.
         /// </summary>
-        private void RunLodgingUpdate(int multiplier)
+        private void ScheduleLodgingUpdate(int multiplier)
         {
-            // Chunk and lookup data read on the main thread is not waited for automatically, and
-            // the game's jobs and this mod's own (rebooking, room reclaim, the cruise sweep) write
-            // these, so wait for exactly those writers before reading.
-            EntityManager.CompleteDependencyBeforeRW<LodgingProvider>();
-            EntityManager.CompleteDependencyBeforeRW<Renter>();
-            EntityManager.CompleteDependencyBeforeRW<ServiceAvailable>();
-
-            uint updateFrame = SimulationUtils.GetUpdateFrame(m_SimulationSystem.frameIndex, kUpdatesPerDay, 16);
-
             LeisureParametersData leisure = m_LeisureParameterQuery.GetSingleton<LeisureParametersData>();
             ResourcePrefabs resourcePrefabs = m_ResourceSystem.GetPrefabs();
 
             float marketPrice = EconomyUtils.GetMarketPrice(Resource.Lodging, resourcePrefabs, EntityManager);
             float consumePerUpdate = (float)leisure.m_TouristLodgingConsumePerDay / kUpdatesPerDay;
-            float pricePerUpdate = consumePerUpdate * marketPrice;
 
-            // The native system feeds citizen lodging consumption into the city statistics. Take
-            // the same accumulator and settle outstanding writers before touching it.
+            m_ResourceSystem.AddPrefabsReader(default(JobHandle));
+
+            // The native system feeds citizen lodging consumption into the city statistics; so does
+            // the job, through the same accumulator.
             NativeArray<int> usageAccumulator = m_CityProductionStatisticSystem
                 .GetCityResourceUsageAccumulator(CityProductionStatisticSystem.CityResourceUsage.Consumer.Citizens,
                     out JobHandle accumulatorDeps);
-            accumulatorDeps.Complete();
 
-            int lodgingIndex = EconomyUtils.GetResourceIndex(Resource.Lodging);
+            UpdateLookups();
+            m_Resources.Update(this);
+            m_Statistics.Update(this);
+            m_TouristWrite.Update(this);
 
-            EntityTypeHandle entityHandle = GetEntityTypeHandle();
-            ComponentTypeHandle<LodgingProvider> providerHandle = GetComponentTypeHandle<LodgingProvider>(false);
-            ComponentTypeHandle<ServiceAvailable> serviceHandle = GetComponentTypeHandle<ServiceAvailable>(false);
-            BufferTypeHandle<Renter> renterHandle = GetBufferTypeHandle<Renter>(false);
-            SharedComponentTypeHandle<UpdateFrame> updateFrameHandle = GetSharedComponentTypeHandle<UpdateFrame>();
-
-            int totalRooms = 0;
-
-            NativeArray<ArchetypeChunk> chunks = m_ProviderQuery.ToArchetypeChunkArray(Allocator.Temp);
-            try
+            JobHandle job = new LodgingJob
             {
-                for (int c = 0; c < chunks.Length; c++)
-                {
-                    ArchetypeChunk chunk = chunks[c];
+                m_Lookups = m_Lookups,
+                m_Resources = m_Resources,
+                m_Statistics = m_Statistics,
+                m_TouristHouseholds = m_TouristWrite,
+                m_UpdateFrameType = GetSharedComponentTypeHandle<UpdateFrame>(),
+                m_EntityType = GetEntityTypeHandle(),
+                m_ProviderType = GetComponentTypeHandle<LodgingProvider>(isReadOnly: false),
+                m_ServiceType = GetComponentTypeHandle<ServiceAvailable>(isReadOnly: false),
+                m_RenterType = GetBufferTypeHandle<Renter>(isReadOnly: false),
+                m_UpdateFrame = SimulationUtils.GetUpdateFrame(m_SimulationSystem.frameIndex, kUpdatesPerDay, 16),
+                m_Multiplier = multiplier,
+                m_ConsumePerUpdate = consumePerUpdate,
+                m_PricePerUpdate = consumePerUpdate * marketPrice,
+                m_UsageAccumulator = usageAccumulator,
+                m_LodgingIndex = EconomyUtils.GetResourceIndex(Resource.Lodging),
+                m_Results = m_Results,
+            }.Schedule(m_ProviderQuery, JobHandle.CombineDependencies(Dependency, accumulatorDeps));
 
-                    if (chunk.GetSharedComponent(updateFrameHandle).m_Index != updateFrame)
+            m_CityProductionStatisticSystem.AddCityUsageAccumulatorWriter(
+                CityProductionStatisticSystem.CityResourceUsage.Consumer.Citizens, job);
+
+            m_ResultsPending = true;
+            m_RoomsPending = true;
+            m_LastJob = job;
+            Dependency = job;
+        }
+
+        [BurstCompile]
+        private struct LodgingJob : IJobChunk
+        {
+            public HotelLookups m_Lookups;
+            public BufferLookup<Game.Economy.Resources> m_Resources;
+            public ComponentLookup<CompanyStatisticData> m_Statistics;
+
+            // Written: evicting a guest clears the household's hotel.
+            public ComponentLookup<TouristHousehold> m_TouristHouseholds;
+
+            [ReadOnly] public SharedComponentTypeHandle<UpdateFrame> m_UpdateFrameType;
+            [ReadOnly] public EntityTypeHandle m_EntityType;
+            public ComponentTypeHandle<LodgingProvider> m_ProviderType;
+            public ComponentTypeHandle<ServiceAvailable> m_ServiceType;
+            public BufferTypeHandle<Renter> m_RenterType;
+            public uint m_UpdateFrame;
+            public int m_Multiplier;
+            public float m_ConsumePerUpdate;
+            public float m_PricePerUpdate;
+            public NativeArray<int> m_UsageAccumulator;
+            public int m_LodgingIndex;
+
+            /// <summary>[0] charged to guests, [1] total rooms.</summary>
+            public NativeArray<long> m_Results;
+
+            public void Execute(
+                in ArchetypeChunk chunk, int unfilteredChunkIndex, bool useEnabledMask, in v128 chunkEnabledMask)
+            {
+                if (chunk.GetSharedComponent(m_UpdateFrameType).m_Index != m_UpdateFrame)
+                {
+                    return;
+                }
+
+                NativeArray<Entity> companies = chunk.GetNativeArray(m_EntityType);
+                NativeArray<LodgingProvider> providers = chunk.GetNativeArray(ref m_ProviderType);
+                NativeArray<ServiceAvailable> services = chunk.GetNativeArray(ref m_ServiceType);
+                BufferAccessor<Renter> renterAccessor = chunk.GetBufferAccessor(ref m_RenterType);
+
+                for (int i = 0; i < chunk.Count; i++)
+                {
+                    m_Results[1] += UpdateHotel(companies[i], i, providers, services, renterAccessor);
+                }
+            }
+
+            /// <summary>Returns the room count for this hotel, or 0 if it was not processed.</summary>
+            private int UpdateHotel(
+                Entity company,
+                int index,
+                NativeArray<LodgingProvider> providers,
+                NativeArray<ServiceAvailable> services,
+                BufferAccessor<Renter> renterAccessor)
+            {
+                DynamicBuffer<Renter> renters = renterAccessor[index];
+
+                // Native :166-173 — a lodging company with no property has no guests.
+                if (!m_Lookups.m_PropertyRenters.HasComponent(company))
+                {
+                    renters.Clear();
+                    return 0;
+                }
+
+                if (!m_Lookups.TryGetRoomCount(company, out int roomCount, out bool signature))
+                {
+                    return 0;
+                }
+
+                // Signature buildings are hand-authored and excluded by request.
+                if (!signature)
+                {
+                    roomCount *= m_Multiplier;
+                }
+
+                // Native :117-123 — anything that is not a tourist household is not a guest.
+                for (int n = renters.Length - 1; n >= 0; n--)
+                {
+                    if (!m_TouristHouseholds.HasComponent(renters[n].m_Renter))
+                    {
+                        renters.RemoveAt(n);
+                    }
+                }
+
+                // Native :124-137 — evict the overflow when capacity shrank (e.g. multiplier lowered).
+                if (roomCount < renters.Length)
+                {
+                    int toEvict = renters.Length - roomCount;
+                    int cursor = renters.Length - 1;
+
+                    while (cursor >= 0 && toEvict > 0)
+                    {
+                        Entity guest = renters[cursor].m_Renter;
+
+                        TouristHousehold tourist = m_TouristHouseholds[guest];
+                        tourist.m_Hotel = Entity.Null;
+                        m_TouristHouseholds[guest] = tourist;
+
+                        renters.RemoveAt(cursor);
+                        toEvict--;
+                        cursor--;
+                    }
+                }
+
+                // Native :138-164 — charge guests, pay the company, consume lodging.
+                int guests = 0;
+                for (int j = 0; j < renters.Length; j++)
+                {
+                    if (!m_Resources.TryGetBuffer(renters[j].m_Renter, out DynamicBuffer<Game.Economy.Resources> wallet))
                     {
                         continue;
                     }
 
-                    NativeArray<Entity> entities = chunk.GetNativeArray(entityHandle);
-                    NativeArray<LodgingProvider> providers = chunk.GetNativeArray(ref providerHandle);
-                    NativeArray<ServiceAvailable> services = chunk.GetNativeArray(ref serviceHandle);
-                    BufferAccessor<Renter> renterAccessor = chunk.GetBufferAccessor(ref renterHandle);
-
-                    for (int i = 0; i < chunk.Count; i++)
-                    {
-                        totalRooms += UpdateHotel(
-                            entities[i], i, providers, services, renterAccessor,
-                            multiplier, consumePerUpdate, pricePerUpdate,
-                            usageAccumulator, lodgingIndex);
-                    }
+                    EconomyUtils.AddResources(Resource.Money, -(int)m_PricePerUpdate, wallet);
+                    guests++;
                 }
-            }
-            finally
-            {
-                chunks.Dispose();
-            }
 
-            TotalRooms = totalRooms;
+                // Mathf.RoundToInt and Mathf.CeilToInt as the native job uses them, in Burst's math.
+                int income = (int)math.round(m_PricePerUpdate * guests);
 
-            m_CityProductionStatisticSystem.AddCityUsageAccumulatorWriter(
-                CityProductionStatisticSystem.CityResourceUsage.Consumer.Citizens, default(JobHandle));
-            m_ResourceSystem.AddPrefabsReader(default(JobHandle));
+                // Exact lodging spend, counted where the guests are actually billed. Not `income`,
+                // which is what the company receives: each guest is charged the truncated price
+                // above, while the company is credited the rounded total of the untruncated price.
+                // The ledger measures money leaving tourists' wallets, so it takes what they lost.
+                m_Results[0] += (long)(int)m_PricePerUpdate * guests;
+                int lodgingConsumed = (int)math.ceil(m_ConsumePerUpdate * guests);
+
+                if (m_Resources.TryGetBuffer(company, out DynamicBuffer<Game.Economy.Resources> companyResources))
+                {
+                    EconomyUtils.AddResources(Resource.Money, income, companyResources);
+                    EconomyUtils.AddResources(Resource.Lodging, -lodgingConsumed, companyResources);
+                }
+
+                m_UsageAccumulator[m_LodgingIndex] += lodgingConsumed;
+
+                ServiceAvailable service = services[index];
+                service.m_ServiceAvailable = math.max(0, service.m_ServiceAvailable - lodgingConsumed);
+                services[index] = service;
+
+                LodgingProvider provider = providers[index];
+                provider.m_Price = (int)(m_PricePerUpdate * kUpdatesPerDay);
+                provider.m_FreeRooms = roomCount - renters.Length;
+                providers[index] = provider;
+
+                if (m_Statistics.TryGetComponent(company, out CompanyStatisticData statistics))
+                {
+                    statistics.m_CurrentNumberOfCustomers += guests;
+                    m_Statistics[company] = statistics;
+                }
+
+                return roomCount;
+            }
         }
 
-        /// <summary>Returns the room count for this hotel, or 0 if it was not processed.</summary>
-        private int UpdateHotel(
-            Entity company,
-            int index,
-            NativeArray<LodgingProvider> providers,
-            NativeArray<ServiceAvailable> services,
-            BufferAccessor<Renter> renterAccessor,
-            int multiplier,
-            float consumePerUpdate,
-            float pricePerUpdate,
-            NativeArray<int> usageAccumulator,
-            int lodgingIndex)
+        /// <summary>The read-only lookups both jobs use to size a hotel.</summary>
+        private struct HotelLookups
         {
-            DynamicBuffer<Renter> renters = renterAccessor[index];
+            [ReadOnly] public ComponentLookup<PropertyRenter> m_PropertyRenters;
+            [ReadOnly] public ComponentLookup<PrefabRef> m_PrefabRefs;
+            [ReadOnly] public ComponentLookup<BuildingData> m_BuildingData;
+            [ReadOnly] public ComponentLookup<BuildingPropertyData> m_PropertyData;
+            [ReadOnly] public ComponentLookup<SpawnableBuildingData> m_SpawnableData;
+            [ReadOnly] public ComponentLookup<SignatureBuildingData> m_SignatureData;
 
-            // Native :166-173 — a lodging company with no property has no guests.
-            if (!EntityManager.HasComponent<PropertyRenter>(company))
+            /// <summary>
+            /// The vanilla room count of the building a lodging company rents, and whether it is a
+            /// signature building. False when the company has no property or the building is not a
+            /// sized spawnable one.
+            /// </summary>
+            public bool TryGetRoomCount(Entity company, out int roomCount, out bool signature)
             {
-                renters.Clear();
-                return 0;
-            }
+                roomCount = 0;
+                signature = false;
 
-            Entity property = EntityManager.GetComponentData<PropertyRenter>(company).m_Property;
-
-            if (!EntityManager.HasComponent<PrefabRef>(property))
-            {
-                return 0;
-            }
-
-            Entity prefab = EntityManager.GetComponentData<PrefabRef>(property).m_Prefab;
-
-            if (!EntityManager.HasComponent<BuildingData>(prefab)
-                || !EntityManager.HasComponent<BuildingPropertyData>(prefab)
-                || !EntityManager.HasComponent<SpawnableBuildingData>(prefab))
-            {
-                return 0;
-            }
-
-            BuildingData buildingData = EntityManager.GetComponentData<BuildingData>(prefab);
-            BuildingPropertyData propertyData = EntityManager.GetComponentData<BuildingPropertyData>(prefab);
-            SpawnableBuildingData spawnableData = EntityManager.GetComponentData<SpawnableBuildingData>(prefab);
-
-            int roomCount = LodgingProviderSystem.GetRoomCount(
-                buildingData.m_LotSize, spawnableData.m_Level, propertyData);
-
-            // Signature buildings are hand-authored and excluded by request.
-            if (!EntityManager.HasComponent<SignatureBuildingData>(prefab))
-            {
-                roomCount *= multiplier;
-            }
-
-            // Native :117-123 — anything that is not a tourist household is not a guest.
-            for (int n = renters.Length - 1; n >= 0; n--)
-            {
-                if (!EntityManager.HasComponent<TouristHousehold>(renters[n].m_Renter))
+                if (!m_PropertyRenters.TryGetComponent(company, out PropertyRenter renter)
+                    || !m_PrefabRefs.TryGetComponent(renter.m_Property, out PrefabRef prefabRef))
                 {
-                    renters.RemoveAt(n);
-                }
-            }
-
-            // Native :124-137 — evict the overflow when capacity shrank (e.g. multiplier lowered).
-            if (roomCount < renters.Length)
-            {
-                int toEvict = renters.Length - roomCount;
-                int cursor = renters.Length - 1;
-
-                while (cursor >= 0 && toEvict > 0)
-                {
-                    Entity guest = renters[cursor].m_Renter;
-
-                    TouristHousehold tourist = EntityManager.GetComponentData<TouristHousehold>(guest);
-                    tourist.m_Hotel = Entity.Null;
-                    EntityManager.SetComponentData(guest, tourist);
-
-                    renters.RemoveAt(cursor);
-                    toEvict--;
-                    cursor--;
-                }
-            }
-
-            // Native :138-164 — charge guests, pay the company, consume lodging.
-            int guests = 0;
-            for (int j = 0; j < renters.Length; j++)
-            {
-                Entity guest = renters[j].m_Renter;
-
-                if (!EntityManager.HasBuffer<Game.Economy.Resources>(guest))
-                {
-                    continue;
+                    return false;
                 }
 
-                EconomyUtils.AddResources(Resource.Money, -(int)pricePerUpdate,
-                    EntityManager.GetBuffer<Game.Economy.Resources>(guest));
-                guests++;
+                Entity prefab = prefabRef.m_Prefab;
+
+                if (!m_BuildingData.TryGetComponent(prefab, out BuildingData building)
+                    || !m_PropertyData.TryGetComponent(prefab, out BuildingPropertyData property)
+                    || !m_SpawnableData.TryGetComponent(prefab, out SpawnableBuildingData spawnable))
+                {
+                    return false;
+                }
+
+                roomCount = LodgingProviderSystem.GetRoomCount(building.m_LotSize, spawnable.m_Level, property);
+                signature = m_SignatureData.HasComponent(prefab);
+                return true;
             }
+        }
 
-            int income = Mathf.RoundToInt(pricePerUpdate * guests);
-
-            // Exact lodging spend, counted where the guests are actually billed.
-            //
-            // The ledger used to estimate this from the nightly rate and elapsed frames, which was
-            // hopeless: it samples each household only every few thousand frames, so the estimate
-            // was a rounding error against the real drop and virtually everything fell through to
-            // "other". Here the charge is known precisely, so it is simply reported.
-            //
-            // Not `income`, which is what the company receives. The two differ: each guest is
-            // charged the truncated (int)pricePerUpdate above, while the company is credited the
-            // rounded total of the untruncated price — a couple of percent apart at the shipped
-            // rate. The ledger measures money leaving tourists' wallets, so it takes the figure
-            // the wallets actually lost.
-            LodgingChargedSinceReset += (long)(int)pricePerUpdate * guests;
-            int lodgingConsumed = Mathf.CeilToInt(consumePerUpdate * guests);
-
-            if (EntityManager.HasBuffer<Game.Economy.Resources>(company))
-            {
-                DynamicBuffer<Game.Economy.Resources> companyResources =
-                    EntityManager.GetBuffer<Game.Economy.Resources>(company);
-
-                EconomyUtils.AddResources(Resource.Money, income, companyResources);
-                EconomyUtils.AddResources(Resource.Lodging, -lodgingConsumed, companyResources);
-            }
-
-            usageAccumulator[lodgingIndex] += lodgingConsumed;
-
-            ServiceAvailable service = services[index];
-            service.m_ServiceAvailable = math.max(0, service.m_ServiceAvailable - lodgingConsumed);
-            services[index] = service;
-
-            LodgingProvider provider = providers[index];
-            provider.m_Price = (int)(pricePerUpdate * kUpdatesPerDay);
-            provider.m_FreeRooms = roomCount - renters.Length;
-            providers[index] = provider;
-
-            if (EntityManager.HasComponent<CompanyStatisticData>(company))
-            {
-                CompanyStatisticData statistics = EntityManager.GetComponentData<CompanyStatisticData>(company);
-                statistics.m_CurrentNumberOfCustomers += guests;
-                EntityManager.SetComponentData(company, statistics);
-            }
-
-            return roomCount;
+        private void UpdateLookups()
+        {
+            m_Lookups.m_PropertyRenters.Update(this);
+            m_Lookups.m_PrefabRefs.Update(this);
+            m_Lookups.m_BuildingData.Update(this);
+            m_Lookups.m_PropertyData.Update(this);
+            m_Lookups.m_SpawnableData.Update(this);
+            m_Lookups.m_SignatureData.Update(this);
         }
     }
 }

@@ -24,12 +24,17 @@ namespace TourismOverhaul.Systems
     ///
     /// So this creates two new zones and repoints those prefabs at them:
     ///
-    ///   Hotels — EU_CommercialHotel01 and NA_CommercialHotel01  (from zone types 4 and 7)
-    ///   Motels — EU_CommercialMotel01 and NA_CommercialMotel01  (from zone types 35 and 36)
+    ///   Hotels EU — EU_CommercialHotel01   Hotels NA — NA_CommercialHotel01
+    ///   Motels EU — EU_CommercialMotel01   Motels NA — NA_CommercialMotel01
     ///
-    /// Both themes go into one zone each, as asked. The game keeps its own theme filtering
-    /// downstream, and the buildings retain their own BuildingProperties overrides, so their
-    /// lodging-only nature survives the move.
+    /// One zone per theme per kind, which is how the game's own zones work: a stock zone prefab
+    /// carries a ThemeObject naming its theme, and the zoning toolbar shows only the zones whose
+    /// theme is selected (ToolbarUISystem.BindAssets filters on the ObjectRequirementElement that
+    /// ThemeObject adds). Ours do the same, so European and North American lodging zones appear
+    /// under their own themes beside the stock zones rather than both appearing under each.
+    ///
+    /// The buildings keep their own BuildingProperties overrides, so their lodging-only nature
+    /// survives the move.
     ///
     /// Repointing also removes hotels from ordinary commercial zones, which is the intended effect:
     /// hotels appear where you zone for them, not at random.
@@ -45,8 +50,54 @@ namespace TourismOverhaul.Systems
         private const string kHotelPrefix = "CommercialHotel";
         private const string kMotelPrefix = "CommercialMotel";
 
-        private const string kHotelZoneName = "TourismOverhaul Hotels";
-        private const string kMotelZoneName = "TourismOverhaul Motels";
+        /// <summary>
+        /// The themes the game's lodging assets are authored for, in the order the zones are
+        /// created — which is also the order they are handed their zone indices.
+        ///
+        /// A zone cell stores nothing but that index, so the order is save-visible: cells painted
+        /// with the old single Hotels zone land on the first entry's hotel zone, and the old Motels
+        /// zone on the first entry's motel zone. European is first so that an existing city keeps
+        /// hotel cells as hotel cells and motel cells as motel cells across the split; a North
+        /// American city has its lodging cells moved over by <see cref="MigratePaintedCells"/>.
+        /// </summary>
+        private static readonly ThemeSplit[] kThemes =
+        {
+            new ThemeSplit { m_Tag = "EU", m_ThemePrefab = "European" },
+            new ThemeSplit { m_Tag = "NA", m_ThemePrefab = "North American" }
+        };
+
+        /// <summary>A theme, by the prefix its building prefabs use and the theme prefab's name.</summary>
+        private struct ThemeSplit
+        {
+            public string m_Tag;
+            public string m_ThemePrefab;
+        }
+
+        /// <summary>
+        /// The pair of zones belonging to one theme, with what they resolve to once ZoneSystem has
+        /// handed them their indices. Resolved once per pass by <see cref="TryResolveZones"/>,
+        /// because every lookup here costs a prefab-to-entity round trip and the passes below ask
+        /// the same questions for every building prefab and every zone cell on the map.
+        /// </summary>
+        private sealed class LodgingZones
+        {
+            public string m_Tag;
+            public ZonePrefab m_Hotels;
+            public ZonePrefab m_Motels;
+
+            public Entity m_HotelEntity;
+            public Entity m_MotelEntity;
+            public ZoneType m_HotelType;
+            public ZoneType m_MotelType;
+
+            /// <summary>Cells found painted with these zones by the last count.</summary>
+            public int m_HotelCells;
+            public int m_MotelCells;
+        }
+
+        private static string HotelZoneName(string tag) => "TourismOverhaul Hotels " + tag;
+
+        private static string MotelZoneName(string tag) => "TourismOverhaul Motels " + tag;
 
         // Served from the mod's own UI folder. The files live in ui/src/images and reach this path
         // because webpack's asset/resource rule emits them to images/ with publicPath coui://ui-mods/.
@@ -62,8 +113,8 @@ namespace TourismOverhaul.Systems
 
         private PrefabSystem m_PrefabSystem;
 
-        private ZonePrefab m_HotelZone;
-        private ZonePrefab m_MotelZone;
+        /// <summary>One entry per theme, in <see cref="kThemes"/> order.</summary>
+        private readonly List<LodgingZones> m_Zones = new List<LodgingZones>();
 
         /// <summary>The commercial zone the new zones copy their height range from.</summary>
         private ZonePrefab m_HeightSource;
@@ -146,6 +197,13 @@ namespace TourismOverhaul.Systems
                 m_BuildingsMoved = m_ZonesCreated && MoveBuildingsIntoZones();
             }
 
+            // After the move, so the zone types are known, and before the simulation starts, so a
+            // migrated cell is never judged against the zone it used to name.
+            if (m_BuildingsMoved)
+            {
+                MigratePaintedCells();
+            }
+
             // Undo any condemnation that a previous session left behind. A building carries
             // Condemned into the save, and CondemnedBuildingSystem deletes it long before
             // ZoneCheckSystem gets round to clearing the flag, so without this a save made during
@@ -185,15 +243,75 @@ namespace TourismOverhaul.Systems
 
             m_HeightSource = template;
 
-            m_HotelZone = CreateZone(kHotelZoneName, template, kHotelIcon);
-            m_MotelZone = CreateZone(kMotelZoneName, template, kMotelIcon);
+            m_ZonesCreated = true;
 
-            m_ZonesCreated = m_HotelZone != null && m_MotelZone != null;
+            for (int i = 0; i < kThemes.Length; i++)
+            {
+                ThemeSplit split = kThemes[i];
+                ThemePrefab theme = FindTheme(split.m_ThemePrefab);
+
+                if (theme == null)
+                {
+                    // Created without a theme rather than not at all: an unthemed zone shows under
+                    // every theme, which is worse than the stock behaviour but still usable, where
+                    // a missing zone would strand every lodging building of that theme.
+                    Mod.Log.Warn(
+                        $"No theme prefab named \"{split.m_ThemePrefab}\"; the {split.m_Tag} "
+                        + "lodging zones will not be filtered by theme.");
+                }
+
+                // Hotels before motels, and the themes in their declared order: see kThemes for
+                // why the order is save-visible.
+                LodgingZones zones = new LodgingZones
+                {
+                    m_Tag = split.m_Tag,
+                    m_Hotels = CreateZone(HotelZoneName(split.m_Tag), template, kHotelIcon, theme),
+                    m_Motels = CreateZone(MotelZoneName(split.m_Tag), template, kMotelIcon, theme)
+                };
+
+                m_Zones.Add(zones);
+                m_ZonesCreated &= zones.m_Hotels != null && zones.m_Motels != null;
+            }
 
             if (m_ZonesCreated)
             {
-                Mod.Log.Info($"Created zones \"{kHotelZoneName}\" and \"{kMotelZoneName}\".");
+                Mod.Log.Info(
+                    $"Created hotel and motel zones for {kThemes.Length} theme(s): "
+                    + string.Join(", ", System.Array.ConvertAll(kThemes, t => t.m_Tag)) + ".");
             }
+        }
+
+        /// <summary>The theme prefab of that name, or null if this game does not have it.</summary>
+        private ThemePrefab FindTheme(string name)
+        {
+            EntityQuery themeQuery = GetEntityQuery(
+                ComponentType.ReadOnly<ThemeData>(),
+                ComponentType.ReadOnly<PrefabData>());
+
+            NativeArray<Entity> themes = themeQuery.ToEntityArray(Allocator.Temp);
+
+            try
+            {
+                for (int i = 0; i < themes.Length; i++)
+                {
+                    if (m_PrefabSystem.TryGetPrefab(themes[i], out ThemePrefab prefab)
+                        && prefab != null
+                        && prefab.name == name)
+                    {
+                        return prefab;
+                    }
+                }
+            }
+            catch (System.Exception e)
+            {
+                Mod.Log.Warn($"Could not look up theme \"{name}\": {e.Message}");
+            }
+            finally
+            {
+                themes.Dispose();
+            }
+
+            return null;
         }
 
         /// <summary>
@@ -239,7 +357,7 @@ namespace TourismOverhaul.Systems
             return null;
         }
 
-        private ZonePrefab CreateZone(string name, ZonePrefab template, string icon)
+        private ZonePrefab CreateZone(string name, ZonePrefab template, string icon, ThemePrefab theme)
         {
             try
             {
@@ -269,6 +387,14 @@ namespace TourismOverhaul.Systems
                     templateProperties != null && templateProperties.m_IgnoreLandValue;
                 properties.m_LevelUpResources =
                     templateProperties != null ? templateProperties.m_LevelUpResources : null;
+
+                // The theme this zone belongs to. ThemeObject.LateInitialize adds an
+                // ObjectRequirementElement naming the theme, which is what the zoning toolbar
+                // filters on, so the zone appears under its own theme exactly as a stock zone does.
+                if (theme != null)
+                {
+                    zone.AddComponent<ThemeObject>().m_Theme = theme;
+                }
 
                 // Toolbar placement, borrowed from the zone we copied so it lands in the zoning
                 // menu next to the stock commercial zones.
@@ -324,19 +450,16 @@ namespace TourismOverhaul.Systems
         /// </returns>
         private bool MoveBuildingsIntoZones()
         {
-            if (!TryGetZoneType(m_HotelZone, out ZoneType hotelZoneType)
-                || !TryGetZoneType(m_MotelZone, out ZoneType motelZoneType))
+            if (!TryResolveZones())
             {
                 // Expected during OnGamePreload on a cold start; the caller retries later.
                 Mod.Log.Info("Hotel zones have no zone type yet; deferring the building move.");
                 return false;
             }
 
-            Entity hotelZoneEntity = m_PrefabSystem.GetEntity(m_HotelZone);
-            Entity motelZoneEntity = m_PrefabSystem.GetEntity(m_MotelZone);
-
             int hotels = 0;
             int motels = 0;
+            int unthemed = 0;
 
             NativeArray<Entity> prefabs = m_BuildingPrefabQuery.ToEntityArray(Allocator.Temp);
             try
@@ -354,21 +477,41 @@ namespace TourismOverhaul.Systems
                     }
 
                     string name = GetName(prefab);
+                    bool isHotel = name.Contains(kHotelPrefix);
 
-                    if (name.Contains(kHotelPrefix))
+                    if (!isHotel && !name.Contains(kMotelPrefix))
                     {
-                        EntityManager.SetSharedComponentManaged(prefab, new BuildingSpawnGroupData(hotelZoneType));
-                        RepointZonePrefab(prefab, hotelZoneEntity);
+                        // Signature buildings are left alone — they are placed by hand, not zoned.
+                        continue;
+                    }
+
+                    // The theme is in the asset's own name: EU_CommercialHotel01, NA_CommercialMotel01.
+                    // A lodging asset from some other theme has no zone of its own to go to, so it
+                    // is left in whatever commercial zone it shipped in rather than being dropped
+                    // into one of these — a hotel nobody can zone for is worse than a hotel that
+                    // still turns up in commercial.
+                    LodgingZones zones = ZonesForBuilding(name);
+
+                    if (zones == null)
+                    {
+                        unthemed++;
+                        continue;
+                    }
+
+                    EntityManager.SetSharedComponentManaged(
+                        prefab,
+                        new BuildingSpawnGroupData(isHotel ? zones.m_HotelType : zones.m_MotelType));
+
+                    RepointZonePrefab(prefab, isHotel ? zones.m_HotelEntity : zones.m_MotelEntity);
+
+                    if (isHotel)
+                    {
                         hotels++;
                     }
-                    else if (name.Contains(kMotelPrefix))
+                    else
                     {
-                        EntityManager.SetSharedComponentManaged(prefab, new BuildingSpawnGroupData(motelZoneType));
-                        RepointZonePrefab(prefab, motelZoneEntity);
                         motels++;
                     }
-
-                    // Signature buildings are left alone — they are placed by hand, not zoned.
                 }
             }
             catch (System.Exception e)
@@ -383,14 +526,78 @@ namespace TourismOverhaul.Systems
             HotelBuildingsMoved = hotels;
             MotelBuildingsMoved = motels;
 
-            AdoptHeightRange(m_HotelZone);
-            AdoptHeightRange(m_MotelZone);
+            System.Text.StringBuilder indices = new System.Text.StringBuilder();
+
+            foreach (LodgingZones zones in m_Zones)
+            {
+                AdoptHeightRange(zones.m_Hotels);
+                AdoptHeightRange(zones.m_Motels);
+
+                indices.Append(indices.Length > 0 ? ", " : string.Empty)
+                    .Append($"{zones.m_Tag} hotels {zones.m_HotelType.m_Index}, ")
+                    .Append($"motels {zones.m_MotelType.m_Index}");
+            }
 
             Mod.Log.Info(
-                $"Moved {hotels} hotel and {motels} motel building prefabs into their zones " +
-                $"(hotel zoneType {hotelZoneType.m_Index}, motel zoneType {motelZoneType.m_Index}).");
+                $"Moved {hotels} hotel and {motels} motel building prefabs into their themed zones "
+                + $"({indices})."
+                + (unthemed > 0 ? $" {unthemed} lodging prefab(s) of another theme left in place." : string.Empty));
 
-            LogPaintedCells(hotelZoneType, motelZoneType);
+            LogPaintedCells();
+
+            return true;
+        }
+
+        /// <summary>The zones of one theme, by its tag.</summary>
+        private LodgingZones ZonesFor(string tag)
+        {
+            foreach (LodgingZones zones in m_Zones)
+            {
+                if (zones.m_Tag == tag)
+                {
+                    return zones;
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>The zones a lodging asset belongs in, by the theme prefix in its name.</summary>
+        private LodgingZones ZonesForBuilding(string prefabName)
+        {
+            foreach (LodgingZones zones in m_Zones)
+            {
+                if (prefabName.StartsWith(zones.m_Tag + "_", System.StringComparison.Ordinal))
+                {
+                    return zones;
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Fills in each zone's entity and zone type, or reports that ZoneSystem has not handed
+        /// them out yet. Everything below reads those fields rather than asking again.
+        /// </summary>
+        private bool TryResolveZones()
+        {
+            if (m_Zones.Count == 0)
+            {
+                return false;
+            }
+
+            foreach (LodgingZones zones in m_Zones)
+            {
+                if (!TryGetZoneType(zones.m_Hotels, out zones.m_HotelType)
+                    || !TryGetZoneType(zones.m_Motels, out zones.m_MotelType))
+                {
+                    return false;
+                }
+
+                zones.m_HotelEntity = m_PrefabSystem.GetEntity(zones.m_Hotels);
+                zones.m_MotelEntity = m_PrefabSystem.GetEntity(zones.m_Motels);
+            }
 
             return true;
         }
@@ -409,14 +616,42 @@ namespace TourismOverhaul.Systems
         ///   painted 0, index unchanged  -> something cleared the cells during load
         ///   painted 0, index changed    -> index drift; the cells now name a different zone
         /// </summary>
-        private void LogPaintedCells(ZoneType hotelZoneType, ZoneType motelZoneType)
+        private void LogPaintedCells()
         {
-            int hotelCells = 0;
-            int motelCells = 0;
-            int otherZoned = 0;
-            int blockCount = 0;
+            if (!CountPaintedCells(out int otherZoned, out int blockCount))
+            {
+                return;
+            }
+
+            System.Text.StringBuilder painted = new System.Text.StringBuilder();
+
+            foreach (LodgingZones zones in m_Zones)
+            {
+                painted.Append($"{zones.m_HotelCells} {zones.m_Tag} hotel, ")
+                    .Append($"{zones.m_MotelCells} {zones.m_Tag} motel, ");
+            }
+
+            Mod.Log.Info(
+                $"Painted cells after load: {painted}{otherZoned} other zoned, "
+                + $"across {blockCount} blocks.");
+        }
+
+        /// <summary>
+        /// Tallies every zone cell on the map into the per-theme counts on <see cref="m_Zones"/>.
+        /// </summary>
+        private bool CountPaintedCells(out int otherZoned, out int blockCount)
+        {
+            otherZoned = 0;
+            blockCount = 0;
+
+            foreach (LodgingZones zones in m_Zones)
+            {
+                zones.m_HotelCells = 0;
+                zones.m_MotelCells = 0;
+            }
 
             NativeArray<Entity> blocks = m_BlockQuery.ToEntityArray(Allocator.Temp);
+
             try
             {
                 blockCount = blocks.Length;
@@ -429,34 +664,184 @@ namespace TourismOverhaul.Systems
                     {
                         ZoneType zone = cells[c].m_Zone;
 
-                        if (zone.Equals(hotelZoneType))
+                        if (zone.Equals(ZoneType.None))
                         {
-                            hotelCells++;
+                            continue;
                         }
-                        else if (zone.Equals(motelZoneType))
-                        {
-                            motelCells++;
-                        }
-                        else if (!zone.Equals(ZoneType.None))
+
+                        if (!CountLodgingCell(zone))
                         {
                             otherZoned++;
                         }
                     }
                 }
+
+                return true;
             }
             catch (System.Exception e)
             {
                 Mod.Log.Warn($"Could not count painted cells: {e.Message}");
-                return;
+                return false;
             }
             finally
             {
                 blocks.Dispose();
             }
+        }
 
-            Mod.Log.Info(
-                $"Painted cells after load: {hotelCells} hotel, {motelCells} motel, " +
-                $"{otherZoned} other zoned, across {blockCount} blocks.");
+        /// <summary>Adds a cell to whichever lodging tally owns it; false if none does.</summary>
+        private bool CountLodgingCell(ZoneType zone)
+        {
+            foreach (LodgingZones zones in m_Zones)
+            {
+                if (zone.Equals(zones.m_HotelType))
+                {
+                    zones.m_HotelCells++;
+                    return true;
+                }
+
+                if (zone.Equals(zones.m_MotelType))
+                {
+                    zones.m_MotelCells++;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Moves a city's lodging cells onto its own theme's zones, once.
+        ///
+        /// A zone cell holds nothing but a zone index, so a city painted before the zones were
+        /// split by theme comes back on the first theme's zones — see <see cref="kThemes"/>. In a
+        /// North American city that means every hotel and motel plot suddenly belongs to the
+        /// European zones, which its toolbar does not even show, and which build European assets.
+        ///
+        /// The cells are therefore moved to the city's own theme, but only in the one case where
+        /// that cannot be a mistake: the city has lodging cells of another theme and none at all of
+        /// its own. Once it has any of its own, this never runs again, so a player who deliberately
+        /// paints a second theme's zones keeps them.
+        /// </summary>
+        private void MigratePaintedCells()
+        {
+            Game.City.CityConfigurationSystem config =
+                World.GetExistingSystemManaged<Game.City.CityConfigurationSystem>();
+
+            if (config == null || config.defaultTheme == Entity.Null)
+            {
+                return;
+            }
+
+            if (!m_PrefabSystem.TryGetPrefab(config.defaultTheme, out ThemePrefab cityTheme)
+                || cityTheme == null)
+            {
+                return;
+            }
+
+            LodgingZones cityZones = null;
+
+            foreach (ThemeSplit split in kThemes)
+            {
+                if (split.m_ThemePrefab == cityTheme.name)
+                {
+                    cityZones = ZonesFor(split.m_Tag);
+                }
+            }
+
+            if (cityZones == null)
+            {
+                return;
+            }
+
+            // Nothing to do when the city already has lodging cells of its own theme. The count
+            // also leaves each theme's tallies on m_Zones, which is what says there is anything to
+            // move at all.
+            if (!CountPaintedCells(out int _, out int _)
+                || cityZones.m_HotelCells > 0
+                || cityZones.m_MotelCells > 0)
+            {
+                return;
+            }
+
+            NativeArray<Entity> blocks = m_BlockQuery.ToEntityArray(Allocator.Temp);
+
+            try
+            {
+                int moved = 0;
+
+                for (int i = 0; i < blocks.Length; i++)
+                {
+                    DynamicBuffer<Cell> cells = EntityManager.GetBuffer<Cell>(blocks[i]);
+                    bool touched = false;
+
+                    for (int c = 0; c < cells.Length; c++)
+                    {
+                        Cell cell = cells[c];
+
+                        foreach (LodgingZones other in m_Zones)
+                        {
+                            if (other == cityZones)
+                            {
+                                continue;
+                            }
+
+                            if (cell.m_Zone.Equals(other.m_HotelType))
+                            {
+                                cell.m_Zone = cityZones.m_HotelType;
+                            }
+                            else if (cell.m_Zone.Equals(other.m_MotelType))
+                            {
+                                cell.m_Zone = cityZones.m_MotelType;
+                            }
+                            else
+                            {
+                                continue;
+                            }
+
+                            cells[c] = cell;
+                            touched = true;
+                            moved++;
+                            break;
+                        }
+                    }
+
+                    // Both tags, as the zone tool itself adds when it writes cells
+                    // (ApplyZonesSystem:101-106): Updated revalidates what stands on the block,
+                    // BatchesUpdated redraws it. Without them the cells are right and the map still
+                    // shows the old colour until something else touches the block.
+                    if (!touched)
+                    {
+                        continue;
+                    }
+
+                    if (!EntityManager.HasComponent<Game.Common.Updated>(blocks[i]))
+                    {
+                        EntityManager.AddComponent<Game.Common.Updated>(blocks[i]);
+                    }
+
+                    if (!EntityManager.HasComponent<Game.Common.BatchesUpdated>(blocks[i]))
+                    {
+                        EntityManager.AddComponent<Game.Common.BatchesUpdated>(blocks[i]);
+                    }
+                }
+
+                if (moved > 0)
+                {
+                    Mod.Log.Info(
+                        $"Moved {moved} lodging cell(s) onto the {cityZones.m_Tag} zones, which this city's "
+                        + $"theme ({cityTheme.name}) uses. Zoning painted before hotel and motel "
+                        + "zones were split by theme comes back on the European zones.");
+                }
+            }
+            catch (System.Exception e)
+            {
+                Mod.Log.Warn($"Could not migrate painted lodging cells: {e.Message}");
+            }
+            finally
+            {
+                blocks.Dispose();
+            }
         }
 
         /// <summary>

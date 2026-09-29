@@ -4,8 +4,11 @@ using Game.Citizens;
 using Game.Common;
 using Game.Simulation;
 using Game.Tools;
+using Unity.Burst;
+using Unity.Burst.Intrinsics;
 using Unity.Collections;
 using Unity.Entities;
+using Unity.Jobs;
 using Unity.Mathematics;
 
 namespace TourismOverhaul.Systems
@@ -25,6 +28,10 @@ namespace TourismOverhaul.Systems
     /// and serializes, so no new saved state is introduced. It only manages tourists who hold a
     /// hotel room; day-trippers without lodging are left entirely to the native
     /// TouristLeaveSystem, so no native behaviour is suppressed.
+    ///
+    /// The pass runs as a Burst job scheduled after the jobs that write TouristHousehold. On the
+    /// main thread it had to wait for all of them first — including every job that merely reads the
+    /// component, because it writes — which measured 83 ms per update, up to 365 ms.
     /// </summary>
     public partial class TouristStaySystem : GameSystemBase
     {
@@ -57,11 +64,6 @@ namespace TourismOverhaul.Systems
 
         protected override void OnUpdate()
         {
-            // Chunk and lookup data read on the main thread is not waited for automatically, and
-            // the game's jobs and this mod's own (rebooking, room reclaim, the cruise sweep) write
-            // these, so wait for exactly those writers before reading.
-            EntityManager.CompleteDependencyBeforeRW<TouristHousehold>();
-
             TourismOverhaulSetting settings = Mod.Settings;
             if (settings == null || !settings.FixLengthOfStay)
             {
@@ -69,61 +71,72 @@ namespace TourismOverhaul.Systems
             }
 
             uint frame = m_SimulationSystem.frameIndex;
-            uint averageStayFrames = (uint)math.max(1, settings.AverageStayDays) * kFramesPerDay;
 
-            EntityCommandBuffer commandBuffer = m_EndFrameBarrier.CreateCommandBuffer();
-            Random random = new Random(math.max(1u, frame * 2654435761u + 1013904223u));
-
-            EntityTypeHandle entityHandle = GetEntityTypeHandle();
-            ComponentTypeHandle<TouristHousehold> touristHandle =
-                GetComponentTypeHandle<TouristHousehold>(isReadOnly: false);
-
-            NativeArray<ArchetypeChunk> chunks =
-                m_TouristHouseholdQuery.ToArchetypeChunkArray(Allocator.Temp);
-            try
+            JobHandle job = new StayJob
             {
-                for (int i = 0; i < chunks.Length; i++)
+                m_EntityType = GetEntityTypeHandle(),
+                m_TouristType = GetComponentTypeHandle<TouristHousehold>(isReadOnly: false),
+                m_CommandBuffer = m_EndFrameBarrier.CreateCommandBuffer(),
+                m_Frame = frame,
+                m_AverageStayFrames = (uint)math.max(1, settings.AverageStayDays) * kFramesPerDay,
+                m_Seed = math.max(1u, frame * 2654435761u + 1013904223u),
+            }.Schedule(m_TouristHouseholdQuery, Dependency);
+
+            m_EndFrameBarrier.AddJobHandleForProducer(job);
+            Dependency = job;
+        }
+
+        [BurstCompile]
+        private struct StayJob : IJobChunk
+        {
+            [ReadOnly] public EntityTypeHandle m_EntityType;
+            public ComponentTypeHandle<TouristHousehold> m_TouristType;
+            public EntityCommandBuffer m_CommandBuffer;
+            public uint m_Frame;
+            public uint m_AverageStayFrames;
+            public uint m_Seed;
+
+            public void Execute(
+                in ArchetypeChunk chunk, int unfilteredChunkIndex, bool useEnabledMask, in v128 chunkEnabledMask)
+            {
+                NativeArray<Entity> entities = chunk.GetNativeArray(m_EntityType);
+                NativeArray<TouristHousehold> tourists = chunk.GetNativeArray(ref m_TouristType);
+
+                // One stream per chunk. The stay lengths only need to be spread, not reproduced.
+                Random random = Random.CreateFromIndex(m_Seed + (uint)unfilteredChunkIndex);
+
+                for (int j = 0; j < chunk.Count; j++)
                 {
-                    ArchetypeChunk chunk = chunks[i];
-                    NativeArray<Entity> entities = chunk.GetNativeArray(entityHandle);
-                    NativeArray<TouristHousehold> tourists = chunk.GetNativeArray(ref touristHandle);
+                    TouristHousehold tourist = tourists[j];
 
-                    for (int j = 0; j < chunk.Count; j++)
+                    // No room booked yet: native TouristLeaveSystem owns this case.
+                    if (tourist.m_Hotel == Entity.Null)
                     {
-                        TouristHousehold tourist = tourists[j];
-
-                        // No room booked yet: native TouristLeaveSystem owns this case.
-                        if (tourist.m_Hotel == Entity.Null)
+                        // Clear any stale timer so a re-booking gets a fresh stay.
+                        if (tourist.m_LeavingTime != 0u)
                         {
-                            // Clear any stale timer so a re-booking gets a fresh stay.
-                            if (tourist.m_LeavingTime != 0u)
-                            {
-                                tourist.m_LeavingTime = 0u;
-                                tourists[j] = tourist;
-                            }
-                            continue;
-                        }
-
-                        if (tourist.m_LeavingTime == 0u)
-                        {
-                            // Just checked in — decide how long they are here for.
-                            tourist.m_LeavingTime = frame + GetStayLength(ref random, averageStayFrames);
+                            tourist.m_LeavingTime = 0u;
                             tourists[j] = tourist;
-                            continue;
                         }
 
-                        if (frame >= tourist.m_LeavingTime)
-                        {
-                            // Stay is over. MoveAwayReason.None marks an ordinary departure rather
-                            // than one of the native failure reasons.
-                            CitizenUtils.HouseholdMoveAway(commandBuffer, entities[j], MoveAwayReason.None);
-                        }
+                        continue;
+                    }
+
+                    if (tourist.m_LeavingTime == 0u)
+                    {
+                        // Just checked in — decide how long they are here for.
+                        tourist.m_LeavingTime = m_Frame + GetStayLength(ref random, m_AverageStayFrames);
+                        tourists[j] = tourist;
+                        continue;
+                    }
+
+                    if (m_Frame >= tourist.m_LeavingTime)
+                    {
+                        // Stay is over. MoveAwayReason.None marks an ordinary departure rather
+                        // than one of the native failure reasons.
+                        CitizenUtils.HouseholdMoveAway(m_CommandBuffer, entities[j], MoveAwayReason.None);
                     }
                 }
-            }
-            finally
-            {
-                chunks.Dispose();
             }
         }
 

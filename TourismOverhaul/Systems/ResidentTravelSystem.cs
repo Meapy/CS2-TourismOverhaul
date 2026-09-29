@@ -7,6 +7,8 @@ using Game.Economy;
 using Game.Events;
 using Game.Simulation;
 using Game.Tools;
+using Unity.Burst;
+using Unity.Burst.Intrinsics;
 using Unity.Collections;
 using Unity.Entities;
 using Unity.Jobs;
@@ -50,6 +52,13 @@ namespace TourismOverhaul.Systems
         /// <summary>Fractional carry so low rates still produce trips over time.</summary>
         private float m_Accumulator;
 
+        private BufferLookup<Game.Economy.Resources> m_Resources;
+
+        /// <summary>Written by the last update's jobs: [0] citizens away, [1] households sent.</summary>
+        private NativeArray<int> m_Results;
+        private JobHandle m_LastJob;
+        private bool m_CountPending;
+
         /// <summary>Citizens currently away from the city on holiday.</summary>
         public int CitizensAway { get; private set; }
 
@@ -67,6 +76,8 @@ namespace TourismOverhaul.Systems
 
             m_AddMeetingSystem = World.GetOrCreateSystemManaged<AddMeetingSystem>();
             m_SimulationSystem = World.GetOrCreateSystemManaged<SimulationSystem>();
+            m_Resources = GetBufferLookup<Game.Economy.Resources>(isReadOnly: true);
+            m_Results = new NativeArray<int>(2, Allocator.Persistent);
 
             // Resident households only: moved in, not visitors, not already at an event.
             m_EligibleHouseholdQuery = GetEntityQuery(
@@ -90,9 +101,40 @@ namespace TourismOverhaul.Systems
             RequireForUpdate(m_EligibleHouseholdQuery);
         }
 
+        protected override void OnDestroy()
+        {
+            m_LastJob.Complete();
+            m_Results.Dispose();
+            base.OnDestroy();
+        }
+
+        /// <summary>
+        /// Both passes run as Burst jobs after the jobs that write what they read; on the main thread
+        /// they waited for every writer of TravelPurpose and Resources first (58 ms per update, up to
+        /// 153 ms). Their counts are collected on the next update, 512 frames later.
+        /// </summary>
         protected override void OnUpdate()
         {
-            CitizensAway = CountCitizensAway();
+            m_LastJob.Complete();
+
+            if (m_CountPending)
+            {
+                CitizensAway = m_Results[0];
+                TripsSent += m_Results[1];
+            }
+
+            m_Results[0] = 0;
+            m_Results[1] = 0;
+
+            JobHandle job = new CountAwayJob
+            {
+                m_PurposeType = GetComponentTypeHandle<TravelPurpose>(isReadOnly: true),
+                m_Results = m_Results,
+            }.Schedule(m_TravellingCitizenQuery, Dependency);
+
+            m_CountPending = true;
+            m_LastJob = job;
+            Dependency = job;
 
             TourismOverhaulSetting settings = Mod.Settings;
             if (settings == null || !settings.EnableResidentHolidays)
@@ -127,87 +169,100 @@ namespace TourismOverhaul.Systems
             // Keep a single tick from flooding the pathfinder.
             departures = math.min(departures, 32);
 
-            SendHouseholdsAway(departures, settings.HolidayMinimumSavings);
+            m_Resources.Update(this);
+
+            NativeList<Entity> households =
+                m_EligibleHouseholdQuery.ToEntityListAsync(Allocator.TempJob, out JobHandle listed);
+            NativeQueue<AddMeetingSystem.AddMeeting> meetings =
+                m_AddMeetingSystem.GetMeetingQueue(out JobHandle meetingDeps);
+
+            job = new SendAwayJob
+            {
+                m_Households = households,
+                m_Resources = m_Resources,
+                m_Meetings = meetings,
+                m_Results = m_Results,
+                m_Random = new Random(math.max(1u, m_SimulationSystem.frameIndex * 1664525u + 1013904223u)),
+                m_Count = departures,
+                m_MinimumSavings = settings.HolidayMinimumSavings,
+            }.Schedule(JobHandle.CombineDependencies(job, listed, meetingDeps));
+
+            households.Dispose(job);
+            m_AddMeetingSystem.AddWriter(job);
+            m_LastJob = job;
+            Dependency = job;
         }
 
         /// <summary>
-        /// Citizens whose current travel purpose is a trip out of the city. This is the same
-        /// purpose LeisureSystem assigns for LeisureType.Travel.
+        /// Counts citizens whose current travel purpose is a trip out of the city — the same purpose
+        /// LeisureSystem assigns for LeisureType.Travel — into m_Results[0], for the next update.
         /// </summary>
-        private int CountCitizensAway()
+        [BurstCompile]
+        private struct CountAwayJob : IJobChunk
         {
-            int away = 0;
+            [ReadOnly] public ComponentTypeHandle<TravelPurpose> m_PurposeType;
+            public NativeArray<int> m_Results;
 
-            ComponentTypeHandle<TravelPurpose> purposeHandle =
-                GetComponentTypeHandle<TravelPurpose>(isReadOnly: true);
-
-            NativeArray<ArchetypeChunk> chunks =
-                m_TravellingCitizenQuery.ToArchetypeChunkArray(Allocator.Temp);
-            try
+            public void Execute(
+                in ArchetypeChunk chunk, int unfilteredChunkIndex, bool useEnabledMask, in v128 chunkEnabledMask)
             {
-                for (int c = 0; c < chunks.Length; c++)
-                {
-                    ArchetypeChunk chunk = chunks[c];
-                    NativeArray<TravelPurpose> purposes = chunk.GetNativeArray(ref purposeHandle);
+                NativeArray<TravelPurpose> purposes = chunk.GetNativeArray(ref m_PurposeType);
 
-                    for (int i = 0; i < purposes.Length; i++)
+                for (int i = 0; i < purposes.Length; i++)
+                {
+                    if (purposes[i].m_Purpose == Purpose.Traveling)
                     {
-                        if (purposes[i].m_Purpose == Purpose.Traveling)
-                        {
-                            away++;
-                        }
+                        m_Results[0]++;
                     }
                 }
             }
-            finally
-            {
-                chunks.Dispose();
-            }
-
-            return away;
         }
 
-        private void SendHouseholdsAway(int count, int minimumSavings)
+        /// <summary>
+        /// Picks households at random and sends the ones with spare money on holiday, counting them
+        /// into m_Results[1]. A job because reading a household's money on the main thread waited
+        /// for every job that touches any Resources buffer.
+        /// </summary>
+        [BurstCompile]
+        private struct SendAwayJob : IJob
         {
-            NativeArray<Entity> households = m_EligibleHouseholdQuery.ToEntityArray(Allocator.Temp);
-            try
+            [ReadOnly] public NativeList<Entity> m_Households;
+            [ReadOnly] public BufferLookup<Game.Economy.Resources> m_Resources;
+            public NativeQueue<AddMeetingSystem.AddMeeting> m_Meetings;
+            public NativeArray<int> m_Results;
+            public Random m_Random;
+            public int m_Count;
+            public int m_MinimumSavings;
+
+            public void Execute()
             {
-                if (households.Length == 0)
+                if (m_Households.Length == 0)
                 {
                     return;
                 }
 
-                Random random = new Random(math.max(1u, m_SimulationSystem.frameIndex * 1664525u + 1013904223u));
-
-                NativeQueue<AddMeetingSystem.AddMeeting> queue =
-                    m_AddMeetingSystem.GetMeetingQueue(out JobHandle deps);
-                deps.Complete();
-
                 int sent = 0;
                 int attempts = 0;
-                int maxAttempts = count * 8;
+                int maxAttempts = m_Count * 8;
 
-                while (sent < count && attempts < maxAttempts)
+                while (sent < m_Count && attempts < maxAttempts)
                 {
                     attempts++;
 
-                    Entity household = households[random.NextInt(households.Length)];
+                    Entity household = m_Households[m_Random.NextInt(m_Households.Length)];
 
-                    if (!EntityManager.HasBuffer<Game.Economy.Resources>(household))
+                    if (!m_Resources.TryGetBuffer(household, out DynamicBuffer<Game.Economy.Resources> resources))
                     {
                         continue;
                     }
 
                     // Mirrors vanilla's intent that only households with spare money travel.
-                    int money = EconomyUtils.GetResources(
-                        Resource.Money, EntityManager.GetBuffer<Game.Economy.Resources>(household, true));
-
-                    if (money < minimumSavings)
+                    if (EconomyUtils.GetResources(Resource.Money, resources) < m_MinimumSavings)
                     {
                         continue;
                     }
 
-                    queue.Enqueue(new AddMeetingSystem.AddMeeting
+                    m_Meetings.Enqueue(new AddMeetingSystem.AddMeeting
                     {
                         m_Household = household,
                         m_Type = Game.Agents.LeisureType.Travel
@@ -216,13 +271,7 @@ namespace TourismOverhaul.Systems
                     sent++;
                 }
 
-                m_AddMeetingSystem.AddWriter(default(JobHandle));
-
-                TripsSent += sent;
-            }
-            finally
-            {
-                households.Dispose();
+                m_Results[1] += sent;
             }
         }
     }

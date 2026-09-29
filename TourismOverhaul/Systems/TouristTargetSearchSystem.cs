@@ -8,8 +8,10 @@ using Game.Pathfind;
 using Game.Prefabs;
 using Game.Simulation;
 using Game.Tools;
+using Unity.Burst;
 using Unity.Collections;
 using Unity.Entities;
+using Unity.Jobs;
 using Unity.Mathematics;
 
 namespace TourismOverhaul.Systems
@@ -88,8 +90,8 @@ namespace TourismOverhaul.Systems
         /// Raised from 512 for the cruise line, which books a complement in one go: a full ship is
         /// around seven hundred parties created on a single frame, and at 512 per update they were
         /// competing with the city's ordinary arrivals for the same budget. The scan itself is what
-        /// costs — a ToEntityArray over every seeker — and that happens once per update either way,
-        /// so lifting the per-update cap adds pathfind requests without adding scans.
+        /// costs — a pass over every seeker — and that happens once per update either way, so
+        /// lifting the per-update cap adds pathfind requests without adding scans.
         /// </summary>
         private const int kMaxPerUpdate = 2048;
 
@@ -105,8 +107,17 @@ namespace TourismOverhaul.Systems
 
         private bool m_NativeDisabled;
 
-        /// <summary>Rebuilt once per update, not once per household.</summary>
+        private ComponentLookup<PathInformation> m_PathInformation;
+        private BufferLookup<HouseholdCitizen> m_HouseholdCitizens;
+        private ComponentLookup<CurrentBuilding> m_CurrentBuildings;
         private BufferLookup<Game.Vehicles.OwnedVehicle> m_OwnedVehicles;
+        private BufferLookup<Renter> m_Renters;
+        private ComponentLookup<LodgingProvider> m_LodgingProviders;
+        private ComponentLookup<TouristHousehold> m_TouristHouseholds;
+
+        /// <summary>Written by the last update's job: [0] targets found, [1] evictions.</summary>
+        private NativeArray<int> m_Counts;
+        private JobHandle m_LastJob;
 
         /// <summary>Targets found since load. For diagnostics.</summary>
         public int TargetsFound { get; private set; }
@@ -114,9 +125,9 @@ namespace TourismOverhaul.Systems
         /// <summary>Households evicted after exhausting their retries. For diagnostics.</summary>
         public int Evictions { get; private set; }
 
-        // The native system runs every 16 frames as a Burst-compiled parallel job. This one is
-        // managed and single-threaded, so the same cadence costs far more: a full ToEntityArray
-        // over every seeker in the city, sixteen times per 256 frames, to process at most 512.
+        // The native system runs every 16 frames as a Burst-compiled parallel job. This one is a
+        // single-threaded Burst job, so the same cadence costs more: a full pass over every seeker
+        // in the city, sixteen times per 256 frames.
         //
         // 64 still clears 2,048 households per 256 frames, which is well above the arrival rate any
         // city sustains, and cuts the scan cost to a quarter. A tourist waits a few frames longer
@@ -140,6 +151,15 @@ namespace TourismOverhaul.Systems
 
             m_PathfindTypes = new ComponentTypeSet(ComponentType.ReadWrite<PathInformation>());
             m_Attempts = new NativeHashMap<Entity, int>(1024, Allocator.Persistent);
+            m_Counts = new NativeArray<int>(2, Allocator.Persistent);
+
+            m_PathInformation = GetComponentLookup<PathInformation>(isReadOnly: true);
+            m_HouseholdCitizens = GetBufferLookup<HouseholdCitizen>(isReadOnly: true);
+            m_CurrentBuildings = GetComponentLookup<CurrentBuilding>(isReadOnly: true);
+            m_OwnedVehicles = GetBufferLookup<Game.Vehicles.OwnedVehicle>(isReadOnly: true);
+            m_Renters = GetBufferLookup<Renter>(isReadOnly: false);
+            m_LodgingProviders = GetComponentLookup<LodgingProvider>(isReadOnly: false);
+            m_TouristHouseholds = GetComponentLookup<TouristHousehold>(isReadOnly: false);
 
             // Cruise passengers are excluded outright, and this is the fix for them going to hotels
             // rather than another attempt to undo it afterwards.
@@ -165,9 +185,16 @@ namespace TourismOverhaul.Systems
 
         protected override void OnDestroy()
         {
+            m_LastJob.Complete();
+
             if (m_Attempts.IsCreated)
             {
                 m_Attempts.Dispose();
+            }
+
+            if (m_Counts.IsCreated)
+            {
+                m_Counts.Dispose();
             }
 
             RestoreNativeSystem();
@@ -205,6 +232,13 @@ namespace TourismOverhaul.Systems
 
         protected override void OnUpdate()
         {
+            // Scheduled 64 frames ago; this only collects its counts.
+            m_LastJob.Complete();
+            TargetsFound += m_Counts[0];
+            Evictions += m_Counts[1];
+            m_Counts[0] = 0;
+            m_Counts[1] = 0;
+
             TourismOverhaulSetting settings = Mod.Settings;
 
             if (settings == null || !settings.FixTouristTargetSearch)
@@ -220,184 +254,218 @@ namespace TourismOverhaul.Systems
                 return;
             }
 
-            EntityCommandBuffer commandBuffer = m_EndFrameBarrier.CreateCommandBuffer();
-            NativeQueue<SetupQueueItem> pathfindQueue = m_PathfindSetupSystem.GetQueue(this, 64);
+            m_PathInformation.Update(this);
+            m_HouseholdCitizens.Update(this);
+            m_CurrentBuildings.Update(this);
+            m_Renters.Update(this);
+            m_LodgingProviders.Update(this);
+            m_TouristHouseholds.Update(this);
+            m_OwnedVehicles.Update(this);
 
-            // Built once per update rather than once per household. This was inside RequestPath,
-            // which meant constructing a lookup over every owned-vehicle buffer in the city for
-            // every single tourist processed — up to 512 times an update, for a value that does
-            // not change within the update.
-            m_OwnedVehicles = GetBufferLookup<Game.Vehicles.OwnedVehicle>(isReadOnly: true);
+            NativeList<Entity> seekers = m_SeekerQuery.ToEntityListAsync(Allocator.TempJob, out JobHandle listed);
 
-            NativeArray<Entity> seekers = m_SeekerQuery.ToEntityArray(Allocator.Temp);
+            JobHandle job = new SearchJob
+            {
+                m_Seekers = seekers,
+                m_PathInformation = m_PathInformation,
+                m_HouseholdCitizens = m_HouseholdCitizens,
+                m_CurrentBuildings = m_CurrentBuildings,
+                m_OwnedVehicles = m_OwnedVehicles,
+                m_Renters = m_Renters,
+                m_LodgingProviders = m_LodgingProviders,
+                m_TouristHouseholds = m_TouristHouseholds,
+                m_Attempts = m_Attempts,
+                m_Counts = m_Counts,
+                m_PathfindTypes = m_PathfindTypes,
+                m_CommandBuffer = m_EndFrameBarrier.CreateCommandBuffer(),
+                m_PathfindQueue = m_PathfindSetupSystem.GetQueue(this, 64),
+            }.Schedule(JobHandle.CombineDependencies(Dependency, listed));
 
-            try
+            seekers.Dispose(job);
+            m_PathfindSetupSystem.AddQueueWriter(job);
+            m_EndFrameBarrier.AddJobHandleForProducer(job);
+            m_LastJob = job;
+            Dependency = job;
+        }
+
+        /// <summary>
+        /// The whole pass, mirroring the native TouristFindTargetSystem's jobs: request a path for a
+        /// new seeker, and act on the answer once it comes back.
+        ///
+        /// Run as a Burst job rather than on the main thread, where reading PathInformation,
+        /// CurrentBuilding and Renter and writing LodgingProvider and TouristHousehold waited for
+        /// every job touching any of them: 11 ms per update, every 64 frames, up to 61 ms.
+        /// Households are visited in the same order as before, and the same ones consume a slot.
+        /// </summary>
+        [BurstCompile]
+        private struct SearchJob : IJob
+        {
+            [ReadOnly] public NativeList<Entity> m_Seekers;
+            [ReadOnly] public ComponentLookup<PathInformation> m_PathInformation;
+            [ReadOnly] public BufferLookup<HouseholdCitizen> m_HouseholdCitizens;
+            [ReadOnly] public ComponentLookup<CurrentBuilding> m_CurrentBuildings;
+            [ReadOnly] public BufferLookup<Game.Vehicles.OwnedVehicle> m_OwnedVehicles;
+            public BufferLookup<Renter> m_Renters;
+            public ComponentLookup<LodgingProvider> m_LodgingProviders;
+            public ComponentLookup<TouristHousehold> m_TouristHouseholds;
+            public NativeHashMap<Entity, int> m_Attempts;
+
+            /// <summary>[0] targets found, [1] evictions.</summary>
+            public NativeArray<int> m_Counts;
+
+            public ComponentTypeSet m_PathfindTypes;
+            public EntityCommandBuffer m_CommandBuffer;
+            public NativeQueue<SetupQueueItem> m_PathfindQueue;
+
+            public void Execute()
             {
                 int processed = 0;
 
-                for (int i = 0; i < seekers.Length && processed < kMaxPerUpdate; i++)
+                for (int i = 0; i < m_Seekers.Length && processed < kMaxPerUpdate; i++)
                 {
-                    if (ProcessSeeker(seekers[i], commandBuffer, pathfindQueue))
+                    if (ProcessSeeker(m_Seekers[i]))
                     {
                         processed++;
                     }
                 }
             }
-            finally
+
+            /// <returns>True when the household consumed a slot this update.</returns>
+            private bool ProcessSeeker(Entity household)
             {
-                seekers.Dispose();
-            }
-
-            m_PathfindSetupSystem.AddQueueWriter(Dependency);
-        }
-
-        /// <returns>True when the household consumed a slot this update.</returns>
-        private bool ProcessSeeker(
-            Entity household, EntityCommandBuffer commandBuffer, NativeQueue<SetupQueueItem> queue)
-        {
-            if (!EntityManager.HasComponent<PathInformation>(household))
-            {
-                RequestPath(household, commandBuffer, queue);
-                return true;
-            }
-
-            PathInformation path = EntityManager.GetComponentData<PathInformation>(household);
-
-            // Still searching.
-            if ((path.m_State & PathFlags.Pending) != 0)
-            {
-                return false;
-            }
-
-            if (path.m_Destination != Entity.Null)
-            {
-                AcceptTarget(household, path.m_Destination, commandBuffer);
-                return true;
-            }
-
-            // No destination. Unlike the native system this is not immediately fatal.
-            m_Attempts.TryGetValue(household, out int attempts);
-            attempts++;
-
-            if (attempts < kMaxAttempts)
-            {
-                m_Attempts[household] = attempts;
-
-                // Dropping PathInformation puts the household back at the start of the cycle, so
-                // the next update issues a fresh request rather than re-reading a stale failure.
-                commandBuffer.RemoveComponent<PathInformation>(household);
-                return true;
-            }
-
-            m_Attempts.Remove(household);
-            Evictions++;
-
-            CitizenUtils.HouseholdMoveAway(commandBuffer, household, MoveAwayReason.TouristNoTarget);
-
-            return true;
-        }
-
-        /// <summary>
-        /// Issues the pathfind request, identical to the native one but with a usable origin radius.
-        /// </summary>
-        private void RequestPath(
-            Entity household, EntityCommandBuffer commandBuffer, NativeQueue<SetupQueueItem> queue)
-        {
-            commandBuffer.AddComponent(household, in m_PathfindTypes);
-            commandBuffer.SetComponent(household, new PathInformation { m_State = PathFlags.Pending });
-
-            PathfindParameters parameters = new PathfindParameters
-            {
-                m_MaxSpeed = 277.77777f,
-                m_WalkSpeed = 1.6666667f,
-                m_Weights = new PathfindWeights(0.1f, 0.1f, 0.1f, 0.2f),
-                m_Methods = PathMethod.PublicTransportDay | PathMethod.Taxi | PathMethod.PublicTransportNight,
-                m_TaxiIgnoredRules = Game.Vehicles.VehicleUtils.GetIgnoredPathfindRulesTaxiDefaults(),
-                m_PathfindFlags = PathfindFlags.IgnoreFlow | PathfindFlags.Simplified | PathfindFlags.IgnorePath
-            };
-
-            Entity location = Entity.Null;
-
-            if (EntityManager.HasBuffer<HouseholdCitizen>(household))
-            {
-                DynamicBuffer<HouseholdCitizen> citizens =
-                    EntityManager.GetBuffer<HouseholdCitizen>(household, isReadOnly: true);
-
-                for (int i = 0; i < citizens.Length; i++)
+                if (!m_PathInformation.TryGetComponent(household, out PathInformation path))
                 {
-                    if (EntityManager.HasComponent<CurrentBuilding>(citizens[i].m_Citizen))
+                    RequestPath(household);
+                    return true;
+                }
+
+                // Still searching.
+                if ((path.m_State & PathFlags.Pending) != 0)
+                {
+                    return false;
+                }
+
+                if (path.m_Destination != Entity.Null)
+                {
+                    AcceptTarget(household, path.m_Destination);
+                    return true;
+                }
+
+                // No destination. Unlike the native system this is not immediately fatal.
+                m_Attempts.TryGetValue(household, out int attempts);
+                attempts++;
+
+                if (attempts < kMaxAttempts)
+                {
+                    m_Attempts[household] = attempts;
+
+                    // Dropping PathInformation puts the household back at the start of the cycle, so
+                    // the next update issues a fresh request rather than re-reading a stale failure.
+                    m_CommandBuffer.RemoveComponent<PathInformation>(household);
+                    return true;
+                }
+
+                m_Attempts.Remove(household);
+                m_Counts[1]++;
+
+                CitizenUtils.HouseholdMoveAway(m_CommandBuffer, household, MoveAwayReason.TouristNoTarget);
+
+                return true;
+            }
+
+            /// <summary>
+            /// Issues the pathfind request, identical to the native one but with a usable origin radius.
+            /// </summary>
+            private void RequestPath(Entity household)
+            {
+                m_CommandBuffer.AddComponent(household, in m_PathfindTypes);
+                m_CommandBuffer.SetComponent(household, new PathInformation { m_State = PathFlags.Pending });
+
+                PathfindParameters parameters = new PathfindParameters
+                {
+                    m_MaxSpeed = 277.77777f,
+                    m_WalkSpeed = 1.6666667f,
+                    m_Weights = new PathfindWeights(0.1f, 0.1f, 0.1f, 0.2f),
+                    m_Methods = PathMethod.PublicTransportDay | PathMethod.Taxi | PathMethod.PublicTransportNight,
+                    m_TaxiIgnoredRules = Game.Vehicles.VehicleUtils.GetIgnoredPathfindRulesTaxiDefaults(),
+                    m_PathfindFlags = PathfindFlags.IgnoreFlow | PathfindFlags.Simplified | PathfindFlags.IgnorePath
+                };
+
+                Entity location = Entity.Null;
+
+                if (m_HouseholdCitizens.TryGetBuffer(household, out DynamicBuffer<HouseholdCitizen> citizens))
+                {
+                    for (int i = 0; i < citizens.Length; i++)
                     {
-                        location = EntityManager.GetComponentData<CurrentBuilding>(citizens[i].m_Citizen)
-                            .m_CurrentBuilding;
+                        if (m_CurrentBuildings.TryGetComponent(citizens[i].m_Citizen, out CurrentBuilding building))
+                        {
+                            location = building.m_CurrentBuilding;
+                        }
                     }
                 }
+
+                SetupQueueTarget origin = new SetupQueueTarget
+                {
+                    m_Type = SetupTargetType.CurrentLocation,
+                    m_Methods = PathMethod.Pedestrian,
+                    m_Entity = location,
+
+                    // The fix. Zero here is what strands every arrival that is not standing on a lane.
+                    m_Value2 = kOriginSearchRadius
+                };
+
+                SetupQueueTarget destination = new SetupQueueTarget
+                {
+                    m_Type = SetupTargetType.TouristFindTarget,
+                    m_Methods = PathMethod.Pedestrian,
+                    m_Entity = household
+                };
+
+                PathUtils.UpdateOwnedVehicleMethods(
+                    household, ref m_OwnedVehicles, ref parameters, ref origin, ref destination);
+
+                m_PathfindQueue.Enqueue(new SetupQueueItem(household, parameters, origin, destination));
             }
 
-            SetupQueueTarget origin = new SetupQueueTarget
+            /// <summary>
+            /// Books the room or heads for the attraction. Mirrors the native HotelReserveJob
+            /// (TouristFindTargetSystem.cs:170-199) so lodging behaves exactly as before.
+            /// </summary>
+            private void AcceptTarget(Entity household, Entity destination)
             {
-                m_Type = SetupTargetType.CurrentLocation,
-                m_Methods = PathMethod.Pedestrian,
-                m_Entity = location,
+                m_Attempts.Remove(household);
+                m_Counts[0]++;
 
-                // The fix. Zero here is what strands every arrival that is not standing on a lane.
-                m_Value2 = kOriginSearchRadius
-            };
+                Entity hotel = Entity.Null;
 
-            SetupQueueTarget destination = new SetupQueueTarget
-            {
-                m_Type = SetupTargetType.TouristFindTarget,
-                m_Methods = PathMethod.Pedestrian,
-                m_Entity = household
-            };
-
-            PathUtils.UpdateOwnedVehicleMethods(
-                household, ref m_OwnedVehicles, ref parameters, ref origin, ref destination);
-
-            queue.Enqueue(new SetupQueueItem(household, parameters, origin, destination));
-        }
-
-        /// <summary>
-        /// Books the room or heads for the attraction. Mirrors the native HotelReserveJob
-        /// (TouristFindTargetSystem.cs:170-199) so lodging behaves exactly as before.
-        /// </summary>
-        private void AcceptTarget(Entity household, Entity destination, EntityCommandBuffer commandBuffer)
-        {
-            m_Attempts.Remove(household);
-            TargetsFound++;
-
-            Entity hotel = Entity.Null;
-
-            if (EntityManager.HasBuffer<Renter>(destination))
-            {
-                DynamicBuffer<Renter> renters =
-                    EntityManager.GetBuffer<Renter>(destination, isReadOnly: true);
-
-                if (renters.Length > 0 && EntityManager.HasComponent<LodgingProvider>(renters[0].m_Renter))
+                if (m_Renters.TryGetBuffer(destination, out DynamicBuffer<Renter> renters)
+                    && renters.Length > 0
+                    && m_LodgingProviders.HasComponent(renters[0].m_Renter))
                 {
                     hotel = renters[0].m_Renter;
                 }
-            }
 
-            if (hotel != Entity.Null && EntityManager.HasComponent<TouristHousehold>(household))
-            {
-                LodgingProvider provider = EntityManager.GetComponentData<LodgingProvider>(hotel);
-
-                if (provider.m_FreeRooms > 0)
+                if (hotel != Entity.Null && m_TouristHouseholds.HasComponent(household))
                 {
-                    provider.m_FreeRooms--;
-                    EntityManager.SetComponentData(hotel, provider);
+                    LodgingProvider provider = m_LodgingProviders[hotel];
 
-                    EntityManager.GetBuffer<Renter>(hotel).Add(new Renter { m_Renter = household });
+                    if (provider.m_FreeRooms > 0 && m_Renters.HasBuffer(hotel))
+                    {
+                        provider.m_FreeRooms--;
+                        m_LodgingProviders[hotel] = provider;
 
-                    TouristHousehold tourist = EntityManager.GetComponentData<TouristHousehold>(household);
-                    tourist.m_Hotel = hotel;
-                    EntityManager.SetComponentData(household, tourist);
+                        m_Renters[hotel].Add(new Renter { m_Renter = household });
 
-                    commandBuffer.RemoveComponent<LodgingSeeker>(household);
+                        TouristHousehold tourist = m_TouristHouseholds[household];
+                        tourist.m_Hotel = hotel;
+                        m_TouristHouseholds[household] = tourist;
+
+                        m_CommandBuffer.RemoveComponent<LodgingSeeker>(household);
+                    }
                 }
-            }
 
-            commandBuffer.AddComponent(household, new Target(destination));
+                m_CommandBuffer.AddComponent(household, new Target(destination));
+            }
         }
     }
 }
