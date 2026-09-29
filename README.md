@@ -114,9 +114,15 @@ but they sit inside the ordinary commercial spawn groups — 20 among 55-120 gen
 of zone types 4, 7, 35 and 36 — so zoning commercial produces a hotel roughly one time in four,
 wherever the game feels like putting it. There is no vanilla way to ask for one.
 
-`HotelZoneSystem` adds two commercial zones, **Hotels** and **Motels**, and moves those prefabs into
-them. Both theme variants go into one zone each. Hotels stop appearing in ordinary commercial zones,
-which is the point: they appear where you zone for them.
+`HotelZoneSystem` adds commercial zones for **Hotels** and **Motels** and moves those prefabs into
+them. Hotels stop appearing in ordinary commercial zones, which is the point: they appear where you
+zone for them.
+
+There is one pair per theme — European and North American — as the game's own zones are split. A
+zone prefab declares its theme with a `ThemeObject`, whose `ObjectRequirementElement` is what
+`ToolbarUISystem.BindAssets` filters the zoning menu on, so each pair appears under its own theme
+beside the stock zones, and `EU_`/`NA_` assets go to the zone of their own theme. A lodging asset
+from any other theme is left in the commercial zone it shipped in, since it has no zone to go to.
 
 Getting this right meant satisfying three constraints that are easy to miss (findings 9, 10 and 12
 in the diagnosis):
@@ -133,7 +139,10 @@ in the diagnosis):
 
 **Save compatibility:** zone cells store a bare `ushort` index, so hotel zoning painted into a save
 resolves to nothing if the mod is later removed, and can shift if your mod list changes. That's
-inherent to any custom zone, not specific to this mod.
+inherent to any custom zone, not specific to this mod. It also makes the creation order save-visible:
+the zones are created European first, so zoning painted before the themes were split comes back as
+European, and a North American city has its lodging cells moved to its own theme once, only while it
+has none of its own.
 
 ### F — Lodging demand versus room capacity
 

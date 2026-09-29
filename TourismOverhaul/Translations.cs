@@ -47,8 +47,43 @@ namespace TourismOverhaul
                 }
             }
 
+            MirrorThemedZoneNames(entries);
+
             return entries;
         }
+
+        /// <summary>
+        /// Gives both theme variants of a lodging zone the one translated name.
+        ///
+        /// The hotel and motel zones exist once per theme, as the game's own zones do, and the
+        /// stock European and North American zones share a name — the theme is shown by the
+        /// toolbar's theme filter, not by the label. So one translated string covers both, and a
+        /// locale contributes "Hotels" once rather than once per theme.
+        /// </summary>
+        private static void MirrorThemedZoneNames(Dictionary<string, string> entries)
+        {
+            MirrorThemedZoneName(entries, "Assets.NAME[TourismOverhaul Hotels ", "$hotelsKey");
+            MirrorThemedZoneName(entries, "Assets.NAME[TourismOverhaul Motels ", "$motelsKey");
+        }
+
+        private static void MirrorThemedZoneName(
+            Dictionary<string, string> entries, string prefix, string sourceKey)
+        {
+            if (!entries.TryGetValue(sourceKey, out string name))
+            {
+                return;
+            }
+
+            entries.Remove(sourceKey);
+
+            foreach (string theme in ThemeTags)
+            {
+                entries[prefix + theme + "]"] = name;
+            }
+        }
+
+        /// <summary>Theme suffixes of the lodging zone prefabs. See HotelZoneSystem.kThemes.</summary>
+        private static readonly string[] ThemeTags = { "EU", "NA" };
 
         private static string Key(string name, TourismOverhaulSetting setting)
         {
@@ -58,8 +93,10 @@ namespace TourismOverhaul
                 case "$tab": return setting.GetOptionTabLocaleID(TourismOverhaulSetting.SectionMain);
                 case "$viewName": return "Assets.NAME[TourismOverhaul Finance]";
                 case "$viewInfo": return "Infoviews.INFOVIEW[TourismOverhaul Finance]";
-                case "$hotels": return "Assets.NAME[TourismOverhaul Hotels]";
-                case "$motels": return "Assets.NAME[TourismOverhaul Motels]";
+                // Placeholders: MirrorThemedZoneNames replaces each with one entry per theme, since
+                // the zones exist once per theme and share a name.
+                case "$hotels": return "$hotelsKey";
+                case "$motels": return "$motelsKey";
                 default:
                     if (name[0] == '#')
                     {

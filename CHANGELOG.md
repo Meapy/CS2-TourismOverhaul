@@ -5,7 +5,61 @@ All notable changes to CS2 Tourism Overhaul.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [semantic](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.11.0] — 2026-09-29
+
+### Changed
+
+- **Hotel and motel zones are split by theme, as the game's own zones are.** There is now a Hotels
+  and a Motels zone for European and for North American, and each appears only under its own theme
+  in the zoning menu. A zone prefab names its theme with a `ThemeObject`, which adds the
+  `ObjectRequirementElement` that `ToolbarUISystem.BindAssets` filters on — the stock zones do
+  exactly this, and ours now do too. `EU_CommercialHotel01` and friends go to the European zones and
+  `NA_` to the North American ones, so a zone builds the assets of its own theme rather than either.
+  A lodging asset from some other theme is left in the commercial zone it shipped in rather than
+  being dropped into one of these: a hotel nobody can zone for is worse than one that still turns up
+  in commercial.
+
+  Zoning painted before this change keeps its kind but comes back as European, because a zone cell
+  stores nothing but a zone index and the zones are created European first. A North American city
+  has its lodging cells moved onto its own theme's zones once, and only while it has none of its own
+  — so deliberately painting a second theme's zones is safe, and the move is logged.
+
+### Fixed
+
+- **The shore-leave log no longer crashes the game.** Its line was written per sweep, which during a
+  recall is about once a second. The game's logger reopens its file for every line, and at that rate
+  — with other mods logging too — the open eventually failed and the next line took the game down
+  from inside Unity's native logging. The counts are now summed between lines and written every 8192
+  frames, or at once when a sailing leaves passengers behind.
+
+### Performance
+
+- **Seven more systems stop stalling the simulation thread.** Measured in a 172k-citizen city
+  (capture 20260928-121404), the mod's main-thread cost had grown to 3.2 ms per frame, in
+  occasional stalls of 40-365 ms: each system read or wrote game data on the main thread, and
+  to do that safely it first waited for every job in the frame touching that data. They now do
+  the same work in Burst jobs scheduled after those jobs, and pick up what they counted on
+  their next update:
+  - `TouristStaySystem` (83 ms per update, up to 365): the stay timers and departures.
+  - `ResidentTravelSystem` (58 ms, up to 153): the away count and the holiday dispatch, which
+    now enqueues its meetings from the job.
+  - `HotelCapacitySystem` (48 ms, up to 161): the lodging-charge observation and, with the
+    room multiplier above 1, the mirrored lodging update.
+  - `HotelWelcomeSystem` (43 ms, up to 72): the opening bonus count and the opening stock.
+  - `TouristDemandSystem` (19 ms, up to 58): tourist and cruise head counts, hotel rooms,
+    arrivals and the leaked-household cleanup, as one census. The first update after a load
+    now only counts, so a city is never mistaken for empty and flooded with arrivals.
+  - `TouristTargetSearchSystem` (11 ms every 64 frames, up to 61): the whole target search and
+    room booking.
+  - `ParkVisitorSpreadSystem` (up to 118 ms): it completed every creature job in the frame to
+    read its own counters; it now completes only its own previous job.
+  - `AttractionCrowdingSystem` (up to 169 ms): the same, for the game's attraction jobs.
+
+  Measured after the first six (captures 20260928-125505 and -130514): the mod's main-thread
+  time fell from 3.22 to 0.61-0.78 ms per frame.
+
+  Figures that feed the UI and the next update (tourists, rooms, the welcome bonus, citizens
+  away, lodging charged) are now one update old when read: 64 to 512 frames.
 
 ## [1.10.1] — 2026-09-27
 

@@ -8,8 +8,11 @@ using Game.Companies;
 using Game.Prefabs;
 using Game.Simulation;
 using Game.Tools;
+using Unity.Burst;
+using Unity.Burst.Intrinsics;
 using Unity.Collections;
 using Unity.Entities;
+using Unity.Jobs;
 using Unity.Mathematics;
 
 namespace TourismOverhaul.Systems
@@ -85,6 +88,16 @@ namespace TourismOverhaul.Systems
         private const float kTargetHeadroom = 1.4f;
 
         private EntityQuery m_HotelQuery;
+
+        private ComponentLookup<DynamicHousehold> m_DynamicHouseholds;
+
+        /// <summary>What the last census jobs counted; see <see cref="Census"/>.</summary>
+        private NativeArray<int> m_Census;
+        private JobHandle m_CensusJob;
+        private bool m_CensusPending;
+
+        /// <summary>Hotel rooms at the last census.</summary>
+        private int m_HotelRooms;
         private EntityQuery m_ArrivedQuery;
 
         private CitySystem m_CitySystem;
@@ -318,12 +331,25 @@ namespace TourismOverhaul.Systems
                 ComponentType.Exclude<Deleted>(),
                 ComponentType.Exclude<Temp>());
 
+            m_DynamicHouseholds = GetComponentLookup<DynamicHousehold>(isReadOnly: true);
+            m_Census = new NativeArray<int>(Census.Length, Allocator.Persistent);
+
             RequireForUpdate(m_HouseholdPrefabQuery);
             RequireForUpdate(m_DemandParameterQuery);
         }
 
+        protected override void OnDestroy()
+        {
+            m_CensusJob.Complete();
+            m_Census.Dispose();
+            base.OnDestroy();
+        }
+
         protected override void OnUpdate()
         {
+            // Scheduled 256 frames ago; this only collects its counts.
+            m_CensusJob.Complete();
+
             TourismOverhaulSetting settings = Mod.Settings;
             if (settings == null)
             {
@@ -348,13 +374,26 @@ namespace TourismOverhaul.Systems
             // slice they belong to rather than in whichever one was current last time.
             AdvanceArrivalWindow();
 
-            CountConvertedArrivals();
+            bool counted = m_CensusPending;
+
+            if (counted)
+            {
+                m_CensusPending = false;
+                ApplyCensus(settings);
+            }
+
             RollOverMonthIfNeeded();
 
             FlushArrivalWindow();
 
-            CurrentTourists = CountTouristCitizens();
-            CruiseVisitors = CountCitizensIn(m_CruiseVisitorQuery);
+            ScheduleCensus(settings.FixTouristDemand && settings.ReplaceNativeSpawner);
+
+            // Nothing is known about this world yet — right after a load, or the first update. A
+            // zero head count would read as an empty city and spawn a full shortfall of arrivals.
+            if (!counted)
+            {
+                return;
+            }
 
             // Extra allowance from hotels inside their opening period. Added on top of the target
             // rather than folded into it, so these are genuinely additional visitors rather than
@@ -371,7 +410,7 @@ namespace TourismOverhaul.Systems
             // steady state, and ApplyMaximum is deliberately outside both: MaximumTourists is an
             // upper bound on tourist citizens, so nothing may be added after it.
             TargetTourists = ApplyMaximum(
-                ComputeTarget(settings, attractiveness, population, CountHotelRooms(), PeoplePerRoom())
+                ComputeTarget(settings, attractiveness, population, m_HotelRooms, PeoplePerRoom())
                 + welcomeBonus,
                 settings);
 
@@ -386,7 +425,6 @@ namespace TourismOverhaul.Systems
             if (settings.ReplaceNativeSpawner)
             {
                 DisableNativeSpawner();
-                CleanUpLeakedHouseholds();
             }
             else
             {
@@ -460,81 +498,6 @@ namespace TourismOverhaul.Systems
             m_NativeSpawnSystem.Enabled = true;
             m_NativeSpawnerDisabled = false;
             Mod.Log.Info("Native TouristSpawnSystem restored.");
-        }
-
-        /// <summary>
-        /// Deletes tourist households that can never be initialised, in small batches so a save
-        /// with a large accumulated backlog is cleared gradually rather than in one spike.
-        ///
-        /// Only households whose prefab carries DynamicHousehold are touched. Ours never do, and a
-        /// normal household loses CurrentBuilding as soon as it is initialised, so a freshly
-        /// spawned household waiting its turn is never mistaken for a leaked one — it would have to
-        /// be both uninitialised and on a dynamic prefab, which is exactly the leak.
-        /// </summary>
-        private void CleanUpLeakedHouseholds()
-        {
-            // Chunk and lookup data read on the main thread is not waited for automatically, and
-            // the game's jobs and this mod's own (rebooking, room reclaim, the cruise sweep) write
-            // these, so wait for exactly those writers before reading.
-            EntityManager.CompleteDependencyBeforeRO<HouseholdCitizen>();
-            EntityManager.CompleteDependencyBeforeRO<PrefabRef>();
-
-            const int kMaxRemovalsPerUpdate = 64;
-
-            if (m_LeakedHouseholdQuery.IsEmptyIgnoreFilter)
-            {
-                return;
-            }
-
-            EntityCommandBuffer commandBuffer = m_EndFrameBarrier.CreateCommandBuffer();
-
-            EntityTypeHandle entityHandle = GetEntityTypeHandle();
-            ComponentTypeHandle<PrefabRef> prefabHandle = GetComponentTypeHandle<PrefabRef>(isReadOnly: true);
-            BufferTypeHandle<HouseholdCitizen> citizenHandle =
-                GetBufferTypeHandle<HouseholdCitizen>(isReadOnly: true);
-
-            int removed = 0;
-
-            NativeArray<ArchetypeChunk> chunks =
-                m_LeakedHouseholdQuery.ToArchetypeChunkArray(Allocator.Temp);
-            try
-            {
-                for (int c = 0; c < chunks.Length && removed < kMaxRemovalsPerUpdate; c++)
-                {
-                    ArchetypeChunk chunk = chunks[c];
-                    NativeArray<Entity> entities = chunk.GetNativeArray(entityHandle);
-                    NativeArray<PrefabRef> prefabs = chunk.GetNativeArray(ref prefabHandle);
-
-                    bool hasCitizens = chunk.Has(ref citizenHandle);
-                    BufferAccessor<HouseholdCitizen> citizens =
-                        hasCitizens ? chunk.GetBufferAccessor(ref citizenHandle) : default;
-
-                    for (int i = 0; i < chunk.Count && removed < kMaxRemovalsPerUpdate; i++)
-                    {
-                        if (hasCitizens && citizens[i].Length > 0)
-                        {
-                            continue;
-                        }
-
-                        if (!EntityManager.HasComponent<DynamicHousehold>(prefabs[i].m_Prefab))
-                        {
-                            continue;
-                        }
-
-                        commandBuffer.AddComponent<Deleted>(entities[i]);
-                        removed++;
-                    }
-                }
-            }
-            finally
-            {
-                chunks.Dispose();
-            }
-
-            if (removed > 0)
-            {
-                LeakedHouseholdsRemoved += removed;
-            }
         }
 
         /// <summary>
@@ -925,6 +888,10 @@ namespace TourismOverhaul.Systems
         {
             base.OnGameLoadingComplete(purpose, mode);
 
+            // Counts taken in the previous world mean nothing in this one.
+            m_CensusJob.Complete();
+            m_CensusPending = false;
+
             // The window itself is saved, but the total derived from it is a system field and is
             // not. Re-derive it here so the row shows the restored figure on the first frame
             // rather than a zero that lasts until the next update.
@@ -953,104 +920,6 @@ namespace TourismOverhaul.Systems
         }
 
         /// <summary>
-        /// Counts households that have now been given citizens, then forgets their arrival mode.
-        ///
-        /// This is what makes the arrivals figure mean "visitors who arrived" rather than "attempts
-        /// that were made". A household that is dispatched and then discarded before initialisation
-        /// never reaches this, so it is never counted — which is the whole point, since that was the
-        /// bulk of the old figure.
-        ///
-        /// Counted in citizens actually present, not the template's expected head count, so the
-        /// number matches the people standing in the city.
-        /// </summary>
-        private void CountConvertedArrivals()
-        {
-            // Chunk and lookup data read on the main thread is not waited for automatically, and
-            // the game's jobs and this mod's own (rebooking, room reclaim, the cruise sweep) write
-            // these, so wait for exactly those writers before reading.
-            EntityManager.CompleteDependencyBeforeRO<Components.ArrivalMode>();
-            EntityManager.CompleteDependencyBeforeRO<HouseholdCitizen>();
-
-            if (m_ArrivedQuery.IsEmptyIgnoreFilter)
-            {
-                return;
-            }
-
-            EntityCommandBuffer commandBuffer = m_EndFrameBarrier.CreateCommandBuffer();
-
-            EntityTypeHandle entityHandle = GetEntityTypeHandle();
-            ComponentTypeHandle<Components.ArrivalMode> modeHandle =
-                GetComponentTypeHandle<Components.ArrivalMode>(isReadOnly: true);
-            BufferTypeHandle<HouseholdCitizen> citizenHandle =
-                GetBufferTypeHandle<HouseholdCitizen>(isReadOnly: true);
-
-            NativeArray<ArchetypeChunk> chunks = m_ArrivedQuery.ToArchetypeChunkArray(Allocator.Temp);
-            try
-            {
-                for (int c = 0; c < chunks.Length; c++)
-                {
-                    ArchetypeChunk chunk = chunks[c];
-
-                    if (!chunk.Has(ref citizenHandle))
-                    {
-                        continue;
-                    }
-
-                    NativeArray<Entity> entities = chunk.GetNativeArray(entityHandle);
-                    NativeArray<Components.ArrivalMode> modes = chunk.GetNativeArray(ref modeHandle);
-                    BufferAccessor<HouseholdCitizen> citizens = chunk.GetBufferAccessor(ref citizenHandle);
-
-                    for (int i = 0; i < entities.Length; i++)
-                    {
-                        int occupants = citizens[i].Length;
-
-                        // Not initialised yet; leave the mode on it and try again next update.
-                        if (occupants == 0)
-                        {
-                            continue;
-                        }
-
-                        RecordArrival(modes[i].m_Mode, occupants);
-                        commandBuffer.RemoveComponent<Components.ArrivalMode>(entities[i]);
-                    }
-                }
-            }
-            finally
-            {
-                chunks.Dispose();
-            }
-        }
-
-        /// <summary>
-        /// Attributes an arrival to the connection type it came through.
-        ///
-        /// OutsideConnectionTransferType is a flags enum and a connection may carry more than one,
-        /// so the most specific mode wins: a combined road and rail terminal counts as rail.
-        /// </summary>
-        private void RecordArrival(byte mode, int citizens)
-        {
-            switch (mode)
-            {
-                case 1:
-                    m_ThisMonthArrivals.y += citizens;
-                    m_BucketAccumulator.y += citizens;
-                    break;
-                case 2:
-                    m_ThisMonthArrivals.z += citizens;
-                    m_BucketAccumulator.z += citizens;
-                    break;
-                case 3:
-                    m_ThisMonthArrivals.w += citizens;
-                    m_BucketAccumulator.w += citizens;
-                    break;
-                default:
-                    m_ThisMonthArrivals.x += citizens;
-                    m_BucketAccumulator.x += citizens;
-                    break;
-            }
-        }
-
-        /// <summary>
         /// How many people a household template will actually produce, on average.
         ///
         /// Not the same as CountOccupants, which sums the template's fields and is fine for
@@ -1076,49 +945,266 @@ namespace TourismOverhaul.Systems
             return data.m_ChildCount + data.m_AdultCount + data.m_ElderCount + data.m_StudentCount;
         }
 
-        /// <summary>Total hotel rooms citywide, occupied plus free.</summary>
-        private int CountHotelRooms()
+        /// <summary>Takes up what the last census counted.</summary>
+        private void ApplyCensus(TourismOverhaulSetting settings)
         {
-            // Chunk and lookup data read on the main thread is not waited for automatically, and
-            // the game's jobs and this mod's own (rebooking, room reclaim, the cruise sweep) write
-            // these, so wait for exactly those writers before reading.
-            EntityManager.CompleteDependencyBeforeRO<LodgingProvider>();
-            EntityManager.CompleteDependencyBeforeRO<Renter>();
+            CurrentTourists = m_Census[Census.TouristCitizens];
+            int parties = m_Census[Census.TouristParties];
+            AveragePartySize = parties > 0 ? (float)CurrentTourists / parties : 0f;
+            CruiseVisitors = m_Census[Census.CruiseCitizens];
 
-            TourismOverhaulSetting settings = Mod.Settings;
+            // Rooms only drive the target while the setting says they do; at 0 the bed ceiling is
+            // off as well, as it always has been.
+            m_HotelRooms = settings.HotelRoomDemandOccupancy > 0 ? m_Census[Census.HotelRooms] : 0;
 
-            if (settings == null || settings.HotelRoomDemandOccupancy <= 0)
+            int4 arrivals = new int4(
+                m_Census[Census.Arrivals],
+                m_Census[Census.Arrivals + 1],
+                m_Census[Census.Arrivals + 2],
+                m_Census[Census.Arrivals + 3]);
+            m_ThisMonthArrivals += arrivals;
+            m_BucketAccumulator += arrivals;
+
+            LeakedHouseholdsRemoved += m_Census[Census.LeakedRemoved];
+        }
+
+        /// <summary>Indices into m_Census, filled by the census jobs for the next update.</summary>
+        private static class Census
+        {
+            public const int TouristCitizens = 0;
+            public const int TouristParties = 1;
+            public const int CruiseCitizens = 2;
+            public const int HotelRooms = 3;
+
+            /// <summary>Four slots, road / rail / air / sea, in RecordArrival's order.</summary>
+            public const int Arrivals = 4;
+            public const int LeakedRemoved = 8;
+            public const int Length = 9;
+        }
+
+        /// <summary>
+        /// Schedules the counting this system used to do on the main thread, where reading
+        /// HouseholdCitizen, Renter, LodgingProvider and the arrival tags waited for every job that
+        /// writes them: 19 ms per update, up to 58 ms. The jobs run after those writers in the same
+        /// frame and the next update reads what they found, 256 frames on. Head counts and room
+        /// counts that old are well inside the fill horizon the spawner paces against.
+        /// </summary>
+        private void ScheduleCensus(bool cleanUpLeaks)
+        {
+            for (int i = 0; i < m_Census.Length; i++)
             {
-                return 0;
+                m_Census[i] = 0;
             }
 
-            int rooms = 0;
+            BufferTypeHandle<HouseholdCitizen> citizenType = GetBufferTypeHandle<HouseholdCitizen>(isReadOnly: true);
 
-            ComponentTypeHandle<LodgingProvider> providerHandle =
-                GetComponentTypeHandle<LodgingProvider>(isReadOnly: true);
-            BufferTypeHandle<Renter> renterHandle = GetBufferTypeHandle<Renter>(isReadOnly: true);
-
-            NativeArray<ArchetypeChunk> chunks = m_HotelQuery.ToArchetypeChunkArray(Allocator.Temp);
-            try
+            JobHandle job = new CitizenCountJob
             {
-                for (int c = 0; c < chunks.Length; c++)
-                {
-                    ArchetypeChunk chunk = chunks[c];
-                    NativeArray<LodgingProvider> providers = chunk.GetNativeArray(ref providerHandle);
-                    BufferAccessor<Renter> renters = chunk.GetBufferAccessor(ref renterHandle);
+                m_CitizenType = citizenType,
+                m_Census = m_Census,
+                m_CitizenSlot = Census.TouristCitizens,
+                m_PartySlot = Census.TouristParties,
+            }.Schedule(m_TouristHouseholdQuery, Dependency);
 
-                    for (int i = 0; i < chunk.Count; i++)
+            job = new CitizenCountJob
+            {
+                m_CitizenType = citizenType,
+                m_Census = m_Census,
+                m_CitizenSlot = Census.CruiseCitizens,
+                m_PartySlot = -1,
+            }.Schedule(m_CruiseVisitorQuery, job);
+
+            job = new RoomCountJob
+            {
+                m_ProviderType = GetComponentTypeHandle<LodgingProvider>(isReadOnly: true),
+                m_RenterType = GetBufferTypeHandle<Renter>(isReadOnly: true),
+                m_Census = m_Census,
+            }.Schedule(m_HotelQuery, job);
+
+            if (!m_ArrivedQuery.IsEmptyIgnoreFilter)
+            {
+                job = new ArrivalJob
+                {
+                    m_EntityType = GetEntityTypeHandle(),
+                    m_ModeType = GetComponentTypeHandle<Components.ArrivalMode>(isReadOnly: true),
+                    m_CitizenType = citizenType,
+                    m_CommandBuffer = m_EndFrameBarrier.CreateCommandBuffer(),
+                    m_Census = m_Census,
+                }.Schedule(m_ArrivedQuery, job);
+            }
+
+            if (cleanUpLeaks && !m_LeakedHouseholdQuery.IsEmptyIgnoreFilter)
+            {
+                m_DynamicHouseholds.Update(this);
+
+                job = new LeakJob
+                {
+                    m_EntityType = GetEntityTypeHandle(),
+                    m_PrefabType = GetComponentTypeHandle<PrefabRef>(isReadOnly: true),
+                    m_CitizenType = citizenType,
+                    m_DynamicHouseholds = m_DynamicHouseholds,
+                    m_CommandBuffer = m_EndFrameBarrier.CreateCommandBuffer(),
+                    m_Census = m_Census,
+                }.Schedule(m_LeakedHouseholdQuery, job);
+            }
+
+            m_EndFrameBarrier.AddJobHandleForProducer(job);
+            m_CensusJob = job;
+            m_CensusPending = true;
+            Dependency = job;
+        }
+
+        /// <summary>Citizens across the query's households, and how many households hold any.</summary>
+        [BurstCompile]
+        private struct CitizenCountJob : IJobChunk
+        {
+            [ReadOnly] public BufferTypeHandle<HouseholdCitizen> m_CitizenType;
+            public NativeArray<int> m_Census;
+            public int m_CitizenSlot;
+
+            /// <summary>Where to count occupied households, or -1 not to.</summary>
+            public int m_PartySlot;
+
+            public void Execute(
+                in ArchetypeChunk chunk, int unfilteredChunkIndex, bool useEnabledMask, in v128 chunkEnabledMask)
+            {
+                BufferAccessor<HouseholdCitizen> citizens = chunk.GetBufferAccessor(ref m_CitizenType);
+
+                for (int j = 0; j < chunk.Count; j++)
+                {
+                    int count = citizens[j].Length;
+                    m_Census[m_CitizenSlot] += count;
+
+                    if (m_PartySlot >= 0 && count > 0)
                     {
-                        rooms += math.max(0, providers[i].m_FreeRooms) + renters[i].Length;
+                        m_Census[m_PartySlot]++;
                     }
                 }
             }
-            finally
-            {
-                chunks.Dispose();
-            }
+        }
 
-            return rooms;
+        /// <summary>
+        /// Hotel rooms, free and taken, across every lodging company with a property. Not the
+        /// harbour's stand-in provider, which has no PropertyRenter.
+        /// </summary>
+        [BurstCompile]
+        private struct RoomCountJob : IJobChunk
+        {
+            [ReadOnly] public ComponentTypeHandle<LodgingProvider> m_ProviderType;
+            [ReadOnly] public BufferTypeHandle<Renter> m_RenterType;
+            public NativeArray<int> m_Census;
+
+            public void Execute(
+                in ArchetypeChunk chunk, int unfilteredChunkIndex, bool useEnabledMask, in v128 chunkEnabledMask)
+            {
+                NativeArray<LodgingProvider> providers = chunk.GetNativeArray(ref m_ProviderType);
+                BufferAccessor<Renter> renters = chunk.GetBufferAccessor(ref m_RenterType);
+
+                for (int i = 0; i < chunk.Count; i++)
+                {
+                    m_Census[Census.HotelRooms] += math.max(0, providers[i].m_FreeRooms) + renters[i].Length;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Counts households that have now been given citizens, then forgets their arrival mode.
+        ///
+        /// This is what makes the arrivals figure mean "visitors who arrived" rather than "attempts
+        /// that were made". A household that is dispatched and then discarded before initialisation
+        /// never reaches this, so it is never counted — which is the whole point, since that was the
+        /// bulk of the old figure.
+        ///
+        /// Counted in citizens actually present, not the template's expected head count, so the
+        /// number matches the people standing in the city.
+        /// </summary>
+        [BurstCompile]
+        private struct ArrivalJob : IJobChunk
+        {
+            [ReadOnly] public EntityTypeHandle m_EntityType;
+            [ReadOnly] public ComponentTypeHandle<Components.ArrivalMode> m_ModeType;
+            [ReadOnly] public BufferTypeHandle<HouseholdCitizen> m_CitizenType;
+            public EntityCommandBuffer m_CommandBuffer;
+            public NativeArray<int> m_Census;
+
+            public void Execute(
+                in ArchetypeChunk chunk, int unfilteredChunkIndex, bool useEnabledMask, in v128 chunkEnabledMask)
+            {
+                if (!chunk.Has(ref m_CitizenType))
+                {
+                    return;
+                }
+
+                NativeArray<Entity> entities = chunk.GetNativeArray(m_EntityType);
+                NativeArray<Components.ArrivalMode> modes = chunk.GetNativeArray(ref m_ModeType);
+                BufferAccessor<HouseholdCitizen> citizens = chunk.GetBufferAccessor(ref m_CitizenType);
+
+                for (int i = 0; i < entities.Length; i++)
+                {
+                    int occupants = citizens[i].Length;
+
+                    // Not initialised yet; leave the mode on it and try again next update.
+                    if (occupants == 0)
+                    {
+                        continue;
+                    }
+
+                    // RecordArrival's mapping: 1 rail, 2 air, 3 sea, anything else road.
+                    byte mode = modes[i].m_Mode;
+                    int slot = mode >= 1 && mode <= 3 ? mode : 0;
+                    m_Census[Census.Arrivals + slot] += occupants;
+
+                    m_CommandBuffer.RemoveComponent<Components.ArrivalMode>(entities[i]);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Deletes tourist households that can never be initialised, in small batches so a save
+        /// with a large accumulated backlog is cleared gradually rather than in one spike.
+        ///
+        /// Only households whose prefab carries DynamicHousehold are touched. Ours never do, and a
+        /// normal household loses CurrentBuilding as soon as it is initialised, so a freshly
+        /// spawned household waiting its turn is never mistaken for a leaked one — it would have to
+        /// be both uninitialised and on a dynamic prefab, which is exactly the leak.
+        /// </summary>
+        [BurstCompile]
+        private struct LeakJob : IJobChunk
+        {
+            private const int kMaxRemovalsPerUpdate = 64;
+
+            [ReadOnly] public EntityTypeHandle m_EntityType;
+            [ReadOnly] public ComponentTypeHandle<PrefabRef> m_PrefabType;
+            [ReadOnly] public BufferTypeHandle<HouseholdCitizen> m_CitizenType;
+            [ReadOnly] public ComponentLookup<DynamicHousehold> m_DynamicHouseholds;
+            public EntityCommandBuffer m_CommandBuffer;
+            public NativeArray<int> m_Census;
+
+            public void Execute(
+                in ArchetypeChunk chunk, int unfilteredChunkIndex, bool useEnabledMask, in v128 chunkEnabledMask)
+            {
+                NativeArray<Entity> entities = chunk.GetNativeArray(m_EntityType);
+                NativeArray<PrefabRef> prefabs = chunk.GetNativeArray(ref m_PrefabType);
+
+                bool hasCitizens = chunk.Has(ref m_CitizenType);
+                BufferAccessor<HouseholdCitizen> citizens = hasCitizens ? chunk.GetBufferAccessor(ref m_CitizenType) : default;
+
+                for (int i = 0; i < chunk.Count && m_Census[Census.LeakedRemoved] < kMaxRemovalsPerUpdate; i++)
+                {
+                    if (hasCitizens && citizens[i].Length > 0)
+                    {
+                        continue;
+                    }
+
+                    if (!m_DynamicHouseholds.HasComponent(prefabs[i].m_Prefab))
+                    {
+                        continue;
+                    }
+
+                    m_CommandBuffer.AddComponent<Deleted>(entities[i]);
+                    m_Census[Census.LeakedRemoved]++;
+                }
+            }
         }
 
         /// <summary>
@@ -1133,58 +1219,6 @@ namespace TourismOverhaul.Systems
             return partySize >= 1f
                 ? math.clamp(math.round(partySize * 10f) / 10f, 1f, 4f)
                 : kAveragePartySize;
-        }
-
-        /// <summary>
-        /// Sum of citizens across live tourist households. Unlike
-        /// CountHouseholdDataSystem (Finding 5) this does not require a Target component, so
-        /// tourists in transit between destinations are counted.
-        /// </summary>
-        private int CountTouristCitizens()
-        {
-            int citizens = CountCitizensIn(m_TouristHouseholdQuery, out int parties);
-            AveragePartySize = parties > 0 ? (float)citizens / parties : 0f;
-            return citizens;
-        }
-
-        private int CountCitizensIn(EntityQuery query) => CountCitizensIn(query, out _);
-
-        /// <summary>Citizens across the query's households, and how many households hold any.</summary>
-        private int CountCitizensIn(EntityQuery query, out int occupiedHouseholds)
-        {
-            // Chunk and lookup data read on the main thread is not waited for automatically, and
-            // the game's jobs and this mod's own (rebooking, room reclaim, the cruise sweep) write
-            // these, so wait for exactly those writers before reading.
-            EntityManager.CompleteDependencyBeforeRO<HouseholdCitizen>();
-
-            int count = 0;
-            occupiedHouseholds = 0;
-
-            BufferTypeHandle<HouseholdCitizen> citizenHandle =
-                GetBufferTypeHandle<HouseholdCitizen>(isReadOnly: true);
-
-            NativeArray<ArchetypeChunk> chunks =
-                query.ToArchetypeChunkArray(Allocator.Temp);
-            try
-            {
-                for (int i = 0; i < chunks.Length; i++)
-                {
-                    ArchetypeChunk chunk = chunks[i];
-                    BufferAccessor<HouseholdCitizen> citizens = chunk.GetBufferAccessor(ref citizenHandle);
-
-                    for (int j = 0; j < chunk.Count; j++)
-                    {
-                        count += citizens[j].Length;
-                        occupiedHouseholds += citizens[j].Length > 0 ? 1 : 0;
-                    }
-                }
-            }
-            finally
-            {
-                chunks.Dispose();
-            }
-
-            return count;
         }
 
         /// <summary>

@@ -28,13 +28,24 @@ namespace TourismOverhaul
                 },
                 { "Infoviews.INFOVIEW[TourismOverhaul Finance]", "Tourism Finance" },
 
-                { "Assets.NAME[TourismOverhaul Hotels]", "Hotels" },
+                // One zone per theme per kind, the same way the game's own zones are split, so each
+                // appears under its own theme in the zoning menu. Both carry the same name, as the
+                // stock European and North American zones do — the theme is what the toolbar's own
+                // theme filter and the badge on the tile say.
+                { "Assets.NAME[TourismOverhaul Hotels EU]", "Hotels" },
+                { "Assets.NAME[TourismOverhaul Hotels NA]", "Hotels" },
                 {
-                    "Assets.DESCRIPTION[TourismOverhaul Hotels]",
+                    "Assets.DESCRIPTION[TourismOverhaul Hotels EU]",
                     "A commercial zone for hotels. Only hotels are built here, and hotels are no " +
                     "longer built in ordinary commercial zones."
                 },
-                { "Assets.NAME[TourismOverhaul Motels]", "Motels" },
+                {
+                    "Assets.DESCRIPTION[TourismOverhaul Hotels NA]",
+                    "A commercial zone for hotels. Only hotels are built here, and hotels are no " +
+                    "longer built in ordinary commercial zones."
+                },
+                { "Assets.NAME[TourismOverhaul Motels EU]", "Motels" },
+                { "Assets.NAME[TourismOverhaul Motels NA]", "Motels" },
 
                 // A drawn line's name in the transport list. NameSystem:544 composes the key as
                 // RoutePrefab.m_LocaleID + "[" + prefab.name + "]" and passes the route number as a
@@ -64,7 +75,12 @@ namespace TourismOverhaul
                     "tool disappears once a cruise line exists, and returns if you delete it."
                 },
                 {
-                    "Assets.DESCRIPTION[TourismOverhaul Motels]",
+                    "Assets.DESCRIPTION[TourismOverhaul Motels EU]",
+                    "A commercial zone for motels. Smaller and cheaper than hotels, and well suited " +
+                    "to roadside plots near your outside connections."
+                },
+                {
+                    "Assets.DESCRIPTION[TourismOverhaul Motels NA]",
                     "A commercial zone for motels. Smaller and cheaper than hotels, and well suited " +
                     "to roadside plots near your outside connections."
                 },

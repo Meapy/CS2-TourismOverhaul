@@ -822,6 +822,20 @@ namespace TourismOverhaul.Systems
         /// them — walking means the journey is not finishing in time, queued means the pathfinder has
         /// not answered, idle means the trip was dropped and nothing is bringing them back.
         /// </summary>
+        /// <summary>Shore-leave events since the last log line.</summary>
+        private struct ShoreLeaveTotals
+        {
+            public int m_Recalled;
+            public int m_Boarded;
+            public int m_Stranded;
+            public int m_LeftOtherWay;
+            public int m_Redirected;
+            public int m_Rehomed;
+            public int m_RehomedAtTerminal;
+        }
+
+        private ShoreLeaveTotals m_Logged;
+
         private void ReportLastSweep()
         {
             if (m_SweepResults[(int)SweepResult.Ran] == 0)
@@ -847,18 +861,29 @@ namespace TourismOverhaul.Systems
             bool periodic = walking + queued + idle > 0
                             && frame % 8192u < (uint)GetUpdateInterval(SystemUpdatePhase.GameSimulation);
 
-            int redirected = R(SweepResult.Redirected);
-            int rehomed = R(SweepResult.Rehomed);
-            int rehomedAtTerminal = R(SweepResult.RehomedAtTerminal);
+            // The event counts are summed between lines rather than logged per sweep. Per sweep they
+            // came out about once a second during a recall, and the game's logger reopens its file for
+            // every line: at that rate, with other mods logging as well, it eventually failed to open it
+            // and the next line crashed the game from inside Unity's native logging.
+            m_Logged.m_Recalled += recalled;
+            m_Logged.m_Boarded += boarded;
+            m_Logged.m_Stranded += stranded;
+            m_Logged.m_LeftOtherWay += leftOtherWay;
+            m_Logged.m_Redirected += R(SweepResult.Redirected);
+            m_Logged.m_Rehomed += R(SweepResult.Rehomed);
+            m_Logged.m_RehomedAtTerminal += R(SweepResult.RehomedAtTerminal);
 
-            if (recalled > 5 || boarded > 5 || stranded > 0 || leftOtherWay > 0 || redirected > 20
-                || rehomed + rehomedAtTerminal > 0 || periodic)
+            // Every 8192 frames while anyone is out, and at once when a sailing leaves people behind.
+            if (periodic || stranded > 0)
             {
+                ShoreLeaveTotals t = m_Logged;
+                m_Logged = default;
+
                 Mod.Log.Info(
-                    $"Cruise shore leave: {recalled} recalled, {redirected} turned round mid-errand, "
-                    + $"{rehomed} put back where they were, {rehomedAtTerminal} at the terminal, {boarded} aboard, "
-                    + $"{stranded} left behind, {leftOtherWay} reached the sea by another route; "
-                    + $"still ashore: {walking} walking, "
+                    $"Cruise shore leave since the last line: {t.m_Recalled} recalled, {t.m_Redirected} turned round "
+                    + $"mid-errand, {t.m_Rehomed} put back where they were, {t.m_RehomedAtTerminal} at the terminal, "
+                    + $"{t.m_Boarded} aboard, {t.m_Stranded} left behind, {t.m_LeftOtherWay} reached the sea by "
+                    + $"another route; still ashore: {walking} walking, "
                     + $"{queued} queued ({R(SweepResult.AwaitingPath)} waiting on the pathfinder, "
                     + $"{R(SweepResult.BusyIndoors)} busy indoors, {R(SweepResult.NowhereAtAll)} nowhere), {idle} idle "
                     + $"(walking: {R(SweepResult.WalkingToShip)} bound for the ship, "

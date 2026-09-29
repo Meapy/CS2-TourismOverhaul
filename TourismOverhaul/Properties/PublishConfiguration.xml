@@ -246,7 +246,7 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
   <Tag Value="Code Mod" />
 
   <ForumLink Value="https://forum.paradoxplaza.com/forum/threads/mod-tourism-overhaul-fix-tourism.1937099/" />
-  <ModVersion Value="1.10.1" />
+  <ModVersion Value="1.11.0" />
   <GameVersion Value="1.6.*" />
 
   <!--
@@ -254,10 +254,14 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
     accumulating history here republishes every past release with every upload. The full record
     belongs in CHANGELOG.md.
   -->
-  <ChangeLog>1.10.1
-Hotel and motel zones build again. Since 1.9.1, a city that already had a hotel never built another, however high the tourist demand bar read: the mod held visitor numbers at about 60% of the beds, and the game only builds hotels once rooms are more than about 83% full. Visitors can now fill the hotels, and new hotels and motels are built as they do.
+  <ChangeLog>1.11.0
+Hotel and motel zones are now split by theme, like the game's own zones. There is a Hotels and a Motels zone for European and for North American, each shown under its own theme in the zoning menu, and each building the assets of that theme instead of a mix of both.
 
-Cities short of hotel beds will hold more tourists than before, up to full hotels. The Maximum tourists setting still caps them.
+Zoning you have already painted keeps its kind but comes back as European, because a zone cell stores only a zone number. A North American city has its hotel and motel plots moved onto the North American zones once, automatically, as long as it has none of those already.
+
+Much smoother simulation. Eight systems were doing their work on the simulation thread and waiting on the game's own jobs to do it: in a 172k city that cost 3.2 ms every frame, with occasional stalls up to a third of a second. They now run alongside the game instead, and the mod's cost on that thread fell to under 0.8 ms.
+
+Fixed a crash. During a cruise recall the mod wrote a log line about once a second, and the game's logger eventually failed to reopen its file and took the game down. Those counts are now summed and written occasionally.
   </ChangeLog>
 
   <ExternalLink Type="github" Url="https://github.com/Meapy/CS2-TourismOverhaul" />

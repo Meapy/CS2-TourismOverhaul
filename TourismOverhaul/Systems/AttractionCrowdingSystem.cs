@@ -7,6 +7,7 @@ using Unity.Burst;
 using Unity.Burst.Intrinsics;
 using Unity.Collections;
 using Unity.Entities;
+using Unity.Jobs;
 using Unity.Mathematics;
 
 namespace TourismOverhaul.Systems
@@ -108,6 +109,9 @@ namespace TourismOverhaul.Systems
                 ComponentType.Exclude<Temp>());
         }
 
+        /// <summary>The last damping job, the only reader of m_Factors and m_Written.</summary>
+        private JobHandle m_LastJob;
+
         protected override void OnDestroy()
         {
             CompleteDependency();
@@ -143,7 +147,10 @@ namespace TourismOverhaul.Systems
             if (++m_FramesSinceRebuild >= kRebuildFrames)
             {
                 m_FramesSinceRebuild = 0;
-                CompleteDependency();
+
+                // Only the last damping job reads the two maps. CompleteDependency here also waited for
+                // the game's attraction jobs of the current frame (up to 169 ms).
+                m_LastJob.Complete();
                 Rebuild(settings);
             }
 
@@ -159,6 +166,7 @@ namespace TourismOverhaul.Systems
                 m_Factors = m_Factors,
                 m_Written = m_Written
             }, m_AttractionQuery, Dependency);
+            m_LastJob = Dependency;
         }
 
         /// <summary>
