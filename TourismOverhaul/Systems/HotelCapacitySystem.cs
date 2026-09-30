@@ -145,6 +145,16 @@ namespace TourismOverhaul.Systems
             // Prefab data is rebuilt from source on load, so forget the scaling we applied — the
             // value on disk is the authored one again.
             m_LastWrittenServiceMultiplier = -1;
+
+            // And scale again now, before the first tick, rather than on the first update up to
+            // 512 frames later: in between, a hotel's saved service stock sits over the authored
+            // maximum, and ServiceCompanySystem flags "not enough customers" until the update.
+            TourismOverhaulSetting settings = Mod.Settings;
+            int multiplier = settings != null ? math.clamp(settings.HotelRoomMultiplier, 1, 10) : 1;
+            if (mode == GameMode.Game && multiplier > 1)
+            {
+                ScaleServiceCapacity(multiplier);
+            }
         }
 
         /// <summary>

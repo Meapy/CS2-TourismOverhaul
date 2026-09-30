@@ -56,7 +56,11 @@ namespace TourismOverhaul.Systems
     /// so keeps venues from stalling — the same reason HotelCapacitySystem scales it for hotels.
     /// It is simply not the thing that makes leisure cheap.
     ///
-    /// SCOPE: this affects every customer at these venues, not only tourists. Residents get cheaper
+    /// SCOPE: leisure venues only, the companies whose prefab carries LeisureProviderData, which is
+    /// where LeisureSystem charges a visit (:98-108). Up to 2.0.1 the query took every prefab with
+    /// ServiceCompanyData, which is every commercial company, so ordinary shops were rescaled too.
+    ///
+    /// It affects every customer at these venues, not only tourists. Residents get cheaper
     /// leisure too. That is unavoidable — the price is a property of the venue, not the visitor —
     /// and arguably right, since the crowding that caused the surge was never meant to be there.
     /// Lodging is excluded because HotelCapacitySystem owns it and would fight over the same field.
@@ -95,8 +99,17 @@ namespace TourismOverhaul.Systems
             m_ServicePrefabQuery = GetEntityQuery(
                 ComponentType.ReadWrite<Game.Companies.ServiceCompanyData>(),
                 ComponentType.ReadOnly<IndustrialProcessData>(),
+                ComponentType.ReadOnly<LeisureProviderData>(),
                 ComponentType.ReadOnly<PrefabData>());
+
+            m_CompanyQuery = GetEntityQuery(
+                ComponentType.ReadWrite<Game.Companies.ServiceAvailable>(),
+                ComponentType.ReadOnly<PrefabRef>(),
+                ComponentType.Exclude<Game.Common.Deleted>(),
+                ComponentType.Exclude<Game.Tools.Temp>());
         }
+
+        private EntityQuery m_CompanyQuery;
 
         protected override void OnDestroy()
         {
@@ -118,6 +131,89 @@ namespace TourismOverhaul.Systems
             m_Authored.Clear();
             m_AppliedMultiplier = 0;
             m_AppliedCostPercent = 0;
+
+            // Now, before the simulation's first tick, not on the first update up to 4096 frames
+            // later. In between, a venue's saved service stock, grown against the scaled maximum,
+            // sat several times over the authored one: ServiceCompanySystem:169 flagged "not enough
+            // customers" on every venue at once and the service price fell to its 0.7 floor, until
+            // the update came round and it all went back as it was. Players saw it on every load.
+            if (Mod.Settings != null && mode == GameMode.Game)
+            {
+                Apply(Mod.Settings);
+                TrimServiceStock();
+            }
+        }
+
+        /// <summary>
+        /// Brings any commercial company's service stock at or over its prefab's maximum down to
+        /// half of it, once per load. Stock above the maximum is unsold service that would take days to sell, and while
+        /// it is there the company reads "not enough customers" and sells at the 0.7 price floor.
+        ///
+        /// Two ways it got there: up to 2.0.1 this system scaled every commercial company's
+        /// capacity, not only leisure venues', so ordinary shops in older saves carry several times
+        /// their maximum; and a venue's maximum drops back whenever the capacity setting is lowered.
+        /// Hotels are left alone: HotelCapacitySystem sizes their maximum.
+        /// </summary>
+        private void TrimServiceStock()
+        {
+            if (m_CompanyQuery.IsEmptyIgnoreFilter)
+            {
+                return;
+            }
+
+            EntityManager.CompleteDependencyBeforeRW<Game.Companies.ServiceAvailable>();
+
+            int trimmed = 0;
+            int nearlyFull = 0;
+            int checkedCompanies = 0;
+            NativeArray<Entity> companies = m_CompanyQuery.ToEntityArray(Allocator.Temp);
+            try
+            {
+                for (int i = 0; i < companies.Length; i++)
+                {
+                    Entity prefab = EntityManager.GetComponentData<PrefabRef>(companies[i]).m_Prefab;
+
+                    if (!EntityManager.HasComponent<Game.Companies.ServiceCompanyData>(prefab)
+                        || (EntityManager.HasComponent<IndustrialProcessData>(prefab)
+                            && (EntityManager.GetComponentData<IndustrialProcessData>(prefab).m_Output.m_Resource
+                                & Resource.Lodging) != Resource.NoResource))
+                    {
+                        continue;
+                    }
+
+                    int max = EntityManager.GetComponentData<Game.Companies.ServiceCompanyData>(prefab).m_MaxService;
+                    checkedCompanies++;
+                    Game.Companies.ServiceAvailable stock =
+                        EntityManager.GetComponentData<Game.Companies.ServiceAvailable>(companies[i]);
+
+                    // To half the maximum, not to the maximum: ServiceCompanySystem:169 flags a
+                    // company once stock is above 90% of it (m_NoCustomersServiceLimit), so a trim
+                    // to 100% left every trimmed company flagged. Half is well clear of that and
+                    // puts the service price multiplier at its neutral 1.0. At or above the maximum
+                    // only: vanilla stock can sit anywhere below it.
+                    if (max > 0 && stock.m_ServiceAvailable >= max)
+                    {
+                        stock.m_ServiceAvailable = max / 2;
+                        EntityManager.SetComponentData(companies[i], stock);
+                        trimmed++;
+                    }
+                    else if (max > 0 && stock.m_ServiceAvailable > max * 0.9f)
+                    {
+                        // Over the game's own 90% flag, but within capacity: vanilla stock can sit
+                        // there, so it is left alone and only counted.
+                        nearlyFull++;
+                    }
+                }
+            }
+            finally
+            {
+                companies.Dispose();
+            }
+
+            Mod.Log.Info(
+                $"Service stock on load, {checkedCompanies} commercial companies: {trimmed} at or over " +
+                $"capacity trimmed to half; {nearlyFull} between 90% and 100% of capacity left as they are " +
+                "(the game flags those itself).");
         }
 
         protected override void OnUpdate()
@@ -128,6 +224,12 @@ namespace TourismOverhaul.Systems
             {
                 return;
             }
+
+            Apply(settings);
+        }
+
+        private void Apply(TourismOverhaulSetting settings)
+        {
 
             int multiplier = math.clamp(settings.LeisureCapacityMultiplier, 1, 10);
             int costPercent = math.clamp(settings.LeisureCostPercent, 5, 200);
