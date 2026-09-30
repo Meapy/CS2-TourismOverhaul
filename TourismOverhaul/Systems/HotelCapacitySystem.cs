@@ -642,14 +642,28 @@ namespace TourismOverhaul.Systems
 
                 m_UsageAccumulator[m_LodgingIndex] += lodgingConsumed;
 
-                ServiceAvailable service = services[index];
-                service.m_ServiceAvailable = math.max(0, service.m_ServiceAvailable - lodgingConsumed);
-                services[index] = service;
-
                 LodgingProvider provider = providers[index];
                 provider.m_Price = (int)(m_PricePerUpdate * kUpdatesPerDay);
                 provider.m_FreeRooms = roomCount - renters.Length;
                 providers[index] = provider;
+
+                ServiceAvailable service = services[index];
+                service.m_ServiceAvailable = math.max(0, service.m_ServiceAvailable - lodgingConsumed);
+
+                // A full hotel has sold everything it has. ServiceCompanySystem flags "not enough
+                // customers" when unsold service is above 90% of m_MaxService (:169), and replaces
+                // that with a free-rooms test for hotels only while m_FreeRooms > 0 (:170-173). A
+                // hotel with every room taken therefore skips the rooms test and is judged on
+                // service stock alone, which its own production keeps near the (doubled) maximum,
+                // since guests draw little of it: full hotels wore the no-customers warning.
+                // Emptying the stock when no room is free makes the game's own test pass, and it
+                // removes the icon itself on its next update (:190-195).
+                if (provider.m_FreeRooms <= 0 && renters.Length > 0)
+                {
+                    service.m_ServiceAvailable = 0;
+                }
+
+                services[index] = service;
 
                 if (m_Statistics.TryGetComponent(company, out CompanyStatisticData statistics))
                 {

@@ -46,6 +46,20 @@ namespace TourismOverhaul
                 },
                 { "Assets.NAME[TourismOverhaul Motels EU]", "Motels" },
                 { "Assets.NAME[TourismOverhaul Motels NA]", "Motels" },
+                { "Assets.NAME[TourismOverhaul Hotel Towers EU]", "Hotel Skyscrapers" },
+                { "Assets.NAME[TourismOverhaul Hotel Towers NA]", "Hotel Skyscrapers" },
+                {
+                    "Assets.DESCRIPTION[TourismOverhaul Hotel Towers EU]",
+                    "A high-density zone for hotel towers: the city's skyscrapers with rooftop pools " +
+                    "and hotel signs, built only as hotels here. Needs the height and land value of a " +
+                    "downtown block."
+                },
+                {
+                    "Assets.DESCRIPTION[TourismOverhaul Hotel Towers NA]",
+                    "A high-density zone for hotel towers: the city's skyscrapers with rooftop pools " +
+                    "and hotel signs, built only as hotels here. Needs the height and land value of a " +
+                    "downtown block."
+                },
 
                 // A drawn line's name in the transport list. NameSystem:544 composes the key as
                 // RoutePrefab.m_LocaleID + "[" + prefab.name + "]" and passes the route number as a

@@ -54,3 +54,6 @@ TestResult.xml
 nunit-*.xml
 /ui/node_modules
 *.pid
+
+# Unity IL post-processor state written by every build
+TourismOverhaul/Library/

@@ -49,8 +49,36 @@ namespace TourismOverhaul
 
             MirrorThemedZoneNames(entries);
 
+            if (HotelTowerNames.TryGetValue(locale, out string towers))
+            {
+                foreach (string theme in ThemeTags)
+                {
+                    entries["Assets.NAME[TourismOverhaul Hotel Towers " + theme + "]"] = towers;
+                }
+            }
+
             return entries;
         }
+
+        /// <summary>
+        /// The Hotel Skyscrapers zone's name, per locale. Kept out of <see cref="Labels"/>: those
+        /// arrays are positional, and a name only needs one string per locale, given to both themes
+        /// as the other zone names are. The description stays English, like the settings text.
+        /// </summary>
+        private static readonly Dictionary<string, string> HotelTowerNames = new Dictionary<string, string>
+        {
+            ["de-DE"] = "Hotelhochhäuser",
+            ["es-ES"] = "Rascacielos hoteleros",
+            ["fr-FR"] = "Gratte-ciel hôteliers",
+            ["it-IT"] = "Grattacieli alberghieri",
+            ["ja-JP"] = "ホテル高層ビル",
+            ["ko-KR"] = "호텔 고층 빌딩",
+            ["pl-PL"] = "Wieżowce hotelowe",
+            ["pt-BR"] = "Arranha-céus de hotéis",
+            ["ru-RU"] = "Гостиничные небоскрёбы",
+            ["zh-HANS"] = "酒店摩天楼",
+            ["zh-HANT"] = "飯店摩天樓",
+        };
 
         /// <summary>
         /// Gives both theme variants of a lodging zone the one translated name.

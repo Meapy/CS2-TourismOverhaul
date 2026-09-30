@@ -198,7 +198,35 @@ namespace TourismOverhaul.Systems
 
             int unhoused = math.max(0, appetite - SleepingSpaceFree());
 
-            return math.clamp(unhoused * 100 / ceiling, 0, 100);
+            return (int)math.round(math.clamp(unhoused * 100f / ceiling, 0f, 100f) * OccupancyReadiness());
+        }
+
+        /// <summary>Occupancy below which the bar reads empty however large the appetite.</summary>
+        private const float kReadinessFloor = 0.5f;
+
+        /// <summary>
+        /// How close the rooms are to the occupancy at which new hotels are actually built, 0 to 1.
+        ///
+        /// A large city's appetite (IntrinsicTarget) can be ten times its rooms, and then the
+        /// free-room subtraction above barely moves the figure: one city read a full bar with 56% of
+        /// its rooms empty while tourists were still arriving after a load. But hotels are built
+        /// only once rooms are nearly full (TouristEconomySystem.kFullOccupancy), because a hotel
+        /// opened into empty rooms has no guests. A full bar that builds nothing reads as broken,
+        /// so the bar climbs with occupancy and is full only where building starts.
+        ///
+        /// With no rooms at all the first hotel is always buildable, so the bar is not held back.
+        /// </summary>
+        private float OccupancyReadiness()
+        {
+            if (m_RoomsTotal <= 0)
+            {
+                return 1f;
+            }
+
+            float occupancy = 1f - m_RoomsFree / (float)m_RoomsTotal;
+
+            return math.saturate(
+                (occupancy - kReadinessFloor) / (TouristEconomySystem.kFullOccupancy - kReadinessFloor));
         }
 
         /// <summary>

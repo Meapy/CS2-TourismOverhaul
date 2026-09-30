@@ -275,8 +275,11 @@ namespace TourismOverhaul.Systems
             bool firstBuildException = lodging.y == 0;
             bool wantsMore = firstBuildException || wanted - lodging.y > 0;
 
+            float occupancy = lodging.y > 0 ? lodging.x / (float)lodging.y : 0f;
+
             return
-                $"  lodging: {lodging.x} rooms occupied of {lodging.y} total; city wants {wanted} " +
+                $"  lodging: {lodging.x} rooms occupied of {lodging.y} total ({occupancy:P0}); " +
+                $"intrinsic tourist target {m_DemandSystem.IntrinsicTarget}; city wants {wanted} " +
                 $"({requirement:0.00}/tourist) -> hotels will spawn: {(wantsMore ? "YES" : "NO")}" +
                 $"{(firstBuildException ? " (first build exception)" : string.Empty)}";
         }

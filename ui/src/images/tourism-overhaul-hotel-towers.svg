@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+  <!--
+    Hotel Skyscrapers zone icon.
+
+    Same conventions as the Hotels icon: a 32x32 canvas, a 2:1 isometric ground plate in the
+    high-density commercial blue, and a building in the stock palette (cream roof #faf7ec, lit face
+    #e4d8b3, shaded face #0071a9, windows #03243e / #001209, highlights #73e0fc).
+
+    Reads as a hotel tower rather than the plain Hotels zone through its height (the tower reaches
+    the top of the canvas on a narrower footprint), the rooftop pool, and the vertical sign.
+  -->
+  <g id="ZoneTourismOverhaulHotelTowers">
+    <path id="plate" d="M1.5,22 L16,29.5 L30.5,22 L16,14.5 Z" fill="#0090d0"/>
+
+    <path id="roof" d="M16,0.5 L22,3.5 L16,6.5 L10,3.5 Z" fill="#faf7ec"/>
+    <path id="pool" d="M14.2,3.4 L16.6,2.2 L18.6,3.2 L16.2,4.4 Z" fill="#73e0fc"/>
+    <path id="face-left" d="M10,3.5 L16,6.5 L16,25 L10,22 Z" fill="#e4d8b3"/>
+    <path id="face-right" d="M16,6.5 L22,3.5 L22,22 L16,25 Z" fill="#0071a9"/>
+
+    <g id="windows-left" fill="#03243e">
+      <path d="M10,5.5 L16,8.5 L16,9.6 L10,6.6 Z"/>
+      <path d="M10,8.3 L16,11.3 L16,12.4 L10,9.4 Z"/>
+      <path d="M10,11.1 L16,14.1 L16,15.2 L10,12.2 Z"/>
+      <path d="M10,13.9 L16,16.9 L16,18 L10,15 Z"/>
+      <path d="M10,16.7 L16,19.7 L16,20.8 L10,17.8 Z"/>
+    </g>
+
+    <g id="windows-right" fill="#001209">
+      <path d="M16,8.5 L22,5.5 L22,6.6 L16,9.6 Z"/>
+      <path d="M16,11.3 L22,8.3 L22,9.4 L16,12.4 Z"/>
+      <path d="M16,14.1 L22,11.1 L22,12.2 L16,15.2 Z"/>
+      <path d="M16,16.9 L22,13.9 L22,15 L16,18 Z"/>
+      <path d="M16,19.7 L22,16.7 L22,17.8 L16,20.8 Z"/>
+    </g>
+
+    <path id="sign" d="M17,7.4 L18.2,6.8 L18.2,15.4 L17,16 Z" fill="#faf7ec"/>
+    <path id="canopy" d="M12.5,23 L16,24.75 L19.5,23 L16,21.25 Z" fill="#73e0fc"/>
+  </g>
+</svg>
