@@ -95,7 +95,8 @@ The deploy folder must contain all of:
 - `TourismOverhaul.dll`
 - `TourismOverhaul_win_x86_64.dll`, `_mac_x86_64.bundle`, `_linux_x86_64.so`
 - `TourismOverhaul.mjs`
-- `images\tourism-overhaul-hotels.svg` and `images\tourism-overhaul-motels.svg` — the zone icons.
+- `images\tourism-overhaul-hotels.svg`, `images\tourism-overhaul-motels.svg` and
+  `images\tourism-overhaul-hotel-towers.svg` — the zone icons.
   Their absence is silent: `HotelZoneSystem` falls back to the stock commercial zone icon, so the
   zones still work and you only notice on the published mod.
 

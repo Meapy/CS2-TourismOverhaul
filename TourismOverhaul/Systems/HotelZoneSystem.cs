@@ -93,7 +93,27 @@ namespace TourismOverhaul.Systems
             /// <summary>Cells found painted with these zones by the last count.</summary>
             public int m_HotelCells;
             public int m_MotelCells;
+
+            /// <summary>
+            /// True when m_Hotels and m_Motels are the Hotels &amp; Motels asset pack's zones. Our own
+            /// zones then still exist, hidden, as m_OwnHotels and m_OwnMotels, so that cells a save
+            /// painted with them load and can be moved across (<see cref="MigrateOwnCellsToPack"/>).
+            /// </summary>
+            public bool m_FromPack;
+            public ZonePrefab m_OwnHotels;
+            public ZonePrefab m_OwnMotels;
+            public ZoneType m_OwnHotelType;
+            public ZoneType m_OwnMotelType;
         }
+
+        /// <summary>
+        /// The Hotels &amp; Motels asset pack's zones, by theme tag: "HotelsAndMotels Hotels EU" and
+        /// so on. The pack is code-free and brings its own Hotels and Motels zones; with both
+        /// installed, those become the lodging zones here, so players see one set.
+        /// </summary>
+        private static string PackHotelZoneName(string tag) => "HotelsAndMotels Hotels " + tag;
+
+        private static string PackMotelZoneName(string tag) => "HotelsAndMotels Motels " + tag;
 
         private static string HotelZoneName(string tag) => "TourismOverhaul Hotels " + tag;
 
@@ -168,6 +188,14 @@ namespace TourismOverhaul.Systems
             // than waiting for the first simulation update.
             CreateZones();
 
+            // The Hotel Skyscrapers zones and their hotel-only tower copies
+            // (HotelZoneSystem.Towers.cs), after every hotel and motel zone so earlier zones keep
+            // their indices, and here, before the save is read, so saved towers find their prefabs.
+            if (m_ZonesCreated)
+            {
+                CreateTowerZones();
+            }
+
             // Try to repoint the buildings straight away too. This usually fails on a cold start,
             // because ZoneSystem has not yet handed our zones their indices, and that is fine — it
             // is a free attempt at the earliest possible moment, and OnGameLoadingComplete covers
@@ -201,6 +229,7 @@ namespace TourismOverhaul.Systems
             // migrated cell is never judged against the zone it used to name.
             if (m_BuildingsMoved)
             {
+                MigrateOwnCellsToPack();
                 MigratePaintedCells();
             }
 
@@ -260,17 +289,36 @@ namespace TourismOverhaul.Systems
                         + "lodging zones will not be filtered by theme.");
                 }
 
+                // The asset pack's zones for this theme, if it is installed.
+                ZonePrefab packHotels = FindZone(PackHotelZoneName(split.m_Tag));
+                ZonePrefab packMotels = FindZone(PackMotelZoneName(split.m_Tag));
+                bool fromPack = packHotels != null && packMotels != null;
+
                 // Hotels before motels, and the themes in their declared order: see kThemes for
-                // why the order is save-visible.
+                // why the order is save-visible. Ours are created even when the pack's are used,
+                // hidden from the toolbar, so a save painted with them still finds them.
+                ZonePrefab ownHotels = CreateZone(HotelZoneName(split.m_Tag), template, kHotelIcon, theme, hidden: fromPack);
+                ZonePrefab ownMotels = CreateZone(MotelZoneName(split.m_Tag), template, kMotelIcon, theme, hidden: fromPack);
+
                 LodgingZones zones = new LodgingZones
                 {
                     m_Tag = split.m_Tag,
-                    m_Hotels = CreateZone(HotelZoneName(split.m_Tag), template, kHotelIcon, theme),
-                    m_Motels = CreateZone(MotelZoneName(split.m_Tag), template, kMotelIcon, theme)
+                    m_Hotels = fromPack ? packHotels : ownHotels,
+                    m_Motels = fromPack ? packMotels : ownMotels,
+                    m_FromPack = fromPack,
+                    m_OwnHotels = fromPack ? ownHotels : null,
+                    m_OwnMotels = fromPack ? ownMotels : null
                 };
 
                 m_Zones.Add(zones);
-                m_ZonesCreated &= zones.m_Hotels != null && zones.m_Motels != null;
+                m_ZonesCreated &= ownHotels != null && ownMotels != null;
+
+                if (fromPack)
+                {
+                    Mod.Log.Info(
+                        $"Hotels & Motels asset pack found: its {split.m_Tag} Hotels and Motels zones are the "
+                        + "lodging zones; ours are kept hidden for older saves.");
+                }
             }
 
             if (m_ZonesCreated)
@@ -279,6 +327,39 @@ namespace TourismOverhaul.Systems
                     $"Created hotel and motel zones for {kThemes.Length} theme(s): "
                     + string.Join(", ", System.Array.ConvertAll(kThemes, t => t.m_Tag)) + ".");
             }
+        }
+
+        /// <summary>A loaded zone prefab of that name, or null.</summary>
+        private ZonePrefab FindZone(string name)
+        {
+            EntityQuery zoneQuery = GetEntityQuery(
+                ComponentType.ReadOnly<ZoneData>(),
+                ComponentType.ReadOnly<PrefabData>());
+
+            NativeArray<Entity> zones = zoneQuery.ToEntityArray(Allocator.Temp);
+
+            try
+            {
+                for (int i = 0; i < zones.Length; i++)
+                {
+                    if (m_PrefabSystem.TryGetPrefab(zones[i], out ZonePrefab prefab)
+                        && prefab != null
+                        && prefab.name == name)
+                    {
+                        return prefab;
+                    }
+                }
+            }
+            catch (System.Exception e)
+            {
+                Mod.Log.Warn($"Could not look up zone \"{name}\": {e.Message}");
+            }
+            finally
+            {
+                zones.Dispose();
+            }
+
+            return null;
         }
 
         /// <summary>The theme prefab of that name, or null if this game does not have it.</summary>
@@ -357,7 +438,7 @@ namespace TourismOverhaul.Systems
             return null;
         }
 
-        private ZonePrefab CreateZone(string name, ZonePrefab template, string icon, ThemePrefab theme)
+        private ZonePrefab CreateZone(string name, ZonePrefab template, string icon, ThemePrefab theme, bool hidden = false)
         {
             try
             {
@@ -400,7 +481,9 @@ namespace TourismOverhaul.Systems
                 // menu next to the stock commercial zones.
                 UIObject templateUI = template.GetComponent<UIObject>();
 
-                if (templateUI != null)
+                // A zone with no UIObject has no toolbar entry: the hidden ones only keep old
+                // saves' cells resolvable until they are moved to the pack's zones.
+                if (templateUI != null && !hidden)
                 {
                     UIObject ui = zone.AddComponent<UIObject>();
                     ui.m_Group = templateUI.m_Group;
@@ -530,13 +613,17 @@ namespace TourismOverhaul.Systems
 
             foreach (LodgingZones zones in m_Zones)
             {
-                AdoptHeightRange(zones.m_Hotels);
-                AdoptHeightRange(zones.m_Motels);
+                // The game worked out the pack's zones' heights from the pack's own buildings; the
+                // vanilla lodging just moved in must fit as well, so widen rather than replace.
+                AdoptHeightRange(zones.m_Hotels, widen: zones.m_FromPack);
+                AdoptHeightRange(zones.m_Motels, widen: zones.m_FromPack);
 
                 indices.Append(indices.Length > 0 ? ", " : string.Empty)
                     .Append($"{zones.m_Tag} hotels {zones.m_HotelType.m_Index}, ")
                     .Append($"motels {zones.m_MotelType.m_Index}");
             }
+
+            AdoptTowerHeightRanges();
 
             Mod.Log.Info(
                 $"Moved {hotels} hotel and {motels} motel building prefabs into their themed zones "
@@ -562,12 +649,18 @@ namespace TourismOverhaul.Systems
             return null;
         }
 
-        /// <summary>The zones a lodging asset belongs in, by the theme prefix in its name.</summary>
+        /// <summary>
+        /// The zones a lodging asset belongs in, by the theme tag in its name: a prefix for the
+        /// game's own assets (EU_CommercialHotel01_L1_2x2) or a suffix for the Hotels &amp; Motels
+        /// pack, which names its buildings HMCommercialHotel01_L1_4x4_EU. Before the suffix was
+        /// recognised, all 500 of that pack's buildings were left out of the zones as "another theme".
+        /// </summary>
         private LodgingZones ZonesForBuilding(string prefabName)
         {
             foreach (LodgingZones zones in m_Zones)
             {
-                if (prefabName.StartsWith(zones.m_Tag + "_", System.StringComparison.Ordinal))
+                if (prefabName.StartsWith(zones.m_Tag + "_", System.StringComparison.Ordinal)
+                    || prefabName.EndsWith("_" + zones.m_Tag, System.StringComparison.Ordinal))
                 {
                     return zones;
                 }
@@ -597,6 +690,13 @@ namespace TourismOverhaul.Systems
 
                 zones.m_HotelEntity = m_PrefabSystem.GetEntity(zones.m_Hotels);
                 zones.m_MotelEntity = m_PrefabSystem.GetEntity(zones.m_Motels);
+
+                if (zones.m_FromPack
+                    && (!TryGetZoneType(zones.m_OwnHotels, out zones.m_OwnHotelType)
+                        || !TryGetZoneType(zones.m_OwnMotels, out zones.m_OwnMotelType)))
+                {
+                    return false;
+                }
             }
 
             return true;
@@ -708,6 +808,104 @@ namespace TourismOverhaul.Systems
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// Moves cells painted with our own lodging zones onto the asset pack's, when the pack's
+        /// are the lodging zones (<see cref="LodgingZones.m_FromPack"/>).
+        ///
+        /// A save made before the pack was installed has its hotel and motel plots on our zones.
+        /// Those zones still load, hidden, but nothing grows there any more: every lodging
+        /// building now names the pack's zones, so the plots would sit empty and the hotels on
+        /// them would be condemned. Moving the cells keeps the city's zoning as painted.
+        /// </summary>
+        private void MigrateOwnCellsToPack()
+        {
+            bool any = false;
+            foreach (LodgingZones zones in m_Zones)
+            {
+                any |= zones.m_FromPack;
+            }
+
+            if (!any)
+            {
+                return;
+            }
+
+            NativeArray<Entity> blocks = m_BlockQuery.ToEntityArray(Allocator.Temp);
+
+            try
+            {
+                int moved = 0;
+
+                for (int i = 0; i < blocks.Length; i++)
+                {
+                    DynamicBuffer<Cell> cells = EntityManager.GetBuffer<Cell>(blocks[i]);
+                    bool touched = false;
+
+                    for (int c = 0; c < cells.Length; c++)
+                    {
+                        Cell cell = cells[c];
+
+                        foreach (LodgingZones zones in m_Zones)
+                        {
+                            if (!zones.m_FromPack)
+                            {
+                                continue;
+                            }
+
+                            if (cell.m_Zone.Equals(zones.m_OwnHotelType))
+                            {
+                                cell.m_Zone = zones.m_HotelType;
+                            }
+                            else if (cell.m_Zone.Equals(zones.m_OwnMotelType))
+                            {
+                                cell.m_Zone = zones.m_MotelType;
+                            }
+                            else
+                            {
+                                continue;
+                            }
+
+                            cells[c] = cell;
+                            touched = true;
+                            moved++;
+                            break;
+                        }
+                    }
+
+                    // As in MigratePaintedCells: revalidate and redraw the block.
+                    if (!touched)
+                    {
+                        continue;
+                    }
+
+                    if (!EntityManager.HasComponent<Game.Common.Updated>(blocks[i]))
+                    {
+                        EntityManager.AddComponent<Game.Common.Updated>(blocks[i]);
+                    }
+
+                    if (!EntityManager.HasComponent<Game.Common.BatchesUpdated>(blocks[i]))
+                    {
+                        EntityManager.AddComponent<Game.Common.BatchesUpdated>(blocks[i]);
+                    }
+                }
+
+                if (moved > 0)
+                {
+                    Mod.Log.Info(
+                        $"Moved {moved} lodging cell(s) from Tourism Overhaul's zones onto the Hotels & Motels "
+                        + "pack's, which are the lodging zones while the pack is installed.");
+                }
+            }
+            catch (System.Exception e)
+            {
+                Mod.Log.Warn($"Could not move lodging cells onto the pack's zones: {e.Message}");
+            }
+            finally
+            {
+                blocks.Dispose();
+            }
         }
 
         /// <summary>
@@ -954,9 +1152,11 @@ namespace TourismOverhaul.Systems
         /// The buildings we moved came out of ordinary commercial zones, so that zone's range
         /// already covers them. Copying it is both correct and safely permissive.
         /// </summary>
-        private void AdoptHeightRange(ZonePrefab zone)
+        private void AdoptHeightRange(ZonePrefab zone, ZonePrefab heightSource = null, bool widen = false)
         {
-            if (zone == null || m_HeightSource == null)
+            heightSource = heightSource ?? m_HeightSource;
+
+            if (zone == null || heightSource == null)
             {
                 return;
             }
@@ -964,7 +1164,7 @@ namespace TourismOverhaul.Systems
             try
             {
                 Entity target = m_PrefabSystem.GetEntity(zone);
-                Entity source = m_PrefabSystem.GetEntity(m_HeightSource);
+                Entity source = m_PrefabSystem.GetEntity(heightSource);
 
                 if (target == Entity.Null || source == Entity.Null
                     || !EntityManager.HasComponent<ZoneData>(target)
@@ -976,10 +1176,20 @@ namespace TourismOverhaul.Systems
                 ZoneData sourceData = EntityManager.GetComponentData<ZoneData>(source);
                 ZoneData targetData = EntityManager.GetComponentData<ZoneData>(target);
 
-                targetData.m_MinOddHeight = sourceData.m_MinOddHeight;
-                targetData.m_MinEvenHeight = sourceData.m_MinEvenHeight;
-                targetData.m_MaxHeight = sourceData.m_MaxHeight;
-                targetData.m_ZoneFlags = sourceData.m_ZoneFlags;
+                if (widen)
+                {
+                    targetData.m_MinOddHeight = (ushort)System.Math.Min(targetData.m_MinOddHeight, sourceData.m_MinOddHeight);
+                    targetData.m_MinEvenHeight = (ushort)System.Math.Min(targetData.m_MinEvenHeight, sourceData.m_MinEvenHeight);
+                    targetData.m_MaxHeight = (ushort)System.Math.Max(targetData.m_MaxHeight, sourceData.m_MaxHeight);
+                    targetData.m_ZoneFlags |= sourceData.m_ZoneFlags;
+                }
+                else
+                {
+                    targetData.m_MinOddHeight = sourceData.m_MinOddHeight;
+                    targetData.m_MinEvenHeight = sourceData.m_MinEvenHeight;
+                    targetData.m_MaxHeight = sourceData.m_MaxHeight;
+                    targetData.m_ZoneFlags = sourceData.m_ZoneFlags;
+                }
 
                 EntityManager.SetComponentData(target, targetData);
 

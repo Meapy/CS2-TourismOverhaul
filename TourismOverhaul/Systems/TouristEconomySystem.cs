@@ -200,6 +200,16 @@ namespace TourismOverhaul.Systems
                 $"of the room rate).");
         }
 
+        /// <summary>Occupancy at which full hotels ask for more rooms regardless of party size.</summary>
+        internal const float kFullOccupancy = 0.92f;
+
+        /// <summary>The occupancy trigger only acts while tourists are below this share of the intrinsic target.</summary>
+        private const float kTargetShortfall = 0.97f;
+
+        /// <summary>The last requirement and reason logged, so the log line only repeats on real change.</summary>
+        private string m_LastLoggedRoomReason;
+        private float m_LastLoggedRoomRequirement;
+
         /// <summary>
         /// Raises how many rooms per tourist the city considers necessary, which is the trigger
         /// CommercialDemandSystem uses to push Lodging demand to maximum and get hotels zoned.
@@ -256,6 +266,8 @@ namespace TourismOverhaul.Systems
                 hasLodgingCapacity = lodging.y > 0;
             }
 
+            bool occupancyTrigger = false;
+
             if (!hasLodgingCapacity)
             {
                 int tourists = m_DemandSystem != null ? m_DemandSystem.CurrentTourists : 0;
@@ -266,6 +278,37 @@ namespace TourismOverhaul.Systems
                 else
                 {
                     requirement = 4f;
+                }
+            }
+            else if (m_DemandSystem != null && !m_CityQuery.IsEmptyIgnoreFilter)
+            {
+                // Full hotels with visitors still to come. The per-party figure above divides by
+                // the measured party size, but that size is counted over every tourist household
+                // and the rooms hold fewer: one city ran 57,689 tourists in 36,218 occupied rooms
+                // (1.6 per room) against a measured party of 2.3, so the requirement asked for 30%
+                // too few rooms. It read "hotels will spawn: NO" with 98.5% of rooms taken and the
+                // tourist target 40,000 above the current count.
+                //
+                // So once rooms are nearly full, ask for just enough that the game's test
+                // (tourists x requirement > rooms) holds, and stop as soon as a new hotel pulls
+                // occupancy back under the threshold. Measured against IntrinsicTarget, which has
+                // no contribution from rooms or opening boosts: against the full target, each new
+                // hotel's opening bonus would justify the next one, which is the runaway 1.9.1
+                // fixed.
+                int2 lodging = m_CityQuery.GetSingleton<Tourism>().m_Lodging;
+                int tourists = m_DemandSystem.CurrentTourists;
+                int wanted = m_DemandSystem.IntrinsicTarget;
+                float occupancy = lodging.y > 0 ? lodging.x / (float)lodging.y : 0f;
+
+                if (tourists > 0 && occupancy >= kFullOccupancy && tourists < wanted * kTargetShortfall)
+                {
+                    float needed = math.clamp((lodging.y * 1.02f + 1f) / tourists, 0.05f, 30f);
+
+                    if (needed > requirement)
+                    {
+                        requirement = needed;
+                        occupancyTrigger = true;
+                    }
                 }
             }
 
@@ -283,12 +326,23 @@ namespace TourismOverhaul.Systems
 
             m_LastWrittenRoomRequirement = requirement;
 
-            string reason = hasLodgingCapacity
-                ? $"({perTourist:0.00} rooms wanted per party of {partySize:0.0} x {multiplier:0} room multiplier)"
-                : "(first hotel/motel build exception)";
+            string reason = !hasLodgingCapacity
+                ? "(first hotel/motel build exception)"
+                : occupancyTrigger
+                    ? $"(rooms at least {kFullOccupancy:P0} full with tourists below their intrinsic target)"
+                    : $"({perTourist:0.00} rooms wanted per party of {partySize:0.0} x {multiplier:0} room multiplier)";
 
-            Mod.Log.Info(
-                $"Hotel room requirement set to {requirement:0.00} per tourist citizen {reason}");
+            // Logged when the reason changes or the figure moves by a tenth. Under the occupancy
+            // trigger it is recomputed from live counts every update, and logging each write
+            // filled the log with near-identical lines.
+            if (reason != m_LastLoggedRoomReason
+                || math.abs(requirement - m_LastLoggedRoomRequirement) > 0.1f * math.max(m_LastLoggedRoomRequirement, 0.01f))
+            {
+                m_LastLoggedRoomReason = reason;
+                m_LastLoggedRoomRequirement = requirement;
+                Mod.Log.Info(
+                    $"Hotel room requirement set to {requirement:0.00} per tourist citizen {reason}");
+            }
         }
     }
 }

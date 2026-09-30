@@ -24,6 +24,7 @@ import {
 // doubles as a way to confirm the exact URL at runtime if an icon ever fails to appear.
 import hotelsIcon from "images/tourism-overhaul-hotels.svg";
 import motelsIcon from "images/tourism-overhaul-motels.svg";
+import hotelTowersIcon from "images/tourism-overhaul-hotel-towers.svg";
 import financeIcon from "images/tourism-finance.svg";
 import cruiseLineIcon from "images/tourism-overhaul-cruise-line.svg";
 
@@ -94,7 +95,7 @@ function registerCruiseDeparture(moduleRegistry: any): void {
 
 const register: ModRegistrar = (moduleRegistry) => {
   console.log(
-    `[TourismOverhaul] Icons emitted at ${hotelsIcon}, ${motelsIcon}, ${financeIcon} ` +
+    `[TourismOverhaul] Icons emitted at ${hotelsIcon}, ${motelsIcon}, ${hotelTowersIcon}, ${financeIcon} ` +
       `and ${cruiseLineIcon}.`
   );
 

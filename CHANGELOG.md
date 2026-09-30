@@ -5,6 +5,59 @@ All notable changes to CS2 Tourism Overhaul.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [semantic](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [2.0.0] — 2026-09-30
+
+### Added
+
+- **Hotel Skyscrapers zones.** The game has no high-rise hotel buildings: its hotel towers, the
+  ones with rooftop pools and hotel signs, are ordinary high-density commercial buildings that a
+  lodging company happens to rent. Each theme now has a third lodging zone, next to Hotels and
+  Motels, that builds them on request. It holds hotel-only copies of every vanilla high-density
+  commercial family that can host lodging and has a member at least 30 m tall. All five levels
+  are copied, so towers grow and level up as usual. The originals stay in ordinary commercial
+  zones. The zones take their colour, density and height range from the game's high-density
+  commercial zone, and are created after the hotel and motel zones so saved zoning keeps its
+  meaning.
+- **One set of lodging zones with the Hotels & Motels asset pack.** The pack is code-free and
+  brings its own Hotels and Motels zones. With both installed, the pack's zones become the lodging
+  zones: the game's hotels and motels move into them beside the pack's, and the toolbar shows one
+  set. Tourism Overhaul's own zones still load, hidden, so a city painted before the pack was
+  installed keeps its plots: they move onto the pack's zones at load. Without the pack, nothing
+  changes. The pack is published separately as
+  [Hotels & Motels](https://mods.paradoxplaza.com/mods/161373/Windows): 500 hotels and motels for
+  every lot from 2x2 to 6x6.
+
+### Changed
+
+- **The tourist demand bar reads full only when hotels will actually be built.** It measured
+  visitors who would come against rooms free, and in a large city that appetite can be ten times
+  the rooms, so the bar read nearly full with half the rooms empty, while nothing was built:
+  hotels are only built once rooms are nearly full, because a hotel opened into empty rooms has no
+  guests. The bar now also follows occupancy: empty at 50% or less, full at the 92% at which
+  building starts. A city with no hotels at all still reads full, so the first can always go up.
+- **Quieter log.** "Hotel room requirement set to …" is written when its reason changes or the
+  figure moves by a tenth, not on every small change.
+
+### Fixed
+
+- **Full hotels ask for more hotels again.** A city with 98.5% of its rooms taken and 40,000
+  tourists still to come read "hotels will spawn: NO". The room requirement divides by the
+  measured party size, which is counted over every tourist household, but the rooms hold fewer
+  people: 1.6 per room against a measured 2.3, so it asked for about 30% too few rooms. Once rooms
+  are at least 92% full while tourists are below the city's own target (population and
+  attractiveness only, not hotel rooms or opening boosts, so a new hotel cannot justify the next
+  one), the requirement is raised just enough for the game to build. It stops once a new hotel
+  brings occupancy back under the threshold. The diagnostics line now shows occupancy and that
+  target.
+- **Full hotels no longer say "not enough customers".** The game flags a service company when
+  more than 90% of its service stock is unsold. For hotels it swaps that test for a free-rooms
+  test, but only while at least one room is free. A hotel with every room taken skipped the rooms
+  test and was judged on its service stock, which its own production keeps near the doubled
+  maximum because guests draw little of it. A full hotel's service now counts as sold, so the
+  game's own test passes and it removes the warning itself.
+
 ## [1.11.0] — 2026-09-29
 
 ### Changed

@@ -53,7 +53,8 @@ stopping it.
 This mod adds a seventh demand bar, in light red. It sits with the others in the City Information
 panel and in the toolbar, and it reads as visitors who would come but have nowhere to stay — so it
 is highest when your city is appealing and every room is taken, and falls to nothing once there is
-a room waiting for everyone who wants one.
+a room waiting for everyone who wants one. It also follows how full your hotels are, and reads full
+only when they are nearly full, which is when new hotels actually get built.
 
 Underneath it, the same kind of factor list the other six have, saying what is actually holding
 tourism back — not enough hotel rooms, rooms standing empty, attractiveness, visitors already here,
@@ -110,12 +111,22 @@ American styles, at every level and lot size. You just can't ask for one. They s
 ordinary shops in the commercial zones, so zoning commercial gives you a hotel maybe one lot in
 four, wherever the game feels like putting it.
 
-This mod adds two new zones to the zoning toolbar, Hotels and Motels, and moves those buildings
-into them. Hotels stop turning up in ordinary commercial zones, so your tourist district goes
-where you want it — by the beach, near the airport, around the old town — instead of scattered
-across the map.
+This mod adds new zones to the zoning toolbar, Hotels and Motels, one of each for European and
+for North American maps, and moves those buildings into them. Hotels stop turning up in ordinary
+commercial zones, so your tourist district goes where you want it — by the beach, near the airport,
+around the old town — instead of scattered across the map.
 
-Both come with their own icons, drawn to match the game's existing zone art.
+A third zone, Hotel Skyscrapers, builds the city's hotel towers — the high-rise commercial
+buildings with rooftop pools and hotel signs — as hotels only, at every level. Give it a downtown
+block with the height and land value those towers need.
+
+All three come with their own icons, drawn to match the game's existing zone art.
+
+The game ships only a handful of hotel and motel designs in three lot sizes. For far more, add the
+companion asset pack **[Hotels &amp; Motels](https://mods.paradoxplaza.com/mods/161373/Windows)**: 500
+hotels and motels for every lot from 2x2 to 6x6. It brings its own Hotels and Motels zones, and
+with both installed Tourism Overhaul uses those, with the game's own hotels moved in beside the
+pack's, so you get one set of zones with every building in it.
 
 A note on removal: zone painting is stored as a plain number in your save, so hotel zoning won't
 mean anything if you later uninstall the mod. That's true of any mod that adds a zone. The one other
@@ -246,7 +257,7 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
   <Tag Value="Code Mod" />
 
   <ForumLink Value="https://forum.paradoxplaza.com/forum/threads/mod-tourism-overhaul-fix-tourism.1937099/" />
-  <ModVersion Value="1.11.0" />
+  <ModVersion Value="2.0.0" />
   <GameVersion Value="1.6.*" />
 
   <!--
@@ -254,14 +265,14 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
     accumulating history here republishes every past release with every upload. The full record
     belongs in CHANGELOG.md.
   -->
-  <ChangeLog>1.11.0
-Hotel and motel zones are now split by theme, like the game's own zones. There is a Hotels and a Motels zone for European and for North American, each shown under its own theme in the zoning menu, and each building the assets of that theme instead of a mix of both.
+  <ChangeLog>2.0.0
+Hotel Skyscrapers zones. Each theme gets a third lodging zone, next to Hotels and Motels, that builds the city's hotel towers - the high-rise commercial buildings with rooftop pools and hotel signs - as hotels only, at all five levels. The originals still grow in ordinary commercial zones.
 
-Zoning you have already painted keeps its kind but comes back as European, because a zone cell stores only a zone number. A North American city has its hotel and motel plots moved onto the North American zones once, automatically, as long as it has none of those already.
+Works with the new Hotels &amp; Motels asset pack (500 hotels and motels for every lot from 2x2 to 6x6). With both installed, the pack's Hotels and Motels zones become the lodging zones and the game's own hotels move into them, so there is one set of zones. Zoning painted before the pack was installed moves onto its zones automatically.
 
-Much smoother simulation. Eight systems were doing their work on the simulation thread and waiting on the game's own jobs to do it: in a 172k city that cost 3.2 ms every frame, with occasional stalls up to a third of a second. They now run alongside the game instead, and the mod's cost on that thread fell to under 0.8 ms.
+Full hotels ask for more hotels again: a city with 98% of its rooms taken and thousands of visitors still to come no longer refuses to build. Full hotels no longer show "not enough customers".
 
-Fixed a crash. During a cruise recall the mod wrote a log line about once a second, and the game's logger eventually failed to reopen its file and took the game down. Those counts are now summed and written occasionally.
+The tourist demand bar now reads full only when hotels will actually be built, instead of nearly full while half the rooms stood empty.
   </ChangeLog>
 
   <ExternalLink Type="github" Url="https://github.com/Meapy/CS2-TourismOverhaul" />

@@ -124,6 +124,25 @@ zone prefab declares its theme with a `ThemeObject`, whose `ObjectRequirementEle
 beside the stock zones, and `EU_`/`NA_` assets go to the zone of their own theme. A lodging asset
 from any other theme is left in the commercial zone it shipped in, since it has no zone to go to.
 
+**Hotel Skyscrapers** (`HotelZoneSystem.Towers.cs`). The game has no high-rise hotel buildings: its
+towers with rooftop pools and hotel signs are ordinary high-density commercial buildings that a
+lodging company happens to rent. Each theme gets a third zone holding hotel-only copies
+(`PrefabBase.Clone`, lodging-only `BuildingProperties`) of every `EU_`/`NA_CommercialHigh` family
+whose tallest member is at least 30 m, all five levels, so towers grow and level up. The originals
+stay in commercial. The zones are created after the hotel and motel zones and take their height
+range from the game's high-density commercial zone.
+
+**The Hotels & Motels asset pack** ([mod 161373](https://mods.paradoxplaza.com/mods/161373/Windows))
+is code-free and ships its own Hotels and Motels zones per
+theme (`HotelsAndMotels Hotels EU` and so on), with 500 buildings in them. When those zones are
+loaded, they become the lodging zones here: the vanilla hotels and motels move into them and the
+toolbar shows one set. This mod's own zones are still created, without a `UIObject` so they have no
+toolbar entry, because a save painted with them must still resolve; `MigrateOwnCellsToPack` moves
+those cells onto the pack's zones at load. The pack's zone heights were computed by the game from
+its own buildings, so they are widened to fit the vanilla ones rather than overwritten. The pack's
+buildings are recognised by a theme suffix (`HMCommercialHotel01_L1_4x4_EU`) as well as the vanilla
+prefix.
+
 Getting this right meant satisfying three constraints that are easy to miss (findings 9, 10 and 12
 in the diagnosis):
 
@@ -137,12 +156,13 @@ in the diagnosis):
 - A new zone starts with an empty height range and an unassigned index. Index 0 means
   `ZoneType.None`, not "zone zero", and reading it early silently assigns every building to no zone.
 
-**Save compatibility:** zone cells store a bare `ushort` index, so hotel zoning painted into a save
-resolves to nothing if the mod is later removed, and can shift if your mod list changes. That's
-inherent to any custom zone, not specific to this mod. It also makes the creation order save-visible:
-the zones are created European first, so zoning painted before the themes were split comes back as
-European, and a North American city has its lodging cells moved to its own theme once, only while it
-has none of its own.
+**Save compatibility:** zone cells store a `ushort` index, and the save records which zone prefab
+each index belonged to; on load `ResolvePrefabsSystem` (`FillZoneTypeArrayJob`, `FixZoneTypeJob`)
+maps them onto the current indices by prefab. So zoning follows its zone across mod-list changes,
+and resolves to nothing if the zone's prefab is gone, which is what removing the mod does to hotel
+zoning. That's inherent to any custom zone, not specific to this mod. Zoning painted before the
+themes were split named the single pre-split zones, which the European zones inherit, so a North
+American city has its lodging cells moved to its own theme once, only while it has none of its own.
 
 ### F — Lodging demand versus room capacity
 
@@ -164,6 +184,14 @@ above about 83%, so the tourist target must be able to fill the rooms. Its bed c
 `TouristDemandSystem.ComputeTarget` therefore counts beds as people (rooms x party size). Counting
 rooms held occupancy near 61% and no hotel was ever built again once a city had one (1.9.1-1.10.0).
 
+The measured party size overstates how many people share a room: it is counted over every tourist
+household, and one city ran 1.6 people per occupied room against a measured 2.3, so the per-party
+requirement asked for about 30% too few rooms and read "hotels will spawn: NO" at 98.5% occupancy.
+Once rooms are at least 92% full while tourists are below `IntrinsicTarget` (population and
+attractiveness only, so a new hotel's opening bonus cannot justify the next one), the requirement is
+raised just enough for the game's test to pass, and it drops back as soon as a new hotel brings
+occupancy under the threshold.
+
 ## Tourist demand
 
 A seventh demand bar, in the Demand page and the toolbar stack. `TouristDemandUISystem` mirrors
@@ -180,6 +208,13 @@ Free rooms are subtracted from the figure itself, not merely listed as a factor 
 unmet appetite alone read high while over half the city's rooms stood empty — telling the player to
 build when building was the one thing that would not help. So the bar peaks when appetite is high
 and every room is taken, and reaches zero once a room is waiting for everyone who would come.
+
+That alone was not enough in a large city, where `IntrinsicTarget` can be ten times the rooms and
+free rooms barely move the figure: one read nearly full at 44% occupancy while nothing was built,
+since hotels are built only once rooms are nearly full (section F). The figure is therefore also
+scaled by occupancy, 0 at 50% or less and 1 at `TouristEconomySystem.kFullOccupancy` (92%), where
+building starts. A city with no hotel rooms is not scaled, so the first hotel always reads as
+wanted.
 
 Nothing is drawn by the mod. Tourism is registered as a seventh member of the game's `DemandType`
 enum with entries in `demandColors` and `demandIcons`, and the native `DemandSection` and
