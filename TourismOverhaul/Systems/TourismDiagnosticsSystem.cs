@@ -5,6 +5,7 @@ using Game.City;
 using Game.Common;
 using Game.Companies;
 using Game.Prefabs;
+using Game.Simulation;
 using Game.Tools;
 using Unity.Mathematics;
 using Unity.Collections;
@@ -267,20 +268,33 @@ namespace TourismOverhaul.Systems
                 return "  lodging demand: city not loaded yet";
             }
 
-            int2 lodging = m_CityQuery.GetSingleton<Tourism>().m_Lodging;
+            Tourism tourism = m_CityQuery.GetSingleton<Tourism>();
+            int2 lodging = tourism.m_Lodging;
             float requirement = m_DemandParameterQuery.GetSingleton<DemandParameterData>()
                 .m_HotelRoomPercentRequirement;
 
-            int wanted = (int)(m_DemandSystem.CurrentTourists * requirement);
+            // The game's own tourists and rooms test, and its Lodging building demand, which is what
+            // the tourist demand bar shows and what hotels are built on (LodgingOutlook).
+            int wanted = (int)(tourism.m_CurrentTourists * requirement);
             bool firstBuildException = lodging.y == 0;
-            bool wantsMore = firstBuildException || wanted - lodging.y > 0;
+            int buildingDemand = LodgingOutlook.BuildingDemand(World.GetExistingSystemManaged<CommercialDemandSystem>());
+            bool wantsMore = buildingDemand > 0;
+            bool roomsTest = LodgingOutlook.RoomsTestPasses(tourism, requirement);
 
             float occupancy = lodging.y > 0 ? lodging.x / (float)lodging.y : 0f;
 
+            // The game's figure above lags by up to three in-game hours; the live one is what the
+            // full-hotels trigger reads.
+            float live = m_DemandSystem.RoomsTotal > 0
+                ? m_DemandSystem.RoomsOccupied / (float)m_DemandSystem.RoomsTotal
+                : 0f;
+
             return
-                $"  lodging: {lodging.x} rooms occupied of {lodging.y} total ({occupancy:P0}); " +
+                $"  lodging: {lodging.x} rooms occupied of {lodging.y} total ({occupancy:P1}; live " +
+                $"{m_DemandSystem.RoomsOccupied} of {m_DemandSystem.RoomsTotal}, {live:P1}); " +
                 $"intrinsic tourist target {m_DemandSystem.IntrinsicTarget}; city wants {wanted} " +
-                $"({requirement:0.00}/tourist) -> hotels will spawn: {(wantsMore ? "YES" : "NO")}" +
+                $"({requirement:0.00}/tourist; rooms test {(roomsTest ? "passes" : "fails")}); lodging building " +
+                $"demand {buildingDemand} -> hotels will spawn: {(wantsMore ? "YES" : "NO")}" +
                 $"{(firstBuildException ? " (first build exception)" : string.Empty)}";
         }
 

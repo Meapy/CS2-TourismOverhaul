@@ -136,10 +136,10 @@ namespace TourismOverhaul
                 // nothing for a locale entry to hook into. See ui/src/mods/tourist-demand.tsx.
                 {
                     "TourismOverhaul.DEMAND[Description]",
-                    "Tourist demand is how many visitors would come but have nowhere to stay. It " +
-                    "rises with attractiveness and as your hotels fill, and falls to nothing once " +
-                    "there is a room waiting for everyone who wants one. Zone hotels and motels " +
-                    "while it is high."
+                    "Tourist demand is the city's demand for new hotels and motels, the figure the " +
+                    "game builds them on. While it shows, hotels and motels are built in their zones " +
+                    "(or empty ones reopen); when it is empty, none will be. It rises once your hotels " +
+                    "are about 85% full, or when visitors outnumber the rooms for them."
                 },
                 // Neutral nouns, as every native demand factor is. The sign carries the direction,
                 // so a judgement in the label makes "+" read as approval of a problem.

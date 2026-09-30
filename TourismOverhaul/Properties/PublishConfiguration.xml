@@ -51,10 +51,9 @@ tourism — so there is no way to tell whether your city could support more visi
 stopping it.
 
 This mod adds a seventh demand bar, in light red. It sits with the others in the City Information
-panel and in the toolbar, and it reads as visitors who would come but have nowhere to stay — so it
-is highest when your city is appealing and every room is taken, and falls to nothing once there is
-a room waiting for everyone who wants one. It also follows how full your hotels are, and reads full
-only when they are nearly full, which is when new hotels actually get built.
+panel and in the toolbar, and it works exactly as they do: it shows the city's demand for new
+hotels and motels, the same figure the game builds them on. While it shows, hotels and motels go up
+in their zones; when it is empty, none will. It rises once your hotels are about 85% full.
 
 Underneath it, the same kind of factor list the other six have, saying what is actually holding
 tourism back — not enough hotel rooms, rooms standing empty, attractiveness, visitors already here,
@@ -257,7 +256,7 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
   <Tag Value="Code Mod" />
 
   <ForumLink Value="https://forum.paradoxplaza.com/forum/threads/mod-tourism-overhaul-fix-tourism.1937099/" />
-  <ModVersion Value="2.0.0" />
+  <ModVersion Value="2.0.1" />
   <GameVersion Value="1.6.*" />
 
   <!--
@@ -265,14 +264,14 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
     accumulating history here republishes every past release with every upload. The full record
     belongs in CHANGELOG.md.
   -->
-  <ChangeLog>2.0.0
-Hotel Skyscrapers zones. Each theme gets a third lodging zone, next to Hotels and Motels, that builds the city's hotel towers - the high-rise commercial buildings with rooftop pools and hotel signs - as hotels only, at all five levels. The originals still grow in ordinary commercial zones.
+  <ChangeLog>2.0.1
+Full hotels always get more hotels. Once your hotels are about 85% full, new hotels and motels are built in their zones. 2.0.0 also required the city to be short of visitors, so an attractive city whose rooms drew more visitors than that could sit at 95% full and never build again.
 
-Works with the new Hotels &amp; Motels asset pack (500 hotels and motels for every lot from 2x2 to 6x6). With both installed, the pack's Hotels and Motels zones become the lodging zones and the game's own hotels move into them, so there is one set of zones. Zoning painted before the pack was installed moves onto its zones automatically.
+Occupancy is counted live. The game's own figure is refreshed only every three in-game hours and could read 75% while the hotels were 95% full.
 
-Full hotels ask for more hotels again: a city with 98% of its rooms taken and thousands of visitors still to come no longer refuses to build. Full hotels no longer show "not enough customers".
+The tourist demand bar now works exactly like the residential and commercial bars: it shows the game's own demand for new hotels and motels. While it shows, they are being built; when it is empty, none will be. It could previously read zero with the hotels full, or nearly full while nothing was built.
 
-The tourist demand bar now reads full only when hotels will actually be built, instead of nearly full while half the rooms stood empty.
+The bar's description in other languages is English for now, until it is translated again.
   </ChangeLog>
 
   <ExternalLink Type="github" Url="https://github.com/Meapy/CS2-TourismOverhaul" />

@@ -7,6 +7,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 
+## [2.0.1] — 2026-09-30
+
+### Fixed
+
+- **Full hotels always ask for more.** 2.0.0 raised the room requirement once rooms were 92% full,
+  but only while tourists were below the city's own target (population and attractiveness). Rooms
+  draw visitors by design, so in an attractive city tourists sat above that target for good: one
+  city ran 1,851 tourists against a target of 1,050 with its hotels 95% full, and never built
+  again. Full hotels now always ask. Growth stays bounded: rooms draw visitors only in proportion
+  to attractiveness, and Maximum tourists caps the lot.
+- **Hotels count as full at 85%, not 92%.** Parties check out and in all the time, so hotels hover
+  a few points short of full: one city sat between 82% and 92% for twenty minutes, demand bar at
+  99%, and never built. It crossed 92% only when hotels were closing.
+- **Occupancy is counted live.** The trigger read the game's own occupancy figure, which
+  `TourismSystem` refreshes only every three in-game hours; it read 75% while the hotels were 95%
+  full. It now uses the mod's own room count, at most 256 frames old. The diagnostics line shows
+  both.
+- **The tourist demand bar works like the game's own bars.** The residential and commercial bars
+  show the building demand the game builds on, and buildings go up while it is above zero. The
+  tourist bar now shows the game's building demand for lodging the same way, so while it shows,
+  hotels and motels are being built (or empty ones reopened), and when it is empty none will be.
+  It used to be the mod's own estimate beside the game's decision: it read zero with the hotels
+  95% full, and later 99% for twenty minutes while nothing was built. The diagnostics line shows
+  the same figure.
+- **The bar's description in other languages is English for now.** The translations described the
+  old bar.
+- **Occupancy in the diagnostics line has one decimal**, so 84.6% no longer reads as the 85% trigger.
+- **The room-requirement log line no longer repeats** every few seconds as the measured party size
+  flips between 2.2 and 2.3.
+
 ## [2.0.0] — 2026-09-30
 
 ### Added

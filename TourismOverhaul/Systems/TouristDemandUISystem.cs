@@ -5,6 +5,7 @@ using Game;
 using Game.Buildings;
 using Game.Common;
 using Game.Companies;
+using Game.Economy;
 using Game.Simulation;
 using Game.Tools;
 using Game.UI;
@@ -104,6 +105,22 @@ namespace TourismOverhaul.Systems
             // 256 matches CityInfoUISystem:117. The bar moves every frame; the text under it stays
             // still long enough to read.
             m_UpdateState = UIUpdateState.Create(World, 256);
+
+            m_CommercialDemandSystem = World.GetOrCreateSystemManaged<CommercialDemandSystem>();
+        }
+
+        private CommercialDemandSystem m_CommercialDemandSystem;
+
+        /// <summary>The game's Lodging building demand, 0 to 1, from the last refresh.</summary>
+        private float m_Outlook;
+
+        /// <summary>
+        /// Reads the game's Lodging building demand into <see cref="m_Outlook"/>. On the factor
+        /// cadence: reading it waits for the demand job, too much to do every frame.
+        /// </summary>
+        private void RefreshOutlook()
+        {
+            m_Outlook = math.saturate(LodgingOutlook.BuildingDemand(m_CommercialDemandSystem) / 100f);
         }
 
         protected override void OnGameLoaded(Context serializationContext)
@@ -131,6 +148,7 @@ namespace TourismOverhaul.Systems
             if (m_SnapNext)
             {
                 CountRooms(out m_RoomsFree, out m_RoomsTotal);
+                RefreshOutlook();
             }
 
             if (delta != 0)
@@ -153,6 +171,7 @@ namespace TourismOverhaul.Systems
             if (m_UpdateState.Advance())
             {
                 CountRooms(out m_RoomsFree, out m_RoomsTotal);
+                RefreshOutlook();
                 m_Factors.Update();
             }
         }
@@ -171,62 +190,20 @@ namespace TourismOverhaul.Systems
         }
 
         /// <summary>
-        /// Demand for more lodging: visitors who would come and have nowhere to sleep.
+        /// The game's own building demand for Lodging (<see cref="LodgingOutlook"/>), shown as the
+        /// native bars show theirs: CityInfoUISystem passes each system's building demand, 0-100,
+        /// through AdvanceSmoothDemand, and ZoneSpawnSystem builds while it is above zero. So while
+        /// this bar shows, hotels and motels are being built or empty ones reopened, and when it
+        /// is empty nothing will be, whatever the occupancy.
         ///
-        /// Rooms standing empty subtract from it directly. An earlier version measured unmet
-        /// appetite alone, which read high while over half the rooms in the city were vacant —
-        /// telling the player to build when building was the one thing that would not help. Free
-        /// rooms belonged in the number, not only in the factor list beside it.
-        ///
-        /// IntrinsicTarget rather than TargetTourists throughout, because TargetTourists is itself
-        /// capped by lodging: using it would make demand collapse the moment hotels filled, which
-        /// is the opposite error.
-        ///
-        /// So the bar is at its highest when appetite is high and every room is taken, and at zero
-        /// once there is a room waiting for everyone who would come.
+        /// Three earlier forms were the mod's own estimates and each read wrong in a common city:
+        /// unmet appetite read high with half the rooms empty; appetite less free rooms read zero
+        /// with the hotels 95% full; occupancy read 99% for twenty minutes while nothing was built.
+        /// The appetite still leads the factor list beside the bar.
         /// </summary>
         private int ComputeDemand()
         {
-            int ceiling = math.max(0, m_DemandSystem.IntrinsicTarget);
-
-            if (ceiling == 0)
-            {
-                return 0;
-            }
-
-            int appetite = math.max(0, ceiling - m_DemandSystem.CurrentTourists);
-
-            int unhoused = math.max(0, appetite - SleepingSpaceFree());
-
-            return (int)math.round(math.clamp(unhoused * 100f / ceiling, 0f, 100f) * OccupancyReadiness());
-        }
-
-        /// <summary>Occupancy below which the bar reads empty however large the appetite.</summary>
-        private const float kReadinessFloor = 0.5f;
-
-        /// <summary>
-        /// How close the rooms are to the occupancy at which new hotels are actually built, 0 to 1.
-        ///
-        /// A large city's appetite (IntrinsicTarget) can be ten times its rooms, and then the
-        /// free-room subtraction above barely moves the figure: one city read a full bar with 56% of
-        /// its rooms empty while tourists were still arriving after a load. But hotels are built
-        /// only once rooms are nearly full (TouristEconomySystem.kFullOccupancy), because a hotel
-        /// opened into empty rooms has no guests. A full bar that builds nothing reads as broken,
-        /// so the bar climbs with occupancy and is full only where building starts.
-        ///
-        /// With no rooms at all the first hotel is always buildable, so the bar is not held back.
-        /// </summary>
-        private float OccupancyReadiness()
-        {
-            if (m_RoomsTotal <= 0)
-            {
-                return 1f;
-            }
-
-            float occupancy = 1f - m_RoomsFree / (float)m_RoomsTotal;
-
-            return math.saturate(
-                (occupancy - kReadinessFloor) / (TouristEconomySystem.kFullOccupancy - kReadinessFloor));
+            return (int)math.round(100f * m_Outlook);
         }
 
         /// <summary>

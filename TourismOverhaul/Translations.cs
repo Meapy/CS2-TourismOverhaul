@@ -49,6 +49,12 @@ namespace TourismOverhaul
 
             MirrorThemedZoneNames(entries);
 
+            // 2.0.1 changed what the tourist demand bar measures (it is now the game's own hotel
+            // building demand), and every translated description explains the old bar. A
+            // confidently wrong explanation is worse than an English one, so those fall back to
+            // English until they are redone.
+            entries.Remove(Key("!Description", setting));
+
             if (HotelTowerNames.TryGetValue(locale, out string towers))
             {
                 foreach (string theme in ThemeTags)

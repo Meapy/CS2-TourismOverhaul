@@ -3,6 +3,7 @@ using Game.City;
 using Game.Economy;
 using Game.Prefabs;
 using Game.Simulation;
+using Unity.Collections;
 using Unity.Entities;
 using Unity.Mathematics;
 
@@ -200,11 +201,14 @@ namespace TourismOverhaul.Systems
                 $"of the room rate).");
         }
 
-        /// <summary>Occupancy at which full hotels ask for more rooms regardless of party size.</summary>
-        internal const float kFullOccupancy = 0.92f;
-
-        /// <summary>The occupancy trigger only acts while tourists are below this share of the intrinsic target.</summary>
-        private const float kTargetShortfall = 0.97f;
+        /// <summary>
+        /// Occupancy at which full hotels ask for more rooms regardless of party size. 85%, not
+        /// 92% as in 2.0.0: parties check out and in all the time, so a city's hotels hover a few
+        /// points short of full and rarely touch 92%. One sat between 82% and 92% for twenty
+        /// minutes with the demand bar at 99% and never built; it crossed 92% only when hotels
+        /// were closing and taking their rooms with them.
+        /// </summary>
+        internal const float kFullOccupancy = 0.85f;
 
         /// <summary>The last requirement and reason logged, so the log line only repeats on real change.</summary>
         private string m_LastLoggedRoomReason;
@@ -270,7 +274,8 @@ namespace TourismOverhaul.Systems
 
             if (!hasLodgingCapacity)
             {
-                int tourists = m_DemandSystem != null ? m_DemandSystem.CurrentTourists : 0;
+                // The game's own count, as in the trigger below: it is what its test multiplies.
+                int tourists = m_CityQuery.IsEmptyIgnoreFilter ? 0 : m_CityQuery.GetSingleton<Tourism>().m_CurrentTourists;
                 if (tourists > 0)
                 {
                     requirement = math.clamp(1f / tourists + 1e-3f, 0.01f, 30f);
@@ -291,16 +296,26 @@ namespace TourismOverhaul.Systems
                 //
                 // So once rooms are nearly full, ask for just enough that the game's test
                 // (tourists x requirement > rooms) holds, and stop as soon as a new hotel pulls
-                // occupancy back under the threshold. Measured against IntrinsicTarget, which has
-                // no contribution from rooms or opening boosts: against the full target, each new
-                // hotel's opening bonus would justify the next one, which is the runaway 1.9.1
-                // fixed.
-                int2 lodging = m_CityQuery.GetSingleton<Tourism>().m_Lodging;
-                int tourists = m_DemandSystem.CurrentTourists;
-                int wanted = m_DemandSystem.IntrinsicTarget;
-                float occupancy = lodging.y > 0 ? lodging.x / (float)lodging.y : 0f;
+                // occupancy back under the threshold.
+                //
+                // Full hotels always ask. This used to require tourists below IntrinsicTarget
+                // (population and attractiveness only), against the 1.9.1 runaway, where each new
+                // hotel's rooms drew the visitors that justified the next. But rooms draw visitors
+                // by design, so in an attractive city tourists sat above that target for good: one
+                // ran 1,851 tourists against a target of 1,050 with its hotels 95% full, and never
+                // built again. Growth is still bounded: rooms draw visitors only in proportion to
+                // attractiveness, and Maximum tourists caps the lot.
+                //
+                // Occupancy is the live count; the game's m_Lodging lags by up to three in-game
+                // hours. Rooms and tourists are the game's own, because they are what its test
+                // reads: a raise computed on this mod's tourist count could fall short of it.
+                Tourism tourism = m_CityQuery.GetSingleton<Tourism>();
+                int2 lodging = tourism.m_Lodging;
+                int tourists = tourism.m_CurrentTourists;
+                int roomsTotal = m_DemandSystem.RoomsTotal;
+                float occupancy = roomsTotal > 0 ? m_DemandSystem.RoomsOccupied / (float)roomsTotal : 0f;
 
-                if (tourists > 0 && occupancy >= kFullOccupancy && tourists < wanted * kTargetShortfall)
+                if (tourists > 0 && occupancy >= kFullOccupancy)
                 {
                     float needed = math.clamp((lodging.y * 1.02f + 1f) / tourists, 0.05f, 30f);
 
@@ -329,20 +344,68 @@ namespace TourismOverhaul.Systems
             string reason = !hasLodgingCapacity
                 ? "(first hotel/motel build exception)"
                 : occupancyTrigger
-                    ? $"(rooms at least {kFullOccupancy:P0} full with tourists below their intrinsic target)"
+                    ? $"(rooms at least {kFullOccupancy:P0} full)"
                     : $"({perTourist:0.00} rooms wanted per party of {partySize:0.0} x {multiplier:0} room multiplier)";
 
             // Logged when the reason changes or the figure moves by a tenth. Under the occupancy
             // trigger it is recomputed from live counts every update, and logging each write
             // filled the log with near-identical lines.
-            if (reason != m_LastLoggedRoomReason
+            // The kind of reason, not its text: the per-party text carries the measured party size,
+            // which flips between 2.2 and 2.3 and made the line repeat every few seconds.
+            string reasonKind = !hasLodgingCapacity ? "first" : occupancyTrigger ? "full" : "party";
+
+            if (reasonKind != m_LastLoggedRoomReason
                 || math.abs(requirement - m_LastLoggedRoomRequirement) > 0.1f * math.max(m_LastLoggedRoomRequirement, 0.01f))
             {
-                m_LastLoggedRoomReason = reason;
+                m_LastLoggedRoomReason = reasonKind;
                 m_LastLoggedRoomRequirement = requirement;
                 Mod.Log.Info(
                     $"Hotel room requirement set to {requirement:0.00} per tourist citizen {reason}");
             }
+        }
+    }
+
+    /// <summary>
+    /// Whether the game will build lodging, read from the game itself.
+    ///
+    /// The tourist demand bar and the diagnostics line both read this, and it is the number the
+    /// game builds on, so the bar works exactly as the native residential and commercial bars do:
+    /// CityInfoUISystem shows each system's building demand (0-100, smoothed), and ZoneSpawnSystem
+    /// builds while it is above zero. For hotels that number is CommercialDemandSystem's per-resource
+    /// building demand for Lodging, which ZoneSpawnSystem checks against m_MinDemand for every
+    /// lodging prefab (:318-319, EvaluateDemandAndAvailability). It already folds in the rooms test,
+    /// taxes and the rule that empty hotel buildings are re-let before new ones go up.
+    ///
+    /// The bar used to be the mod's own estimate beside the game's decision: occupancy alone, and
+    /// then a progress figure. It could read 99% for twenty minutes while nothing was built.
+    /// </summary>
+    internal static class LodgingOutlook
+    {
+        /// <summary>
+        /// CommercialDemandSystem:187 verbatim: the rooms test inside the Lodging demand, while
+        /// (int)(currentTourists x requirement) exceeds the rooms the game counts.
+        /// </summary>
+        internal static bool RoomsTestPasses(Tourism tourism, float requirement)
+        {
+            return (int)(tourism.m_CurrentTourists * requirement) - tourism.m_Lodging.y > 0;
+        }
+
+        /// <summary>
+        /// The game's building demand for Lodging, 0 when there is none. Waits for the demand job
+        /// that writes it, so callers read it on a slow cadence, not every frame.
+        /// </summary>
+        internal static int BuildingDemand(CommercialDemandSystem commercial)
+        {
+            if (commercial == null)
+            {
+                return 0;
+            }
+
+            NativeArray<int> demands = commercial.GetBuildingDemands(out Unity.Jobs.JobHandle deps);
+            deps.Complete();
+
+            int index = EconomyUtils.GetResourceIndex(Resource.Lodging);
+            return demands.IsCreated && index >= 0 && index < demands.Length ? math.max(0, demands[index]) : 0;
         }
     }
 }
