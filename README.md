@@ -187,10 +187,16 @@ rooms held occupancy near 61% and no hotel was ever built again once a city had 
 The measured party size overstates how many people share a room: it is counted over every tourist
 household, and one city ran 1.6 people per occupied room against a measured 2.3, so the per-party
 requirement asked for about 30% too few rooms and read "hotels will spawn: NO" at 98.5% occupancy.
-Once rooms are at least 92% full while tourists are below `IntrinsicTarget` (population and
-attractiveness only, so a new hotel's opening bonus cannot justify the next one), the requirement is
-raised just enough for the game's test to pass, and it drops back as soon as a new hotel brings
-occupancy under the threshold.
+Once rooms are at least 85% full, the requirement is raised just enough for the game's test to
+pass, and it drops back as soon as a new hotel brings occupancy under the threshold. Occupancy is
+the mod's own count (`TouristDemandSystem.RoomsOccupied` / `RoomsTotal`, at most 256 frames old):
+the game's `Tourism.m_Lodging` is refreshed by `TourismSystem` only every 32768 frames and lagged
+20 points behind in testing. 85% because hotels never quite fill: parties check out and in
+continuously, and a city sat at 82-92% for twenty minutes without crossing 2.0.0's 92%. 2.0.0 also
+required tourists below `IntrinsicTarget`, against the 1.9.1
+runaway, but rooms draw visitors by design, so an attractive city sat above it permanently and
+never built again with its hotels 95% full. Growth is bounded instead by the room draw scaling with
+attractiveness, and by Maximum tourists.
 
 ## Tourist demand
 
@@ -200,21 +206,21 @@ A seventh demand bar, in the Demand page and the toolbar stack. `TouristDemandUI
 than it rises), and a factor array refreshed on a 256-tick `UIUpdateState`, capped at five and
 sorted by absolute weight as `FactorInfo.CompareTo` does.
 
-Demand is `max(0, (IntrinsicTarget - CurrentTourists) - freeRooms x 2.3) / IntrinsicTarget` — visitors
-who would come and have nowhere to sleep, with free rooms counted as the people they can sleep. `IntrinsicTarget` rather than `TargetTourists` because the
-latter is lodging-capped and would read zero exactly when hotels fill, which is the opposite error.
+The figure is the game's own building demand for Lodging, the same kind of number the native bars
+show: `CityInfoUISystem` feeds each bar its system's building demand (`CommercialDemandSystem.
+buildingDemand`, the residential low/medium/high values), and `ZoneSpawnSystem` builds while that is
+above zero. For hotels it checks `CommercialDemandSystem.GetBuildingDemands()[Lodging]` against
+`m_MinDemand` for every lodging prefab (`:318-319`), so that per-resource value is what the tourist
+bar shows (`LodgingOutlook.BuildingDemand`). It already includes the rooms test (`:187`), taxes, and
+the rule that empty hotel buildings are re-let before new ones go up. While the bar shows, hotels
+and motels are being built or reopened; when it is empty, none will be. The diagnostics line prints
+the same value beside the rooms test.
 
-Free rooms are subtracted from the figure itself, not merely listed as a factor beside it. Measuring
-unmet appetite alone read high while over half the city's rooms stood empty — telling the player to
-build when building was the one thing that would not help. So the bar peaks when appetite is high
-and every room is taken, and reaches zero once a room is waiting for everyone who would come.
-
-That alone was not enough in a large city, where `IntrinsicTarget` can be ten times the rooms and
-free rooms barely move the figure: one read nearly full at 44% occupancy while nothing was built,
-since hotels are built only once rooms are nearly full (section F). The figure is therefore also
-scaled by occupancy, 0 at 50% or less and 1 at `TouristEconomySystem.kFullOccupancy` (92%), where
-building starts. A city with no hotel rooms is not scaled, so the first hotel always reads as
-wanted.
+The mod's part is to make that demand appear when it should: section F raises the room requirement
+once hotels are 85% full, and the bar follows. Earlier versions drew the bar from the mod's own
+estimates instead (unmet appetite, then appetite less free rooms, then occupancy), and each
+disagreed with the game in a common city: high with half the rooms empty, zero with the hotels 95%
+full, 99% for twenty minutes with nothing built. The appetite still leads the factor list.
 
 Nothing is drawn by the mod. Tourism is registered as a seventh member of the game's `DemandType`
 enum with entries in `demandColors` and `demandIcons`, and the native `DemandSection` and

@@ -133,6 +133,16 @@ namespace TourismOverhaul.Systems
         /// <summary>Cruise passengers ashore right now, in citizens.</summary>
         public int CruiseVisitors { get; private set; }
 
+        /// <summary>
+        /// Hotel rooms in the city and how many are taken, from this system's own count (at most
+        /// 256 frames old). The game's figure, Tourism.m_Lodging, is refreshed by TourismSystem
+        /// only every 32768 frames, three in-game hours, and read 75% in a city whose hotels were
+        /// 95% full. Zero until the first count.
+        /// </summary>
+        public int RoomsTotal { get; private set; }
+
+        public int RoomsOccupied { get; private set; }
+
         /// <summary>Target tourist citizen count from the most recent update.</summary>
         public int TargetTourists { get; private set; }
 
@@ -956,6 +966,8 @@ namespace TourismOverhaul.Systems
             // Rooms only drive the target while the setting says they do; at 0 the bed ceiling is
             // off as well, as it always has been.
             m_HotelRooms = settings.HotelRoomDemandOccupancy > 0 ? m_Census[Census.HotelRooms] : 0;
+            RoomsTotal = m_Census[Census.HotelRooms];
+            RoomsOccupied = m_Census[Census.HotelRoomsOccupied];
 
             int4 arrivals = new int4(
                 m_Census[Census.Arrivals],
@@ -979,7 +991,8 @@ namespace TourismOverhaul.Systems
             /// <summary>Four slots, road / rail / air / sea, in RecordArrival's order.</summary>
             public const int Arrivals = 4;
             public const int LeakedRemoved = 8;
-            public const int Length = 9;
+            public const int HotelRoomsOccupied = 9;
+            public const int Length = 10;
         }
 
         /// <summary>
@@ -1103,6 +1116,7 @@ namespace TourismOverhaul.Systems
                 for (int i = 0; i < chunk.Count; i++)
                 {
                     m_Census[Census.HotelRooms] += math.max(0, providers[i].m_FreeRooms) + renters[i].Length;
+                    m_Census[Census.HotelRoomsOccupied] += renters[i].Length;
                 }
             }
         }
