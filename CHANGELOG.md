@@ -7,6 +7,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 
+## [2.0.2] — 2026-09-30
+
+### Fixed
+
+- **"Not enough customers" everywhere after loading a save.** Reported by players: right after a
+  load, icons appeared on shops, restaurants and hotels across the city, their profit fell into a
+  deep deficit, and fifteen to twenty in-game minutes later everything went back exactly as it
+  was. The leisure pricing raised every commercial company's service capacity (x4 by default, a
+  hidden setting), and the company's service stock grew to match and was saved. Prefab data is
+  rebuilt from source on load, so until the mod's first update, up to 4,096 frames later, each
+  company held several times its maximum: `ServiceCompanySystem:169` flagged every one of them,
+  and the service price sat at its 0.7 floor. The scaling is now applied at load, before the first
+  tick, and the hotel room multiplier's capacity likewise.
+- **Leisure pricing touches leisure venues only.** It rescaled every commercial company, ordinary
+  shops included; it now takes only the companies the game charges leisure visits at (those with
+  `LeisureProviderData`), so a shop is never changed.
+- **Stock above capacity is trimmed at load.** Shops in saves from earlier versions still carry
+  the stock they grew against the scaled capacity; left alone, they would show the same icons
+  under the narrower scope. Any commercial company holding its maximum or more is brought
+  down to half of it on load, clear of the game's 90% flag (hotels excepted: their capacity follows the room multiplier). This
+  also clears cities already stuck in the loop.
+
 ## [2.0.1] — 2026-09-30
 
 ### Fixed

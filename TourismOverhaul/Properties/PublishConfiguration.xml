@@ -256,7 +256,7 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
   <Tag Value="Code Mod" />
 
   <ForumLink Value="https://forum.paradoxplaza.com/forum/threads/mod-tourism-overhaul-fix-tourism.1937099/" />
-  <ModVersion Value="2.0.1" />
+  <ModVersion Value="2.0.2" />
   <GameVersion Value="1.6.*" />
 
   <!--
@@ -264,14 +264,12 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
     accumulating history here republishes every past release with every upload. The full record
     belongs in CHANGELOG.md.
   -->
-  <ChangeLog>2.0.1
-Full hotels always get more hotels. Once your hotels are about 85% full, new hotels and motels are built in their zones. 2.0.0 also required the city to be short of visitors, so an attractive city whose rooms drew more visitors than that could sit at 95% full and never build again.
+  <ChangeLog>2.0.2
+Fixed "not enough customers" appearing all over the city right after loading a save, with shops, restaurants and hotels dropping into a deep deficit until everything went back to normal fifteen to twenty in-game minutes later. The mod raised commercial companies' service capacity, but only reapplied it a while after each load; in between, their saved stock sat far above the game's own capacity. It is now applied the moment a save loads.
 
-Occupancy is counted live. The game's own figure is refreshed only every three in-game hours and could read 75% while the hotels were 95% full.
+Leisure pricing now changes leisure venues only (restaurants, bars and the like), not every shop in the city.
 
-The tourist demand bar now works exactly like the residential and commercial bars: it shows the game's own demand for new hotels and motels. While it shows, they are being built; when it is empty, none will be. It could previously read zero with the hotels full, or nearly full while nothing was built.
-
-The bar's description in other languages is English for now, until it is translated again.
+Companies left holding more stock than their capacity by earlier versions are corrected on load, so cities already stuck with the icons clear up by themselves.
   </ChangeLog>
 
   <ExternalLink Type="github" Url="https://github.com/Meapy/CS2-TourismOverhaul" />
