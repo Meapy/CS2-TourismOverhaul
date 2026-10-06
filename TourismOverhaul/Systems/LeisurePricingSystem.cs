@@ -166,6 +166,8 @@ namespace TourismOverhaul.Systems
             int trimmed = 0;
             int nearlyFull = 0;
             int checkedCompanies = 0;
+            int ordinaryShops = 0;
+            int fullOrdinaryShops = 0;
             NativeArray<Entity> companies = m_CompanyQuery.ToEntityArray(Allocator.Temp);
             try
             {
@@ -185,6 +187,19 @@ namespace TourismOverhaul.Systems
                     checkedCompanies++;
                     Game.Companies.ServiceAvailable stock =
                         EntityManager.GetComponentData<Game.Companies.ServiceAvailable>(companies[i]);
+
+                    // Counted before any trim, for ShopRecoverySystem: how many ordinary shops sit
+                    // on the game's own flag says whether this city was built on the inflated
+                    // capacity of 2.0.1 and earlier.
+                    if (max > 0 && ShopRecoverySystem.IsOrdinaryShop(EntityManager, prefab))
+                    {
+                        ordinaryShops++;
+
+                        if (stock.m_ServiceAvailable > max * 0.9f)
+                        {
+                            fullOrdinaryShops++;
+                        }
+                    }
 
                     // To half the maximum, not to the maximum: ServiceCompanySystem:169 flags a
                     // company once stock is above 90% of it (m_NoCustomersServiceLimit), so a trim
@@ -213,7 +228,9 @@ namespace TourismOverhaul.Systems
             Mod.Log.Info(
                 $"Service stock on load, {checkedCompanies} commercial companies: {trimmed} at or over " +
                 $"capacity trimmed to half; {nearlyFull} between 90% and 100% of capacity left as they are " +
-                "(the game flags those itself).");
+                $"(the game flags those itself); {fullOrdinaryShops} of {ordinaryShops} ordinary shops over 90%.");
+
+            World.GetOrCreateSystemManaged<ShopRecoverySystem>().ConsiderStart(fullOrdinaryShops, ordinaryShops);
         }
 
         protected override void OnUpdate()

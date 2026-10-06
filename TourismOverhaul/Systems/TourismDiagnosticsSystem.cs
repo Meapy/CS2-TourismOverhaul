@@ -35,6 +35,7 @@ namespace TourismOverhaul.Systems
         private EntityQuery m_WaitingQuery;
         private EntityQuery m_HotelQuery;
         private EntityQuery m_LodgingBuildingQuery;
+        private EntityQuery m_CommercialQuery;
         private EntityQuery m_CityQuery;
         private EntityQuery m_DemandParameterQuery;
 
@@ -126,6 +127,14 @@ namespace TourismOverhaul.Systems
             m_LodgingBuildingQuery = GetEntityQuery(
                 ComponentType.ReadOnly<Game.Buildings.Building>(),
                 ComponentType.ReadOnly<Game.Buildings.CommercialProperty>(),
+                ComponentType.ReadOnly<PrefabRef>(),
+                ComponentType.Exclude<Deleted>(),
+                ComponentType.Exclude<Temp>());
+
+            m_CommercialQuery = GetEntityQuery(
+                ComponentType.ReadOnly<CommercialCompany>(),
+                ComponentType.ReadOnly<ServiceAvailable>(),
+                ComponentType.ReadOnly<CompanyNotifications>(),
                 ComponentType.ReadOnly<PrefabRef>(),
                 ComponentType.Exclude<Deleted>(),
                 ComponentType.Exclude<Temp>());
@@ -456,6 +465,7 @@ namespace TourismOverhaul.Systems
                 $"  waiting at a connection with no destination: {waiting}\n" +
                 $"  free hotel rooms: {freeRooms}\n" +
                 DescribeSearchableHotels() + "\n" +
+                DescribeNoCustomers() + "\n" +
                 DescribeCohort() + "\n" +
                 DescribeSpending() + "\n" +
                 DescribeLedger() + "\n" +
@@ -733,6 +743,65 @@ namespace TourismOverhaul.Systems
             return $"  hotels a search can find: {searchable} with {searchableRooms} free rooms; "
                 + $"not offered: {full} full, {noProperty} with free rooms but no building, "
                 + $"{inactive} in an inactive building; {CountEmptyLodgingBuildings()} lodging building(s) with no company";
+        }
+
+        /// <summary>
+        /// Where the "not enough customers" icons are, by kind of company, with how many of each
+        /// kind hold unsold stock above the game's 90% line (ServiceCompanySystem:169). A company
+        /// carries the icon while CompanyNotifications.m_NoCustomersEntity names its building. The
+        /// two figures together say whether an icon is the stock rule — which ShopRecoverySystem
+        /// caps for ordinary shops — or something else, such as a hotel's free-room rule.
+        /// </summary>
+        private string DescribeNoCustomers()
+        {
+            EntityManager.CompleteDependencyBeforeRO<CompanyNotifications>();
+            EntityManager.CompleteDependencyBeforeRO<ServiceAvailable>();
+
+            // Per kind: [0] ordinary shops, [1] leisure venues, [2] hotels.
+            int[] companies = new int[3];
+            int[] flagged = new int[3];
+            int[] overNinety = new int[3];
+
+            NativeArray<Entity> entities = m_CommercialQuery.ToEntityArray(Allocator.Temp);
+
+            try
+            {
+                for (int i = 0; i < entities.Length; i++)
+                {
+                    Entity prefab = EntityManager.GetComponentData<PrefabRef>(entities[i]).m_Prefab;
+
+                    if (!EntityManager.HasComponent<ServiceCompanyData>(prefab))
+                    {
+                        continue;
+                    }
+
+                    int kind = EntityManager.HasComponent<LodgingProvider>(entities[i]) ? 2
+                        : EntityManager.HasComponent<LeisureProviderData>(prefab) ? 1
+                        : 0;
+
+                    companies[kind]++;
+
+                    if (EntityManager.GetComponentData<CompanyNotifications>(entities[i]).m_NoCustomersEntity != Entity.Null)
+                    {
+                        flagged[kind]++;
+                    }
+
+                    int max = EntityManager.GetComponentData<ServiceCompanyData>(prefab).m_MaxService;
+
+                    if (max > 0 && EntityManager.GetComponentData<ServiceAvailable>(entities[i]).m_ServiceAvailable > max * 0.9f)
+                    {
+                        overNinety[kind]++;
+                    }
+                }
+            }
+            finally
+            {
+                entities.Dispose();
+            }
+
+            return $"  not enough customers: {flagged[0]} of {companies[0]} ordinary shops ({overNinety[0]} over 90% stock), "
+                + $"{flagged[1]} of {companies[1]} leisure venues ({overNinety[1]} over 90%), "
+                + $"{flagged[2]} of {companies[2]} hotels ({overNinety[2]} over 90%)";
         }
 
         /// <summary>Lodging-only buildings standing with no company renting them.</summary>

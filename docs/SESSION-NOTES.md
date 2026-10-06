@@ -1103,3 +1103,35 @@ room is free. Two lessons:
 - Tally failures by where they start before changing anything. Two rounds of plausible fixes to the
   search's origin made no difference, and the per-origin count settled it in one run: the origin was
   never the problem.
+
+## A company's capacity is also how the game decides to build more of it
+
+`ServiceCompanyData.m_MaxService` looks like a per-company tuning knob — a production ceiling, and
+the denominator of the "not enough customers" flag and the service price. It is also the input to
+commercial demand. `CountCompanyDataSystem:360-361` sums each company's clamped stock and its
+`m_MaxService` per resource, and `CommercialDemandSystem:184` wants more of that resource while
+`stock / capacity` is under 45%: demand is `10 × (45 − 100 × stock / capacity)`.
+
+So raising capacity does not only make a shop roomier. It makes the whole city look short of that
+kind of shop, and the game builds more until the ratio is back at 45% of the *inflated* figure. Up to
+2.0.1 the leisure pricing scaled every commercial company by four, and cities kept building shops
+until each held about 1.8 times its real capacity in unsold stock — invisible, because the same
+inflation hid the flag and held the price near its ceiling. When 2.0.2 put ordinary shops back on
+their real capacity, the over-building surfaced all at once as icons on a fifth or more of all shops,
+prices at the floor, and commercial wealth falling.
+
+Anything that scales capacity is scaling demand. The way out was to cap *stock* rather than raise
+capacity: a ceiling at half keeps the price near neutral and the flag off, and because half is above
+45%, demand stays at zero while the excess closes.
+
+## "Not enough customers" clears on the company's update, not when its stock falls
+
+`ServiceCompanySystem` evaluates the flag for a company only on that company's own update, once every
+1,024 frames (256 a day, staggered across 16 update frames), and removes the icon only then. Lowering
+a company's stock does nothing visible until its next update comes round. Measured: after the stock
+cap took hold, the first two diagnostics snapshots still showed the icon on 218 of 1,087 shops — every
+one of them under 90% stock — and the third showed 1.
+
+That pattern — the flag on, its condition false — briefly looked like the game re-adding the icon
+after the cap had acted, and a design built on that reading would have been wrong. Before inferring a
+mechanism from a snapshot of a flag, check how often the flag is actually re-evaluated.

@@ -256,7 +256,7 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
   <Tag Value="Code Mod" />
 
   <ForumLink Value="https://forum.paradoxplaza.com/forum/threads/mod-tourism-overhaul-fix-tourism.1937099/" />
-  <ModVersion Value="2.0.3" />
+  <ModVersion Value="2.0.4" />
   <GameVersion Value="1.6.*" />
 
   <!--
@@ -264,12 +264,12 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
     accumulating history here republishes every past release with every upload. The full record
     belongs in CHANGELOG.md.
   -->
-  <ChangeLog>2.0.3
-Tourists no longer arrive at an airport, harbour or rail connection that nothing serves. A map's air and sea markers took their share of arrivals even in a city with no airport or docks, and those visitors could never get into the city. Now a connection only takes arrivals while a passenger line reaches it, so visitors come by the ways in your city actually has. The same was happening to rail: a map with three rail connections and one rail line sent two-thirds of its rail arrivals to the two with no line.
+  <ChangeLog>2.0.4
+Fixed "not enough customers" staying over a large share of shops, with commercial wealth falling, in cities started before 2.0.2. Earlier versions made the game think shops had far more room than they did, so it kept building shops until there were many more than your citizens and tourists could keep busy. 2.0.2 corrected the shops' capacity, which brought all of that over-building into view at once.
 
-New arrivals are booked into the hotel nearest where they enter the city, and travel there by public transport like anyone else, changing lines as needed. They were previously given whichever room came first, including rooms they could not reach, and sat at the edge of the map until they were sent home. In the test city, tourists rose from about 2,900 to 7,100, hotel occupancy from 34% to 73%, and hotels started being built again.
+When such a city loads, the mod now eases it out over ten in-game days: shop prices stay near normal, the icons clear, no new shops are built, and the extra shops close gradually as they fail to sell. After that, any shop still showing the icon genuinely has too few customers. It runs once per city and only where it is needed.
 
-Thanks to the player who reported this from reading the logs.
+Thanks to the player who reported this.
   </ChangeLog>
 
   <ExternalLink Type="github" Url="https://github.com/Meapy/CS2-TourismOverhaul" />
