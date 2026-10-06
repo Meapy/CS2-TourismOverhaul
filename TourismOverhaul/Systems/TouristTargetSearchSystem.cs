@@ -66,9 +66,19 @@ namespace TourismOverhaul.Systems
     ///                                    single-shot behaviour is harsh for every mode, not just
     ///                                    air and sea.
     ///
-    /// Everything else mirrors the native system exactly, including the hotel reservation, so
-    /// booking behaviour is unchanged. Turning the setting off restores the native system at
-    /// runtime.
+    /// NEW ARRIVALS ARE BOOKED, NOT SEARCHED FOR
+    ///
+    /// Even with the radius, the route search was measured failing from where arrivals stand: 0
+    /// found in several thousand from a rail line's city station, about one in five from a road
+    /// connection, with ten valid hotels holding 2,520 free rooms. TouristRebookSystem had been
+    /// booking every arrival before the search answered, which hid it — and the visitors it booked
+    /// did reach their rooms, by their own trips along the line. So an arrival at a connection with
+    /// a way into the city (ArrivalConnections) is booked into the hotel nearest where it comes in:
+    /// the line's city stop, or the connection itself for a road. The route search still runs when
+    /// no hotel has a free room, and for anyone already in the city.
+    ///
+    /// The booking itself is the native HotelReserveJob's. Turning the setting off restores the
+    /// native system at runtime.
     /// </summary>
     public partial class TouristTargetSearchSystem : GameSystemBase
     {
@@ -96,6 +106,7 @@ namespace TourismOverhaul.Systems
         private const int kMaxPerUpdate = 2048;
 
         private EntityQuery m_SeekerQuery;
+        private EntityQuery m_OutsideConnectionQuery;
         private ComponentTypeSet m_PathfindTypes;
 
         private EndFrameBarrier m_EndFrameBarrier;
@@ -115,8 +126,41 @@ namespace TourismOverhaul.Systems
         private ComponentLookup<LodgingProvider> m_LodgingProviders;
         private ComponentLookup<TouristHousehold> m_TouristHouseholds;
 
-        /// <summary>Written by the last update's job: [0] targets found, [1] evictions.</summary>
+        /// <summary>
+        /// Written by the last update's job, indexed by the k-constants below: targets found,
+        /// evictions, arrivals booked into the nearest hotel, and route searches that came back
+        /// empty.
+        /// </summary>
         private NativeArray<int> m_Counts;
+
+        private const int kFound = 0;
+        private const int kEvicted = 1;
+        private const int kBooked = 2;
+        private const int kSearchFailed = 3;
+
+        /// <summary>The same counts, summed between log lines.</summary>
+        private readonly int[] m_Totals = new int[4];
+
+        /// <summary>Updates between summary lines: 4096 of 64 frames is one in-game day.</summary>
+        private const int kUpdatesPerLog = 4096;
+
+        private int m_UpdatesSinceLog;
+
+        /// <summary>Failed searches by the building the household stood in, between log lines.</summary>
+        private NativeHashMap<Entity, int> m_FailedAt;
+
+        /// <summary>A hotel a new arrival can be booked into, and where it stands.</summary>
+        private struct HotelSlot
+        {
+            public Entity m_Company;
+            public Entity m_Property;
+            public float3 m_Position;
+        }
+
+        private EntityQuery m_HotelQuery;
+
+        /// <summary>The entry-stop mapping last logged, so it is written only when it changes.</summary>
+        private string m_LastEntryStops = string.Empty;
         private JobHandle m_LastJob;
 
         /// <summary>Targets found since load. For diagnostics.</summary>
@@ -151,7 +195,17 @@ namespace TourismOverhaul.Systems
 
             m_PathfindTypes = new ComponentTypeSet(ComponentType.ReadWrite<PathInformation>());
             m_Attempts = new NativeHashMap<Entity, int>(1024, Allocator.Persistent);
-            m_Counts = new NativeArray<int>(2, Allocator.Persistent);
+            m_Counts = new NativeArray<int>(m_Totals.Length, Allocator.Persistent);
+            m_FailedAt = new NativeHashMap<Entity, int>(64, Allocator.Persistent);
+
+            // Hotel companies renting a building, the ones CitizenPathfindSetup's tourist search
+            // would offer. Free rooms are read live in the job, since each booking takes one.
+            m_HotelQuery = GetEntityQuery(
+                ComponentType.ReadOnly<LodgingProvider>(),
+                ComponentType.ReadOnly<PropertyRenter>(),
+                ComponentType.Exclude<Components.CruiseTerminalLodging>(),
+                ComponentType.Exclude<Game.Common.Deleted>(),
+                ComponentType.Exclude<Game.Tools.Temp>());
 
             m_PathInformation = GetComponentLookup<PathInformation>(isReadOnly: true);
             m_HouseholdCitizens = GetBufferLookup<HouseholdCitizen>(isReadOnly: true);
@@ -173,6 +227,13 @@ namespace TourismOverhaul.Systems
             //
             // A cruise passenger sleeps aboard and their lodging is settled the moment they come
             // ashore, so there is never a reason for this search to consider them.
+            m_OutsideConnectionQuery = GetEntityQuery(
+                ComponentType.ReadOnly<Game.Objects.OutsideConnection>(),
+                ComponentType.Exclude<Game.Objects.ElectricityOutsideConnection>(),
+                ComponentType.Exclude<Game.Objects.WaterPipeOutsideConnection>(),
+                ComponentType.Exclude<Game.Common.Deleted>(),
+                ComponentType.Exclude<Game.Tools.Temp>());
+
             m_SeekerQuery = GetEntityQuery(
                 ComponentType.ReadWrite<TouristHousehold>(),
                 ComponentType.ReadWrite<LodgingSeeker>(),
@@ -195,6 +256,11 @@ namespace TourismOverhaul.Systems
             if (m_Counts.IsCreated)
             {
                 m_Counts.Dispose();
+            }
+
+            if (m_FailedAt.IsCreated)
+            {
+                m_FailedAt.Dispose();
             }
 
             RestoreNativeSystem();
@@ -234,10 +300,20 @@ namespace TourismOverhaul.Systems
         {
             // Scheduled 64 frames ago; this only collects its counts.
             m_LastJob.Complete();
-            TargetsFound += m_Counts[0];
-            Evictions += m_Counts[1];
-            m_Counts[0] = 0;
-            m_Counts[1] = 0;
+            TargetsFound += m_Counts[kFound];
+            Evictions += m_Counts[kEvicted];
+
+            for (int i = 0; i < m_Totals.Length; i++)
+            {
+                m_Totals[i] += m_Counts[i];
+                m_Counts[i] = 0;
+            }
+
+            if (++m_UpdatesSinceLog >= kUpdatesPerLog)
+            {
+                m_UpdatesSinceLog = 0;
+                LogDailySummary();
+            }
 
             TourismOverhaulSetting settings = Mod.Settings;
 
@@ -263,10 +339,16 @@ namespace TourismOverhaul.Systems
             m_OwnedVehicles.Update(this);
 
             NativeList<Entity> seekers = m_SeekerQuery.ToEntityListAsync(Allocator.TempJob, out JobHandle listed);
+            NativeParallelHashMap<Entity, Entity> entryStops =
+                CollectEntryStops(out NativeParallelHashMap<Entity, float3> entryPositions);
+            NativeList<HotelSlot> hotels = CollectHotels();
 
             JobHandle job = new SearchJob
             {
                 m_Seekers = seekers,
+                m_EntryStops = entryStops,
+                m_EntryPositions = entryPositions,
+                m_Hotels = hotels,
                 m_PathInformation = m_PathInformation,
                 m_HouseholdCitizens = m_HouseholdCitizens,
                 m_CurrentBuildings = m_CurrentBuildings,
@@ -275,6 +357,7 @@ namespace TourismOverhaul.Systems
                 m_LodgingProviders = m_LodgingProviders,
                 m_TouristHouseholds = m_TouristHouseholds,
                 m_Attempts = m_Attempts,
+                m_FailedAt = m_FailedAt,
                 m_Counts = m_Counts,
                 m_PathfindTypes = m_PathfindTypes,
                 m_CommandBuffer = m_EndFrameBarrier.CreateCommandBuffer(),
@@ -282,10 +365,232 @@ namespace TourismOverhaul.Systems
             }.Schedule(JobHandle.CombineDependencies(Dependency, listed));
 
             seekers.Dispose(job);
+            entryStops.Dispose(job);
+            entryPositions.Dispose(job);
+            hotels.Dispose(job);
             m_PathfindSetupSystem.AddQueueWriter(job);
             m_EndFrameBarrier.AddJobHandleForProducer(job);
             m_LastJob = job;
             Dependency = job;
+        }
+
+        /// <summary>
+        /// Each rail, air or sea connection mapped to the city-side stop of a line serving it — the
+        /// place a visitor set down there really enters the city, and so where a search for them
+        /// has to start. See ArrivalConnections.CityEntryStop. A handful of connections, walked on
+        /// the main thread once per update.
+        /// </summary>
+        private NativeParallelHashMap<Entity, Entity> CollectEntryStops(
+            out NativeParallelHashMap<Entity, float3> entryPositions)
+        {
+            NativeArray<Entity> connections = m_OutsideConnectionQuery.ToEntityArray(Allocator.Temp);
+            NativeParallelHashMap<Entity, Entity> entryStops =
+                new NativeParallelHashMap<Entity, Entity>(math.max(1, connections.Length), Allocator.TempJob);
+
+            // Where an arrival at each usable connection comes into the city, for the nearest-hotel
+            // booking: the line's city stop where there is one, the connection itself otherwise.
+            entryPositions =
+                new NativeParallelHashMap<Entity, float3>(math.max(1, connections.Length), Allocator.TempJob);
+
+            // Sorted, so the line below is rewritten only when the connections change and not
+            // whenever the query hands them back in another order.
+            connections.Sort(new EntityIndexComparer());
+
+            System.Text.StringBuilder described = new System.Text.StringBuilder();
+
+            for (int i = 0; i < connections.Length; i++)
+            {
+                // The cruise line's connection is left exactly as it was — its arrivals are the
+                // cruise complement, which CruiseVoyageSystem manages — so it gets neither a city
+                // stop to search from nor the nearest-hotel booking.
+                if (ServesCruiseLine(connections[i]))
+                {
+                    continue;
+                }
+
+                OutsideConnectionTransferType usable = ArrivalConnections.UsableTypes(
+                    EntityManager, connections[i], out OutsideConnectionTransferType declared);
+
+                if (usable == OutsideConnectionTransferType.None)
+                {
+                    continue;
+                }
+
+                Entity stop = ArrivalConnections.CityEntryStop(EntityManager, connections[i]);
+
+                if (stop != Entity.Null)
+                {
+                    entryStops.TryAdd(connections[i], stop);
+                }
+
+                if (TryGetPosition(stop != Entity.Null ? stop : connections[i], out float3 position))
+                {
+                    entryPositions.TryAdd(connections[i], position);
+                }
+
+                described.Append(described.Length > 0 ? "; " : string.Empty)
+                    .Append($"{connections[i].Index} ({declared}) from ")
+                    .Append(stop != Entity.Null ? $"city stop {stop.Index}" : "itself");
+            }
+
+            string summary = described.ToString();
+
+            if (summary != m_LastEntryStops)
+            {
+                m_LastEntryStops = summary;
+                Mod.Log.Info($"Arrivals enter the city at: {summary}.");
+            }
+
+            connections.Dispose();
+            return entryStops;
+        }
+
+        /// <summary>
+        /// One line per in-game day: arrivals booked, route searches found and failed, and the
+        /// three places failing searches stood most often. A failure at a connection usually means
+        /// a party left there before it stopped taking arrivals; at a usable one it means the
+        /// booking missed it, which is the case worth reading this line for. The job is complete
+        /// when this runs, so the counts are safe to read and clear.
+        /// </summary>
+        private void LogDailySummary()
+        {
+            if (m_Totals[kBooked] + m_Totals[kFound] + m_Totals[kSearchFailed] > 0)
+            {
+                Mod.Log.Info(
+                    $"Tourist targets today: {m_Totals[kBooked]} arrivals booked into the nearest hotel; "
+                    + $"route searches {m_Totals[kFound] - m_Totals[kBooked]} found, "
+                    + $"{m_Totals[kSearchFailed]} failed, {m_Totals[kEvicted]} parties gave up"
+                    + DescribeFailurePlaces() + ".");
+            }
+
+            System.Array.Clear(m_Totals, 0, m_Totals.Length);
+            m_FailedAt.Clear();
+        }
+
+        /// <summary>The places with the most failed searches, as "; failing most at …".</summary>
+        private string DescribeFailurePlaces()
+        {
+            if (m_FailedAt.Count == 0)
+            {
+                return string.Empty;
+            }
+
+            NativeKeyValueArrays<Entity, int> failures = m_FailedAt.GetKeyValueArrays(Allocator.Temp);
+            System.Text.StringBuilder places = new System.Text.StringBuilder();
+
+            // Three passes for the three largest: the map holds a handful of places, not thousands.
+            for (int rank = 0; rank < 3; rank++)
+            {
+                int best = -1;
+
+                for (int i = 0; i < failures.Length; i++)
+                {
+                    if (failures.Values[i] > 0 && (best < 0 || failures.Values[i] > failures.Values[best]))
+                    {
+                        best = i;
+                    }
+                }
+
+                if (best < 0)
+                {
+                    break;
+                }
+
+                places.Append(places.Length > 0 ? ", " : string.Empty)
+                    .Append($"{DescribePlace(failures.Keys[best])} x{failures.Values[best]}");
+
+                failures.Values[best] = 0;
+            }
+
+            failures.Dispose();
+            return "; failing most at " + places;
+        }
+
+        private string DescribePlace(Entity place)
+        {
+            if (place == Entity.Null || !EntityManager.Exists(place))
+            {
+                return "nowhere";
+            }
+
+            if (!EntityManager.HasComponent<Game.Objects.OutsideConnection>(place))
+            {
+                return $"building {place.Index}";
+            }
+
+            OutsideConnectionTransferType usable = ArrivalConnections.UsableTypes(
+                EntityManager, place, out OutsideConnectionTransferType declared);
+
+            return $"connection {place.Index} ({declared}, "
+                   + (usable == OutsideConnectionTransferType.None ? "unserved" : "served") + ")";
+        }
+
+        /// <summary>
+        /// Where an entry point stands. A rail stop or an object connection carries a Transform; a
+        /// road connection is a road node at the map edge and carries its position on the Node
+        /// instead — reading only the Transform left every road arrival out of the booking.
+        /// </summary>
+        private bool TryGetPosition(Entity entity, out float3 position)
+        {
+            if (EntityManager.HasComponent<Game.Objects.Transform>(entity))
+            {
+                position = EntityManager.GetComponentData<Game.Objects.Transform>(entity).m_Position;
+                return true;
+            }
+
+            if (EntityManager.HasComponent<Game.Net.Node>(entity))
+            {
+                position = EntityManager.GetComponentData<Game.Net.Node>(entity).m_Position;
+                return true;
+            }
+
+            position = default;
+            return false;
+        }
+
+        /// <summary>Orders entities by index, for a stable log line.</summary>
+        private struct EntityIndexComparer : System.Collections.Generic.IComparer<Entity>
+        {
+            public int Compare(Entity x, Entity y) => x.Index.CompareTo(y.Index);
+        }
+
+        private bool ServesCruiseLine(Entity connection)
+        {
+            CruiseVoyageSystem cruise = World.GetExistingSystemManaged<CruiseVoyageSystem>();
+            return cruise != null && cruise.ServesCruiseLine(connection);
+        }
+
+        /// <summary>
+        /// Hotels renting an active building, with the building's position. Each update, on the
+        /// main thread: a city has tens of hotels, not thousands.
+        /// </summary>
+        private NativeList<HotelSlot> CollectHotels()
+        {
+            NativeArray<Entity> companies = m_HotelQuery.ToEntityArray(Allocator.Temp);
+            NativeList<HotelSlot> hotels = new NativeList<HotelSlot>(math.max(1, companies.Length), Allocator.TempJob);
+
+            for (int i = 0; i < companies.Length; i++)
+            {
+                Entity property = EntityManager.GetComponentData<PropertyRenter>(companies[i]).m_Property;
+
+                if (property == Entity.Null
+                    || !EntityManager.HasComponent<Building>(property)
+                    || !EntityManager.HasComponent<Game.Objects.Transform>(property)
+                    || BuildingUtils.CheckOption(EntityManager.GetComponentData<Building>(property), BuildingOption.Inactive))
+                {
+                    continue;
+                }
+
+                hotels.Add(new HotelSlot
+                {
+                    m_Company = companies[i],
+                    m_Property = property,
+                    m_Position = EntityManager.GetComponentData<Game.Objects.Transform>(property).m_Position
+                });
+            }
+
+            companies.Dispose();
+            return hotels;
         }
 
         /// <summary>
@@ -301,6 +606,9 @@ namespace TourismOverhaul.Systems
         private struct SearchJob : IJob
         {
             [ReadOnly] public NativeList<Entity> m_Seekers;
+            [ReadOnly] public NativeParallelHashMap<Entity, Entity> m_EntryStops;
+            [ReadOnly] public NativeParallelHashMap<Entity, float3> m_EntryPositions;
+            [ReadOnly] public NativeList<HotelSlot> m_Hotels;
             [ReadOnly] public ComponentLookup<PathInformation> m_PathInformation;
             [ReadOnly] public BufferLookup<HouseholdCitizen> m_HouseholdCitizens;
             [ReadOnly] public ComponentLookup<CurrentBuilding> m_CurrentBuildings;
@@ -309,8 +617,9 @@ namespace TourismOverhaul.Systems
             public ComponentLookup<LodgingProvider> m_LodgingProviders;
             public ComponentLookup<TouristHousehold> m_TouristHouseholds;
             public NativeHashMap<Entity, int> m_Attempts;
+            public NativeHashMap<Entity, int> m_FailedAt;
 
-            /// <summary>[0] targets found, [1] evictions.</summary>
+            /// <summary>Indexed by the k-constants: found, evicted, booked, search failed.</summary>
             public NativeArray<int> m_Counts;
 
             public ComponentTypeSet m_PathfindTypes;
@@ -330,11 +639,39 @@ namespace TourismOverhaul.Systems
                 }
             }
 
+            /// <summary>The building the household's citizens are in, as RequestPath reads it.</summary>
+            private Entity Location(Entity household)
+            {
+                Entity location = Entity.Null;
+
+                if (m_HouseholdCitizens.TryGetBuffer(household, out DynamicBuffer<HouseholdCitizen> citizens))
+                {
+                    for (int i = 0; i < citizens.Length; i++)
+                    {
+                        if (m_CurrentBuildings.TryGetComponent(citizens[i].m_Citizen, out CurrentBuilding building))
+                        {
+                            location = building.m_CurrentBuilding;
+                        }
+                    }
+                }
+
+                return location;
+            }
+
             /// <returns>True when the household consumed a slot this update.</returns>
             private bool ProcessSeeker(Entity household)
             {
                 if (!m_PathInformation.TryGetComponent(household, out PathInformation path))
                 {
+                    // A new arrival at a connection with a way into the city is booked into the
+                    // nearest hotel with a free room, measured from where it enters. See
+                    // TryBookNearest for why this does not wait on the route search.
+                    if (m_EntryPositions.TryGetValue(Location(household), out float3 entry)
+                        && TryBookNearest(household, entry))
+                    {
+                        return true;
+                    }
+
                     RequestPath(household);
                     return true;
                 }
@@ -351,6 +688,13 @@ namespace TourismOverhaul.Systems
                     return true;
                 }
 
+                // Counted with where the party stands, for the daily summary.
+                m_Counts[kSearchFailed]++;
+
+                Entity failedAt = Location(household);
+                m_FailedAt.TryGetValue(failedAt, out int failures);
+                m_FailedAt[failedAt] = failures + 1;
+
                 // No destination. Unlike the native system this is not immediately fatal.
                 m_Attempts.TryGetValue(household, out int attempts);
                 attempts++;
@@ -366,7 +710,7 @@ namespace TourismOverhaul.Systems
                 }
 
                 m_Attempts.Remove(household);
-                m_Counts[1]++;
+                m_Counts[kEvicted]++;
 
                 CitizenUtils.HouseholdMoveAway(m_CommandBuffer, household, MoveAwayReason.TouristNoTarget);
 
@@ -391,17 +735,14 @@ namespace TourismOverhaul.Systems
                     m_PathfindFlags = PathfindFlags.IgnoreFlow | PathfindFlags.Simplified | PathfindFlags.IgnorePath
                 };
 
-                Entity location = Entity.Null;
+                Entity location = Location(household);
 
-                if (m_HouseholdCitizens.TryGetBuffer(household, out DynamicBuffer<HouseholdCitizen> citizens))
+                // A visitor still at a rail, air or sea connection is searched for from the stop
+                // where its line comes into the city, not from the map-edge marker, which has no
+                // lane near it for a search to start on.
+                if (m_EntryStops.TryGetValue(location, out Entity entryStop))
                 {
-                    for (int i = 0; i < citizens.Length; i++)
-                    {
-                        if (m_CurrentBuildings.TryGetComponent(citizens[i].m_Citizen, out CurrentBuilding building))
-                        {
-                            location = building.m_CurrentBuilding;
-                        }
-                    }
+                    location = entryStop;
                 }
 
                 SetupQueueTarget origin = new SetupQueueTarget
@@ -431,10 +772,57 @@ namespace TourismOverhaul.Systems
             /// Books the room or heads for the attraction. Mirrors the native HotelReserveJob
             /// (TouristFindTargetSystem.cs:170-199) so lodging behaves exactly as before.
             /// </summary>
+            /// <summary>
+            /// Books a new arrival into the nearest hotel with a free room, without a route search.
+            ///
+            /// The search was measured failing from where arrivals enter the city: 0 found in
+            /// several thousand from a rail line's city station, about one in five from a road
+            /// connection, with ten valid hotels holding 2,520 free rooms. The rebooking pass had
+            /// been booking every arrival before the search answered, which is why that never
+            /// showed — and the visitors it booked did reach their hotels, by their own trips,
+            /// which the game routes along the line. So arrivals are booked the same way, but only
+            /// at a connection with a way into the city (ArrivalConnections), and into the hotel
+            /// nearest where they come in rather than whichever came first. With no free room
+            /// anywhere the route search still runs, and can still find an attraction to visit.
+            /// </summary>
+            private bool TryBookNearest(Entity household, float3 entry)
+            {
+                int best = -1;
+                float bestDistance = float.MaxValue;
+
+                for (int i = 0; i < m_Hotels.Length; i++)
+                {
+                    HotelSlot hotel = m_Hotels[i];
+
+                    if (!m_LodgingProviders.TryGetComponent(hotel.m_Company, out LodgingProvider provider)
+                        || provider.m_FreeRooms <= 0)
+                    {
+                        continue;
+                    }
+
+                    float distance = math.distancesq(entry, hotel.m_Position);
+
+                    if (distance < bestDistance)
+                    {
+                        bestDistance = distance;
+                        best = i;
+                    }
+                }
+
+                if (best < 0)
+                {
+                    return false;
+                }
+
+                m_Counts[kBooked]++;
+                AcceptTarget(household, m_Hotels[best].m_Property);
+                return true;
+            }
+
             private void AcceptTarget(Entity household, Entity destination)
             {
                 m_Attempts.Remove(household);
-                m_Counts[0]++;
+                m_Counts[kFound]++;
 
                 Entity hotel = Entity.Null;
 

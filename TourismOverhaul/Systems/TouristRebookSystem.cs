@@ -31,7 +31,9 @@ namespace TourismOverhaul.Systems
     /// renter list, point the household at the hotel and drop LodgingSeeker.
     ///
     /// Tourists with nowhere to go are left alone — if the city genuinely has no free rooms they
-    /// should leave, and that is the native behaviour.
+    /// should leave, and that is the native behaviour. So are new arrivals still inside their
+    /// outside connection: they have never had a room, and their own hotel search is what checks
+    /// that one can be reached from where they stand.
     /// </summary>
     public partial class TouristRebookSystem : GameSystemBase
     {
@@ -46,6 +48,8 @@ namespace TourismOverhaul.Systems
         private EntityStorageInfoLookup m_Entities;
         private ComponentLookup<LodgingProvider> m_LodgingProviders;
         private ComponentLookup<PropertyRenter> m_PropertyRenters;
+        private ComponentLookup<CurrentBuilding> m_CurrentBuildings;
+        private ComponentLookup<Game.Objects.OutsideConnection> m_OutsideConnections;
         private ComponentLookup<TouristHousehold> m_TouristHouseholds;
         private BufferLookup<Renter> m_Renters;
 
@@ -67,6 +71,8 @@ namespace TourismOverhaul.Systems
             m_Entities = GetEntityStorageInfoLookup();
             m_LodgingProviders = GetComponentLookup<LodgingProvider>(isReadOnly: false);
             m_PropertyRenters = GetComponentLookup<PropertyRenter>(isReadOnly: true);
+            m_CurrentBuildings = GetComponentLookup<CurrentBuilding>(isReadOnly: true);
+            m_OutsideConnections = GetComponentLookup<Game.Objects.OutsideConnection>(isReadOnly: true);
             m_TouristHouseholds = GetComponentLookup<TouristHousehold>(isReadOnly: false);
             m_Renters = GetBufferLookup<Renter>(isReadOnly: false);
             m_LastRebooked = new NativeReference<int>(Allocator.Persistent);
@@ -126,6 +132,8 @@ namespace TourismOverhaul.Systems
             m_Entities.Update(this);
             m_LodgingProviders.Update(this);
             m_PropertyRenters.Update(this);
+            m_CurrentBuildings.Update(this);
+            m_OutsideConnections.Update(this);
             m_TouristHouseholds.Update(this);
             m_Renters.Update(this);
 
@@ -143,6 +151,8 @@ namespace TourismOverhaul.Systems
                 m_Entities = m_Entities,
                 m_LodgingProviders = m_LodgingProviders,
                 m_PropertyRenters = m_PropertyRenters,
+                m_CurrentBuildings = m_CurrentBuildings,
+                m_OutsideConnections = m_OutsideConnections,
                 m_TouristHouseholds = m_TouristHouseholds,
                 m_Renters = m_Renters,
                 m_CommandBuffer = m_EndFrameBarrier.CreateCommandBuffer(),
@@ -166,6 +176,8 @@ namespace TourismOverhaul.Systems
             [ReadOnly] public BufferTypeHandle<HouseholdCitizen> m_CitizenType;
             [ReadOnly] public EntityStorageInfoLookup m_Entities;
             [ReadOnly] public ComponentLookup<PropertyRenter> m_PropertyRenters;
+            [ReadOnly] public ComponentLookup<CurrentBuilding> m_CurrentBuildings;
+            [ReadOnly] public ComponentLookup<Game.Objects.OutsideConnection> m_OutsideConnections;
             public ComponentLookup<LodgingProvider> m_LodgingProviders;
             public ComponentLookup<TouristHousehold> m_TouristHouseholds;
             public BufferLookup<Renter> m_Renters;
@@ -211,11 +223,40 @@ namespace TourismOverhaul.Systems
                             continue;
                         }
 
+                        // Not displaced: still arriving. A party whose hotel closed is somewhere in
+                        // the city; a party still standing inside an outside connection has never
+                        // had a room, and is waiting on its own hotel search. That search is the
+                        // one that knows whether a room can be reached from where they are —
+                        // booking them here skipped it, so a visitor set down at an air connection
+                        // with no airline got a room it could never walk to and sat at the map edge
+                        // with it until the stranded sweep sent it home hours later. It also put
+                        // every road arrival in whichever hotel came first rather than one near
+                        // where it came in.
+                        if (StillArriving(citizens[i]))
+                        {
+                            continue;
+                        }
+
                         displaced.Add(entities[i]);
                     }
                 }
 
                 return displaced;
+            }
+
+            /// <summary>Whether every citizen of the party is inside an outside connection.</summary>
+            private bool StillArriving(DynamicBuffer<HouseholdCitizen> citizens)
+            {
+                for (int i = 0; i < citizens.Length; i++)
+                {
+                    if (!m_CurrentBuildings.TryGetComponent(citizens[i].m_Citizen, out CurrentBuilding building)
+                        || !m_OutsideConnections.HasComponent(building.m_CurrentBuilding))
+                    {
+                        return false;
+                    }
+                }
+
+                return true;
             }
 
             /// <summary>
