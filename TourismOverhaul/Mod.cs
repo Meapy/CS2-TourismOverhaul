@@ -159,6 +159,10 @@ namespace TourismOverhaul
             // Gives leisure venues more service capacity, which lowers their surge pricing.
             updateSystem.UpdateAt<LeisurePricingSystem>(SystemUpdatePhase.GameSimulation);
 
+            // Eases cities over-built by the inflated shop capacity of 2.0.1 and earlier back to real
+            // capacity over ten in-game days. Started by LeisurePricingSystem's load check.
+            updateSystem.UpdateAt<ShopRecoverySystem>(SystemUpdatePhase.GameSimulation);
+
             // Watches tourist wallets and attributes what leaves them to a category.
             updateSystem.UpdateAt<TouristSpendingLedgerSystem>(SystemUpdatePhase.GameSimulation);
 

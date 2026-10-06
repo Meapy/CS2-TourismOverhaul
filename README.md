@@ -219,6 +219,26 @@ runaway, but rooms draw visitors by design, so an attractive city sat above it p
 never built again with its hotels 95% full. Growth is bounded instead by the room draw scaling with
 attractiveness, and by Maximum tourists.
 
+### F2 — Shop capacity and commercial demand
+
+`LeisurePricingSystem` makes leisure visits affordable by scaling what a visit consumes, and also
+raises leisure venues' maximum service stock. Up to 2.0.1 it did the second to **every** commercial
+company, ordinary shops included, and that turned out to distort how the game builds commercial.
+`CommercialDemandSystem:184` wants more of a resource while unsold stock is under 45% of capacity —
+`10 × (45 − 100 × stock / capacity)`, summed over companies by `CountCompanyDataSystem:360-361` from
+each one's `m_MaxService`. With every shop's capacity counted four times over, the game kept building
+until shops held about 1.8 times their real capacity in unsold stock, while the same inflated maximum
+hid the "not enough customers" flag (above 90%, `ServiceCompanySystem:169`) and kept the price near its
+1.3 ceiling (`lerp(0.7, 1.3, 1 − stock / max)`).
+
+2.0.2 restored ordinary shops' real capacity, and cities grown that way woke up with a fifth or more of
+their shops flagged and selling at the 0.7 floor. `ShopRecoverySystem` eases them out: when a city loads
+with at least 10% of its ordinary shops over the flag (a healthy city measured 1%), unsold stock is
+capped for ten in-game days at a ceiling that rises from half of capacity to all of it. At half the
+price is near its neutral 1.0 and the flag is off, and because half is above the game's 45% line,
+commercial demand stays at zero, so the excess shops close as they fail to sell instead of every shop
+sitting at the floor at once. It runs at most once per city, with its progress saved.
+
 ## Tourist demand
 
 A seventh demand bar, in the Demand page and the toolbar stack. `TouristDemandUISystem` mirrors

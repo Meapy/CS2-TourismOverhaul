@@ -7,6 +7,39 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 
+## [2.0.4] — 2026-10-06
+
+### Fixed
+
+- **"Not enough customers" over a large share of shops, and commercial wealth falling, in cities
+  started before 2.0.2.** Reported by a player: since 2.0.2 the icons stay over nearly every
+  commercial building instead of clearing after a few seconds. Up to 2.0.1 the leisure pricing raised
+  every commercial company's maximum service stock (x4 by default), not only leisure venues', and
+  that maximum is also how the game decides to build commercial: `CommercialDemandSystem:184` wants
+  more of a resource while unsold stock is under 45% of capacity, summed from each company's maximum
+  (`CountCompanyDataSystem:360-361`). With every shop counted four times over, the game kept building
+  shops until each held about 1.8 times its real capacity in unsold stock — hidden, because the same
+  inflated maximum suppressed the flag and held the price near its 1.3 ceiling. 2.0.2 put ordinary
+  shops back on their real capacity, and those cities woke up over-built: a fifth or more of their
+  shops flagged and selling at the 0.7 floor.
+
+  The new `ShopRecoverySystem` eases them out. When a city loads with at least 10% of its ordinary
+  shops over the flag (a healthy 1,069-shop city measured 1%), each ordinary shop's unsold stock is
+  capped for ten in-game days at a ceiling rising from half its capacity to all of it. At half, the
+  price sits near its neutral 1.0 and the flag is off; and because half is above the game's 45% line,
+  commercial demand stays at zero, so the excess shops close as they fail to sell rather than every
+  shop sitting at the floor at once. As the ceiling passes 90% the icon returns only where a shop still
+  lacks customers. It runs at most once per city, its progress is saved, and hotels and leisure
+  venues are left alone. Measured in a 1,087-shop city that loaded with 158 shops over the line: the
+  icons stood on 218 shops until each shop's own update came round, then dropped to 1.
+
+### Diagnostics
+
+- The load-time stock line also counts ordinary shops over the flag; the recovery logs its start,
+  its first pass, one line per in-game day, and its end.
+- The diagnostics snapshot gains **not enough customers**: how many ordinary shops, leisure venues
+  and hotels carry the icon, and how many of each are over 90% stock.
+
 ## [2.0.3] — 2026-10-06
 
 ### Fixed
