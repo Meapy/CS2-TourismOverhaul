@@ -23,17 +23,22 @@ namespace TourismOverhaul
             // The build, not just the name. A copy into the Mods folder while the game is running
             // does nothing until the next start, and several sessions were spent measuring a build
             // that was never loaded. This line says which one is actually running.
+            //
+            // The file comes from the mod manager, not from Assembly.Location: the game loads mod
+            // assemblies from memory, so Location is empty and every build read as "unknown".
             string built = "unknown";
 
             try
             {
-                built = System.IO.File
-                    .GetLastWriteTime(typeof(Mod).Assembly.Location)
-                    .ToString("yyyy-MM-dd HH:mm:ss");
+                if (GameManager.instance.modManager.TryGetExecutableAsset(this, out var asset)
+                    && !string.IsNullOrEmpty(asset.path))
+                {
+                    built = System.IO.File.GetLastWriteTime(asset.path).ToString("yyyy-MM-dd HH:mm:ss");
+                }
             }
             catch (System.Exception)
             {
-                // A shadow-copied or in-memory assembly has no readable path; the name is enough.
+                // No readable path for the asset; the name alone is still logged.
             }
 
             Log.Info($"{ModName}: OnLoad (build of {built})");

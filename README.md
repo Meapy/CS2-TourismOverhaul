@@ -19,7 +19,7 @@ against the defects.
 | D | Panel reports ~8x the achievable figure; count omits tourists in transit | `TourismReportingSystem` |
 | E | Hotels cannot be zoned for — they appear at random inside mixed commercial groups | `HotelZoneSystem` |
 | F | Lodging demand is measured against raw room capacity, so adding rooms suppresses hotel construction | `TouristEconomySystem` |
-| G | Tourist target search uses an origin radius of zero, evicting any arrival not standing on a lane | `TouristTargetSearchSystem` |
+| G | Tourist target search fails from where arrivals stand, evicting them as `TouristNoTarget` | `TouristTargetSearchSystem` |
 | H | Hotel rooms are never released, so availability decays permanently | `HotelRoomReclaimSystem` |
 | I | Tourists never shop — needs come from household stock they do not have | `TouristShoppingSystem` |
 | J | Ordinary buildings contribute no attractiveness, so historic districts draw nobody | `HistoricAttractivenessSystem` |
@@ -44,6 +44,27 @@ That this is an oversight rather than a design choice is strongly supported by t
 path in the same utility class: `CitizenBehaviorSystem.GoToOutsideConnection` uses a combined flag
 mask **and** an explicit fallback to any connection at all. Both safeguards, both absent from the
 arrival path.
+
+**A connection counts only while something serves it.** A connection's prefab declares its
+transfer types whether or not anything uses them, so a map-edge air marker is "an air connection"
+in a city with no airport. A visitor set down there can never get in: the marker has no lane near
+it, the hotel search has nowhere to start, and the visitor's own trips cannot leave. So
+`ArrivalConnections` counts air, sea and rail only while a passenger line reaches one of the
+connection's stops — the `ConnectedRoute` walk `BuildingUtils.GetNumberOfConnectedLines` makes —
+and road always. The split, the spawner and the arrival panel all use that, so a map with markers
+but no airport or docks sends those arrivals by the modes the player built, and a rail line that
+serves one of three rail connections takes all the rail arrivals rather than a third of them.
+
+**Arrivals are booked, not searched for.** `TouristTargetSearchSystem` fixed the native search's
+zero origin radius, but the search still failed from where arrivals stand — measured at 0 found in
+several thousand from a rail line's city station, about one in five from a road connection, with
+valid hotels holding 2,520 free rooms. `TouristRebookSystem` had been booking every arrival before
+the search answered, which is why that never showed, and the visitors it booked reached their rooms
+by their own trips along the line. So an arrival at a served connection is booked into the hotel
+nearest where it enters the city — the line's city stop, or the road connection itself — and makes
+the journey by the game's own trip routing, transfers and all. The route search remains for when
+no room is free, and the rebooking pass now handles only guests already in the city whose hotel
+closed.
 
 ### A2 — Congestion
 

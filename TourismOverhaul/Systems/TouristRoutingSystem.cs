@@ -202,6 +202,7 @@ namespace TourismOverhaul.Systems
         {
             available = OutsideConnectionTransferType.None;
             connectionCounts = int4.zero;
+            OutsideConnectionTransferType declaredAll = OutsideConnectionTransferType.None;
 
             NativeArray<Entity> connections = m_OutsideConnectionQuery.ToEntityArray(Allocator.Temp);
             connectionTypes = new NativeParallelHashMap<Entity, OutsideConnectionTransferType>(
@@ -216,21 +217,18 @@ namespace TourismOverhaul.Systems
             {
                 for (int i = 0; i < connections.Length; i++)
                 {
-                    if (!EntityManager.HasComponent<PrefabRef>(connections[i])
-                        || (cruise != null && cruise.ServesCruiseLine(connections[i])))
+                    if (cruise != null && cruise.ServesCruiseLine(connections[i]))
                     {
                         continue;
                     }
 
-                    Entity prefab = EntityManager.GetComponentData<PrefabRef>(connections[i]).m_Prefab;
-                    if (!EntityManager.HasComponent<OutsideConnectionData>(prefab))
-                    {
-                        continue;
-                    }
+                    // What the connection can actually deliver, not what its prefab declares: an
+                    // air or sea marker with no passenger line to it lets nobody in, and counting
+                    // it gave arrivals a share they could never use. See ArrivalConnections.
+                    OutsideConnectionTransferType type = ArrivalConnections.UsableTypes(
+                        EntityManager, connections[i], out OutsideConnectionTransferType declared);
 
-                    OutsideConnectionTransferType type =
-                        EntityManager.GetComponentData<OutsideConnectionData>(prefab).m_Type
-                        & OutsideConnectionTransferType.All;
+                    declaredAll |= declared;
 
                     if (type == OutsideConnectionTransferType.None)
                     {
@@ -246,7 +244,24 @@ namespace TourismOverhaul.Systems
             {
                 connections.Dispose();
             }
+
+            // Once per change rather than every update: the set moves only when the player draws or
+            // deletes a line to a connection.
+            OutsideConnectionTransferType unserved = declaredAll & ~available;
+
+            if (unserved != m_LastUnserved)
+            {
+                m_LastUnserved = unserved;
+
+                Mod.Log.Info(unserved == OutsideConnectionTransferType.None
+                    ? "Arrival connections: every declared way in is served."
+                    : $"Arrival connections: no passenger line serves the map's {unserved} "
+                      + "connections, so no visitor is set down there. Draw a line to one to open it.");
+            }
         }
+
+        /// <summary>Declared ways in that no line served at the last walk; logged when it changes.</summary>
+        private OutsideConnectionTransferType m_LastUnserved = OutsideConnectionTransferType.None;
 
         /// <summary>
         /// Tourists still waiting at each connection, divided by the number of connections serving

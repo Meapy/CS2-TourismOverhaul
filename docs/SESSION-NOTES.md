@@ -1059,3 +1059,47 @@ feed that inequality, and each one has been wrong in a different direction:
 Before changing any of them, work the equilibrium through: where occupancy settles, and whether the
 trigger fires there. A change that is correct in isolation can switch hotel building off, or on
 forever.
+
+## An outside connection's declared type says nothing about whether anyone can use it
+
+`OutsideConnectionData.m_Type` is authored on the prefab. A map ships air, sea and rail markers
+whether or not the player ever builds an airport, a harbour or a rail line to them, and
+`BuildingUtils.GetRandomOutsideConnectionByParameters` — the game's arrival pick — matches on that
+declared type alone. So vanilla rolls 50% of tourists for air in a city with no airport, and a map
+with three rail markers and one rail line sends two-thirds of its rail arrivals to the two dead ones.
+
+What "served" means is a passenger route reaching one of the connection's stops. Stops record the
+waypoints of the routes using them in a `ConnectedRoute` buffer, and the stops sit somewhere below
+the connection in its `SubObject` tree — `BuildingUtils.GetNumberOfConnectedLines` is the game's own
+walk. The route is the waypoint's `Owner`; its `TransportLineData` says whether it carries
+passengers and by what. Road needs none of this: a road connection sits on the road.
+
+The trap this created was quiet. The mod's rebooking pass treated every tourist without a room as a
+displaced guest, new arrivals included, and gave them rooms without checking they could reach them.
+An arrival at an unserved connection got a room, sat at the map edge with it, and was only cleared by
+the stranded sweep after 1.5 in-game hours — while counting as a tourist and holding a room. A
+player reported it from reading the logs.
+
+## The tourist target search fails from where arrivals stand — measure it, do not assume it
+
+The mod's `TouristTargetSearchSystem` fixed the native zero origin radius and was believed to work.
+It did not, and it never showed, because the rebooking pass booked every arrival into a room before
+the search answered. Removing that for new arrivals sent `TouristNoTarget` to about nine arrivals in
+ten overnight.
+
+Measured with per-origin tallies: 0 found in several thousand searches started from a rail line's
+city station, about one in five from road connections — while ten valid hotels held 2,520 free rooms
+by `CitizenPathfindSetup.SetupTouristTargetJob`'s own test (free rooms, a rented building, not
+inactive). The request was identical to the native one apart from the radius. Why the search fails
+was not established; that it fails was, and that is what matters for a fix.
+
+What did work all along was the visitor's own trip: booked arrivals reached their hotels by
+`TripNeededSystem`'s routing along the line, transfers included. So arrivals at a served connection
+are now booked into the hotel nearest where they enter the city, and the search runs only when no
+room is free. Two lessons:
+
+- A system that silently pre-empts another can hide that the other has never worked. Taking it away
+  is the test.
+- Tally failures by where they start before changing anything. Two rounds of plausible fixes to the
+  search's origin made no difference, and the per-origin count settled it in one run: the origin was
+  never the problem.

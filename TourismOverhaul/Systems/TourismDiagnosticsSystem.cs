@@ -3,7 +3,9 @@ using Game.Agents;
 using Game.Citizens;
 using Game.City;
 using Game.Common;
+using Game.Buildings;
 using Game.Companies;
+using Game.Economy;
 using Game.Prefabs;
 using Game.Simulation;
 using Game.Tools;
@@ -32,6 +34,7 @@ namespace TourismOverhaul.Systems
         private EntityQuery m_LeavingQuery;
         private EntityQuery m_WaitingQuery;
         private EntityQuery m_HotelQuery;
+        private EntityQuery m_LodgingBuildingQuery;
         private EntityQuery m_CityQuery;
         private EntityQuery m_DemandParameterQuery;
 
@@ -116,6 +119,14 @@ namespace TourismOverhaul.Systems
             m_HotelQuery = GetEntityQuery(
                 ComponentType.ReadOnly<LodgingProvider>(),
                 ComponentType.Exclude<Components.CruiseTerminalLodging>(),
+                ComponentType.Exclude<Deleted>(),
+                ComponentType.Exclude<Temp>());
+
+            // Zoned commercial buildings; the lodging-only ones are picked out by prefab.
+            m_LodgingBuildingQuery = GetEntityQuery(
+                ComponentType.ReadOnly<Game.Buildings.Building>(),
+                ComponentType.ReadOnly<Game.Buildings.CommercialProperty>(),
+                ComponentType.ReadOnly<PrefabRef>(),
                 ComponentType.Exclude<Deleted>(),
                 ComponentType.Exclude<Temp>());
 
@@ -444,6 +455,7 @@ namespace TourismOverhaul.Systems
                 $"TouristNoMoney {noMoney}, other {other}\n" +
                 $"  waiting at a connection with no destination: {waiting}\n" +
                 $"  free hotel rooms: {freeRooms}\n" +
+                DescribeSearchableHotels() + "\n" +
                 DescribeCohort() + "\n" +
                 DescribeSpending() + "\n" +
                 DescribeLedger() + "\n" +
@@ -659,6 +671,113 @@ namespace TourismOverhaul.Systems
             }
 
             return free;
+        }
+
+        /// <summary>
+        /// The hotels a tourist's search can actually be sent to, by the game's own test.
+        ///
+        /// CitizenPathfindSetup.SetupTouristTargetJob offers a hotel company only when it has free
+        /// rooms, rents a building, and that building exists and is not inactive. A free room that
+        /// fails any of those is counted in "free hotel rooms" but can never be found. Lodging
+        /// buildings with no company in them have no rooms to offer at all, and are counted apart
+        /// because they look like hotels on the map while giving the search nothing.
+        /// </summary>
+        private string DescribeSearchableHotels()
+        {
+            EntityManager.CompleteDependencyBeforeRO<LodgingProvider>();
+            EntityManager.CompleteDependencyBeforeRO<PropertyRenter>();
+            EntityManager.CompleteDependencyBeforeRO<Building>();
+
+            int searchable = 0, searchableRooms = 0;
+            int full = 0, noProperty = 0, inactive = 0;
+
+            NativeArray<Entity> companies = m_HotelQuery.ToEntityArray(Allocator.Temp);
+
+            try
+            {
+                for (int i = 0; i < companies.Length; i++)
+                {
+                    LodgingProvider provider = EntityManager.GetComponentData<LodgingProvider>(companies[i]);
+
+                    if (provider.m_FreeRooms <= 0)
+                    {
+                        full++;
+                        continue;
+                    }
+
+                    Entity property = EntityManager.HasComponent<PropertyRenter>(companies[i])
+                        ? EntityManager.GetComponentData<PropertyRenter>(companies[i]).m_Property
+                        : Entity.Null;
+
+                    if (property == Entity.Null || !EntityManager.HasComponent<Building>(property))
+                    {
+                        noProperty++;
+                        continue;
+                    }
+
+                    if (BuildingUtils.CheckOption(EntityManager.GetComponentData<Building>(property), BuildingOption.Inactive))
+                    {
+                        inactive++;
+                        continue;
+                    }
+
+                    searchable++;
+                    searchableRooms += provider.m_FreeRooms;
+                }
+            }
+            finally
+            {
+                companies.Dispose();
+            }
+
+            return $"  hotels a search can find: {searchable} with {searchableRooms} free rooms; "
+                + $"not offered: {full} full, {noProperty} with free rooms but no building, "
+                + $"{inactive} in an inactive building; {CountEmptyLodgingBuildings()} lodging building(s) with no company";
+        }
+
+        /// <summary>Lodging-only buildings standing with no company renting them.</summary>
+        private int CountEmptyLodgingBuildings()
+        {
+            int empty = 0;
+
+            NativeArray<Entity> buildings = m_LodgingBuildingQuery.ToEntityArray(Allocator.Temp);
+
+            try
+            {
+                for (int i = 0; i < buildings.Length; i++)
+                {
+                    Entity prefab = EntityManager.GetComponentData<PrefabRef>(buildings[i]).m_Prefab;
+
+                    if (!EntityManager.HasComponent<BuildingPropertyData>(prefab)
+                        || EntityManager.GetComponentData<BuildingPropertyData>(prefab).m_AllowedSold != Resource.Lodging)
+                    {
+                        continue;
+                    }
+
+                    bool rented = false;
+
+                    if (EntityManager.HasBuffer<Renter>(buildings[i]))
+                    {
+                        DynamicBuffer<Renter> renters = EntityManager.GetBuffer<Renter>(buildings[i], isReadOnly: true);
+
+                        for (int r = 0; r < renters.Length && !rented; r++)
+                        {
+                            rented = EntityManager.HasComponent<LodgingProvider>(renters[r].m_Renter);
+                        }
+                    }
+
+                    if (!rented)
+                    {
+                        empty++;
+                    }
+                }
+            }
+            finally
+            {
+                buildings.Dispose();
+            }
+
+            return empty;
         }
     }
 }

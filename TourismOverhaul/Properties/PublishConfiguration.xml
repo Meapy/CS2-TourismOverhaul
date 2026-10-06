@@ -256,7 +256,7 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
   <Tag Value="Code Mod" />
 
   <ForumLink Value="https://forum.paradoxplaza.com/forum/threads/mod-tourism-overhaul-fix-tourism.1937099/" />
-  <ModVersion Value="2.0.2" />
+  <ModVersion Value="2.0.3" />
   <GameVersion Value="1.6.*" />
 
   <!--
@@ -264,12 +264,12 @@ Source, full technical writeup and issue tracker: https://github.com/Meapy/CS2-T
     accumulating history here republishes every past release with every upload. The full record
     belongs in CHANGELOG.md.
   -->
-  <ChangeLog>2.0.2
-Fixed "not enough customers" appearing all over the city right after loading a save, with shops, restaurants and hotels dropping into a deep deficit until everything went back to normal fifteen to twenty in-game minutes later. The mod raised commercial companies' service capacity, but only reapplied it a while after each load; in between, their saved stock sat far above the game's own capacity. It is now applied the moment a save loads.
+  <ChangeLog>2.0.3
+Tourists no longer arrive at an airport, harbour or rail connection that nothing serves. A map's air and sea markers took their share of arrivals even in a city with no airport or docks, and those visitors could never get into the city. Now a connection only takes arrivals while a passenger line reaches it, so visitors come by the ways in your city actually has. The same was happening to rail: a map with three rail connections and one rail line sent two-thirds of its rail arrivals to the two with no line.
 
-Leisure pricing now changes leisure venues only (restaurants, bars and the like), not every shop in the city.
+New arrivals are booked into the hotel nearest where they enter the city, and travel there by public transport like anyone else, changing lines as needed. They were previously given whichever room came first, including rooms they could not reach, and sat at the edge of the map until they were sent home. In the test city, tourists rose from about 2,900 to 7,100, hotel occupancy from 34% to 73%, and hotels started being built again.
 
-Companies left holding more stock than their capacity by earlier versions are corrected on load, so cities already stuck with the icons clear up by themselves.
+Thanks to the player who reported this from reading the logs.
   </ChangeLog>
 
   <ExternalLink Type="github" Url="https://github.com/Meapy/CS2-TourismOverhaul" />

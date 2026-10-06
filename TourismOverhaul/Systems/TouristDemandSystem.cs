@@ -930,6 +930,66 @@ namespace TourismOverhaul.Systems
         }
 
         /// <summary>
+        /// Rolls a mode against the split, exactly as BuildingUtils.GetRandomOutsideConnectionByParameters
+        /// does: (road, train, air, ship) as cumulative thresholds, and None past their sum.
+        /// </summary>
+        private static OutsideConnectionTransferType RollArrivalType(ref Random random, float4 split)
+        {
+            float roll = random.NextFloat(1f);
+
+            if (roll < split.x) return OutsideConnectionTransferType.Road;
+            if (roll < split.x + split.y) return OutsideConnectionTransferType.Train;
+            if (roll < split.x + split.y + split.z) return OutsideConnectionTransferType.Air;
+            if (roll < split.x + split.y + split.z + split.w) return OutsideConnectionTransferType.Ship;
+
+            return OutsideConnectionTransferType.None;
+        }
+
+        /// <summary>A connection that can deliver this mode, chosen evenly among those that can.</summary>
+        private static bool TryPickConnection(
+            NativeList<Entity> connections,
+            NativeList<OutsideConnectionTransferType> usableTypes,
+            OutsideConnectionTransferType mode,
+            ref Random random,
+            out Entity connection)
+        {
+            connection = Entity.Null;
+
+            if (mode == OutsideConnectionTransferType.None)
+            {
+                return false;
+            }
+
+            int candidates = 0;
+
+            for (int i = 0; i < usableTypes.Length; i++)
+            {
+                if ((usableTypes[i] & mode) != 0)
+                {
+                    candidates++;
+                }
+            }
+
+            if (candidates == 0)
+            {
+                return false;
+            }
+
+            int pick = random.NextInt(candidates);
+
+            for (int i = 0; i < usableTypes.Length; i++)
+            {
+                if ((usableTypes[i] & mode) != 0 && pick-- == 0)
+                {
+                    connection = connections[i];
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
         /// How many people a household template will actually produce, on average.
         ///
         /// Not the same as CountOccupants, which sums the template's fields and is fine for
@@ -1381,6 +1441,8 @@ namespace TourismOverhaul.Systems
                 m_HouseholdPrefabQuery.ToComponentDataArray<HouseholdData>(Allocator.Temp);
             NativeArray<Entity> connectionArray = m_OutsideConnectionQuery.ToEntityArray(Allocator.Temp);
             NativeList<Entity> connections = new NativeList<Entity>(connectionArray.Length, Allocator.Temp);
+            NativeList<OutsideConnectionTransferType> usableTypes =
+                new NativeList<OutsideConnectionTransferType>(connectionArray.Length, Allocator.Temp);
 
             try
             {
@@ -1392,13 +1454,29 @@ namespace TourismOverhaul.Systems
                 // Never at a connection the cruise line calls at: its stop there is held free for
                 // the cruise complement, and an ordinary visitor spawned beside it would queue for
                 // the ship too. See CruiseVoyageSystem.ServesCruiseLine.
+                //
+                // And only by a way in the connection actually has. The game's own pick
+                // (BuildingUtils.GetRandomOutsideConnectionByParameters) matches the prefab's
+                // declared types, so an air roll landed on any air marker whether or not a line
+                // flies there — and a visitor set down at an unserved one can never get into the
+                // city. TouristRoutingSystem already leaves those types out of the split; this
+                // keeps a served connection of a type from sharing its rolls with unserved ones.
                 CruiseVoyageSystem cruise = World.GetExistingSystemManaged<CruiseVoyageSystem>();
 
                 for (int i = 0; i < connectionArray.Length; i++)
                 {
-                    if (cruise == null || !cruise.ServesCruiseLine(connectionArray[i]))
+                    if (cruise != null && cruise.ServesCruiseLine(connectionArray[i]))
+                    {
+                        continue;
+                    }
+
+                    OutsideConnectionTransferType usable =
+                        ArrivalConnections.UsableTypes(EntityManager, connectionArray[i]);
+
+                    if (usable != OutsideConnectionTransferType.None)
                     {
                         connections.Add(connectionArray[i]);
+                        usableTypes.Add(usable);
                     }
                 }
 
@@ -1409,10 +1487,6 @@ namespace TourismOverhaul.Systems
 
                 DemandParameterData demandParameters = m_DemandParameterQuery.GetSingleton<DemandParameterData>();
 
-                ComponentLookup<OutsideConnectionData> outsideConnectionDatas =
-                    GetComponentLookup<OutsideConnectionData>(isReadOnly: true);
-                ComponentLookup<PrefabRef> prefabRefs = GetComponentLookup<PrefabRef>(isReadOnly: true);
-
                 Random random = new Random(math.max(1u, m_SimulationSystem.frameIndex * 747796405u + 2891336453u));
 
                 EntityCommandBuffer commandBuffer = m_EndFrameBarrier.CreateCommandBuffer();
@@ -1422,15 +1496,12 @@ namespace TourismOverhaul.Systems
                     SpawnAttempts++;
 
                     // Resolve the arrival point first. If the roll lands on a transfer type the
-                    // city does not have, skip rather than creating a household that can never
-                    // be initialised.
-                    if (!BuildingUtils.GetRandomOutsideConnectionByParameters(
-                            ref connections,
-                            ref outsideConnectionDatas,
-                            ref prefabRefs,
-                            random,
-                            demandParameters.m_TouristOCSpawnParameters,
-                            out Entity connection))
+                    // city has no usable way in for, skip rather than creating a household that
+                    // can never arrive.
+                    OutsideConnectionTransferType arrivalType =
+                        RollArrivalType(ref random, demandParameters.m_TouristOCSpawnParameters);
+
+                    if (!TryPickConnection(connections, usableTypes, arrivalType, ref random, out Entity connection))
                     {
                         continue;
                     }
@@ -1439,20 +1510,9 @@ namespace TourismOverhaul.Systems
 
                     int index = SelectHouseholdPrefab(householdDatas, ref random, settings);
 
-                    // Attribute the arrival here: the connection is already resolved and the
-                    // household template fixes the head count, so nothing later has to be traced
-                    // back to the door it came through.
-                    OutsideConnectionTransferType arrivalType = OutsideConnectionTransferType.None;
-
-                    if (prefabRefs.HasComponent(connection))
-                    {
-                        Entity connectionPrefab = prefabRefs[connection].m_Prefab;
-
-                        if (outsideConnectionDatas.HasComponent(connectionPrefab))
-                        {
-                            arrivalType = outsideConnectionDatas[connectionPrefab].m_Type;
-                        }
-                    }
+                    // Attributed to the mode that was rolled and is served, which is also what the
+                    // visitor actually travels by — a connection declaring road and rail is not
+                    // "an air arrival" because of the order its flags are tested in.
 
                     // Arrivals stand at the outside connection, as the base game intends. Placing
                     // them at a terminal instead was tried and reverted: it did not reduce
@@ -1473,6 +1533,7 @@ namespace TourismOverhaul.Systems
             }
             finally
             {
+                usableTypes.Dispose();
                 connections.Dispose();
                 connectionArray.Dispose();
                 householdDatas.Dispose();

@@ -7,6 +7,55 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 
+## [2.0.3] — 2026-10-06
+
+### Fixed
+
+- **Tourists no longer arrive at an airport, harbour or rail connection that nothing serves.**
+  Reported by a player reading the logs: a city with no airport and no docks showed arrivals by air
+  and by sea. A connection's prefab declares its transfer types whether or not anything uses them,
+  and both the game's spawner and the mod's took that at face value, so air and sea markers at the
+  map edge took their full share of arrivals. A visitor set down there can never get into the city —
+  the marker has no lane near it, so neither the hotel search nor the visitor's own trips can leave
+  it. Air, sea and rail now count only while a passenger line reaches one of the connection's stops;
+  road always counts. The arrival split, the spawner and the arrivals panel all use this, so those
+  visitors come by the modes the city actually has. It reached further than air and sea: a map with
+  three rail connections and one rail line was sending two-thirds of its rail arrivals to the two
+  with no line.
+
+- **New arrivals are no longer given a hotel room they cannot reach.** The rebooking pass, meant for
+  guests whose hotel closed, treated every tourist without a room as displaced — new arrivals still
+  standing at their connection included — and booked them into the first hotel with space, without
+  checking they could get there. An arrival at an unserved connection then sat at the map edge with a
+  room, counted as a tourist and holding the room, until the stranded sweep sent it home 1.5 in-game
+  hours later; and because it now had a destination, the arrival-backlog measure that should have
+  steered arrivals elsewhere could not see it. The pass now leaves alone any party still inside an
+  outside connection.
+
+- **Arrivals are booked into the hotel nearest where they enter the city.** With the rebooking pass
+  no longer booking them, the mod's own hotel search turned out to fail from where arrivals stand:
+  measured at 0 found in several thousand searches from a rail line's city station, and about one in
+  five from a road connection, while ten valid hotels held 2,520 free rooms. The rebooking pass had
+  been hiding this, and the visitors it booked did reach their rooms by their own trips. So an arrival
+  at a served connection is now booked straight into the nearest hotel with a free room — measured
+  from the line's city stop for rail, air or sea, and from the connection itself for road — and
+  travels there by the game's own routing, changing lines as needed. The search still runs when no
+  room is free. In the test city, tourists rose from about 2,900 to 7,100 of a 7,700 target, hotel
+  occupancy from 34% to 73%, and hotel construction resumed. The cruise line's connection keeps its
+  previous behaviour.
+
+- **The log's build line shows the build again.** It read "build of unknown", because the game loads
+  mod assemblies from memory and the assembly has no path; it now asks the mod manager for the file.
+
+### Diagnostics
+
+- An **Arrival connections** line, written when it changes, names the declared ways in that no line
+  serves; **Arrivals enter the city at** lists where each usable connection's visitors come in.
+- The diagnostics snapshot gains **hotels a search can find**: hotels passing the game's own test,
+  and how many are full, have no building, are in an inactive building, or stand with no company.
+- A once-a-day **Tourist targets today** line: arrivals booked, route searches found and failed, and
+  the places failing searches stood most often.
+
 ## [2.0.2] — 2026-09-30
 
 ### Fixed
