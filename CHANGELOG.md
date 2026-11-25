@@ -7,6 +7,44 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 
+## [2.1.0] — 2026-11-25
+
+### Fixed
+
+- **Leisure venue capacity no longer multiplies again on every load in the same game session.**
+  Reported, with measurements, by a player: after three loads without restarting the game, each
+  leisure venue's maximum service was 64 times its authored value, not 4, and the cost of a visit
+  had fallen to the floor of 1, while the log said "x4" every time. Land value beside every venue
+  climbed with it, because the game weights a service source by its stock with no cap. In their
+  town of 1,020 people the road next to one bar went from 916 to 6,777.
+
+  The mod remembered the authored values only until the next load, believing the game rebuilt
+  prefab data then. It does not: prefabs live for the whole session, so the second load took the
+  already-scaled values as authored and scaled them again. Hotel service capacity had the same
+  fault when the room multiplier is above 1. Both now keep the originals for the session, along with
+  what they last wrote, so a load re-applies the setting to the original instead of to its own
+  output. Turning the room multiplier back to 1 also now puts hotel capacity back, as it always
+  claimed to.
+
+  Cities already affected settle by themselves after a restart and one load, as before.
+
+- **Saving no longer fails inside the spending ledger.** A save could throw a
+  `NullReferenceException` in the game's writer while it wrote `TourismLedgerData`, the same failure
+  1.8.3 removed for the arrivals window: a mod component's serializer runs on the managed fallback of
+  a job the game expects to be compiled. The ledger is now saved with its own system, which the game
+  serializes on the main thread with no job involved. Saves from earlier versions keep their figures:
+  the old ledger is read once on load and then removed.
+
+- **The trailing-month arrivals figure now survives a reload.** Since 1.8.3 the window's slices
+  were saved as present but empty, so every load started the "/mo." row again from zero and it took
+  an in-game day to mean anything. Its cursor was also written by the same job path as the ledger
+  above. The window is now saved with its system, slices and all. Saves from earlier versions
+  start the window once more on their first load (there was nothing in them to keep) and keep it
+  from then on.
+
+- The hidden leisure capacity setting defaulted to x4 but **Reset to defaults** set it to x5. Both
+  are x4 now.
+
 ## [2.0.4] — 2026-10-06
 
 ### Fixed

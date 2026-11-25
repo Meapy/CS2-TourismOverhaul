@@ -473,7 +473,7 @@ namespace TourismOverhaul
             // consumption floor at LeisureSystem:102 caps how far this can usefully go, so this is
             // most of the available travel rather than a cautious first step.
             LeisureCostPercent = 20;
-            LeisureCapacityMultiplier = 5;
+            LeisureCapacityMultiplier = 4;
             CruiseShoreLeaveHours = 12;
             CruiseShipCapacity = 1500;
 

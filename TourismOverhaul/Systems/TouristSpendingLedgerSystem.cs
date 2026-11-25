@@ -37,9 +37,35 @@ namespace TourismOverhaul.Systems
     ///
     /// Wallets only ever fall, since tourists have no income, so a rise means arrivals rather than
     /// earnings and is ignored rather than counted as negative spending.
+    ///
+    /// PERSISTENCE
+    ///
+    /// The totals are saved with this system (IDefaultSerializable), not on an entity. Up to 2.0.4
+    /// they lived on a singleton carrying <see cref="Components.TourismLedgerData"/>, and saving
+    /// could die inside the game's writer with
+    ///
+    ///     NullReferenceException
+    ///       at Colossal.Serialization.Entities.BinaryWriter.Write (System.UInt32 value)
+    ///       at TourismOverhaul.Components.TourismLedgerData.Serialize[TWriter] (TWriter writer)
+    ///       at ComponentDataSerializer`1+SerializeComponentDataJob`1[TourismLedgerData, BinaryWriter]
+    ///       at (wrapper delegate-invoke) ...
+    ///
+    /// the same failure 1.8.3 removed from TouristArrivalBucket. A component's serializer runs as a
+    /// job, and Burst cannot compile that job for a type from an assembly loaded at runtime, so for a
+    /// mod type it runs on the managed fallback on a worker thread. A system's serializer is not a
+    /// job at all: ComponentSystemSerializer calls Serialize on the main thread, inside the game's
+    /// own save pass, so none of that machinery is involved.
+    ///
+    /// Saves from before the move still carry the old entity. It is read once on load, its figures
+    /// taken if the save has none of the new kind, and destroyed, so it is never written again.
     /// </summary>
-    public partial class TouristSpendingLedgerSystem : GameSystemBase
+    public partial class TouristSpendingLedgerSystem : GameSystemBase, Colossal.Serialization.Entities.IDefaultSerializable
     {
+        /// <summary>
+        /// Layout version of the saved totals, written first. Add fields at the end, bump this, and
+        /// read them conditionally.
+        /// </summary>
+        private const int kSaveVersion = 1;
         /// <summary>Households sampled per update. Bounds the cost in a large city.</summary>
         private const int kMaxPerUpdate = 1024;
 
@@ -175,92 +201,127 @@ namespace TourismOverhaul.Systems
             base.OnGameLoadingComplete(purpose, mode);
 
             // Entities differ between sessions, so last session's balances mean nothing. The
-            // totals, however, do — they are restored below. A sample still in flight belongs to
-            // the old session and is dropped with them.
+            // totals, however, do — Deserialize or SetDefaults has already put them back. A sample
+            // still in flight belongs to the old session and is dropped with them.
             m_LastJob.Complete();
             ResetResults();
             m_LastSample.Clear();
             m_Cursor = 0;
 
-            LoadTotals();
+            // A new city starts its ledger from nothing, whatever the map file carried.
+            if (purpose == Colossal.Serialization.Entities.Purpose.NewGame)
+            {
+                ClearTotals();
+            }
+
+            MigrateLegacyLedger();
         }
 
         /// <summary>
-        /// Reads the saved totals back, or starts a fresh ledger if this save has none.
-        ///
-        /// The figures live on a singleton entity rather than in fields because CS2 saves entities,
-        /// not systems. Without this the panel reset to zero on every load and, since a reported
-        /// month is a whole in-game day, would have spent most of its life blank.
+        /// Takes the figures from a save made before the totals moved onto this system, and removes
+        /// the entity that held them so it is never serialized again. See the class summary for why
+        /// it has to go rather than merely be ignored.
         /// </summary>
-        private void LoadTotals()
+        private void MigrateLegacyLedger()
         {
             if (m_LedgerQuery.IsEmptyIgnoreFilter)
             {
-                Entity ledger = EntityManager.CreateEntity(
-                    ComponentType.ReadWrite<Components.TourismLedgerData>());
+                return;
+            }
 
-                // -1, not the default 0, because 0 is a real month. RollOverMonthIfNeeded uses -1
-                // to mean "nothing has been counted yet" and skips banking on the first turnover.
-                // With 0 it treated the very first update as a completed month, banked a set of
-                // zeros as the reported figure, and the panel then showed nothing until the next
-                // month came round — an entire in-game day later.
-                EntityManager.SetComponentData(ledger, new Components.TourismLedgerData
+            if (!m_TotalsFromSave)
+            {
+                NativeArray<Components.TourismLedgerData> legacy =
+                    m_LedgerQuery.ToComponentDataArray<Components.TourismLedgerData>(Allocator.Temp);
+                try
                 {
-                    m_Month = -1
-                });
+                    if (legacy.Length > 0)
+                    {
+                        Components.TourismLedgerData saved = legacy[0];
 
-                m_TrackedMonth = -1;
-                return;
+                        m_Lodging = saved.m_Lodging;
+                        m_Goods = saved.m_Goods;
+                        m_Fares = saved.m_Fares;
+                        m_Leisure = saved.m_Leisure;
+                        m_Other = saved.m_Other;
+
+                        m_LastLodging = saved.m_LastLodging;
+                        m_LastGoods = saved.m_LastGoods;
+                        m_LastFares = saved.m_LastFares;
+                        m_LastLeisure = saved.m_LastLeisure;
+                        m_LastOther = saved.m_LastOther;
+
+                        m_HasCompleteMonth = saved.m_HasCompleteMonth;
+                        m_TrackedMonth = saved.m_Month;
+                    }
+                }
+                finally
+                {
+                    legacy.Dispose();
+                }
             }
 
-            Components.TourismLedgerData saved = m_LedgerQuery.GetSingleton<Components.TourismLedgerData>();
-
-            m_Lodging = saved.m_Lodging;
-            m_Goods = saved.m_Goods;
-            m_Fares = saved.m_Fares;
-            m_Leisure = saved.m_Leisure;
-            m_Other = saved.m_Other;
-
-            m_LastLodging = saved.m_LastLodging;
-            m_LastGoods = saved.m_LastGoods;
-            m_LastFares = saved.m_LastFares;
-            m_LastLeisure = saved.m_LastLeisure;
-            m_LastOther = saved.m_LastOther;
-
-            m_HasCompleteMonth = saved.m_HasCompleteMonth;
-            m_TrackedMonth = saved.m_Month;
+            int removed = m_LedgerQuery.CalculateEntityCount();
+            EntityManager.DestroyEntity(m_LedgerQuery);
+            Mod.Log.Info($"Spending ledger moved off its saved entity ({removed} removed); it is now saved with its system.");
         }
 
-        /// <summary>
-        /// Writes the totals back to the saved singleton.
-        ///
-        /// Called on every update rather than only at save time, because there is no hook that
-        /// reliably precedes a save. The cost is a single component write against work that already
-        /// walks a thousand households. It stores what has been collected, so the sample still in
-        /// its job (128 frames' worth) is not in a save made before the next update.
-        /// </summary>
-        private void StoreTotals()
+        private void ClearTotals()
         {
-            if (m_LedgerQuery.IsEmptyIgnoreFilter)
-            {
-                return;
-            }
+            m_Lodging = m_Goods = m_Fares = m_Leisure = m_Other = 0;
+            m_LastLodging = m_LastGoods = m_LastFares = m_LastLeisure = m_LastOther = 0;
+            m_HasCompleteMonth = false;
 
-            m_LedgerQuery.SetSingleton(new Components.TourismLedgerData
-            {
-                m_Lodging = (int)m_Lodging,
-                m_Goods = (int)m_Goods,
-                m_Fares = (int)m_Fares,
-                m_Leisure = (int)m_Leisure,
-                m_Other = (int)m_Other,
-                m_LastLodging = (int)m_LastLodging,
-                m_LastGoods = (int)m_LastGoods,
-                m_LastFares = (int)m_LastFares,
-                m_LastLeisure = (int)m_LastLeisure,
-                m_LastOther = (int)m_LastOther,
-                m_HasCompleteMonth = m_HasCompleteMonth,
-                m_Month = m_TrackedMonth
-            });
+            // -1, not 0, because 0 is a real month. RollOverMonthIfNeeded uses -1 to mean "nothing
+            // has been counted yet" and skips banking on the first turnover. With 0 it treated the
+            // very first update as a completed month, banked a set of zeros as the reported figure,
+            // and the panel then showed nothing until the next month came round — an entire in-game
+            // day later.
+            m_TrackedMonth = -1;
+        }
+
+        /// <summary>Set when the save being loaded carried this system's totals.</summary>
+        private bool m_TotalsFromSave;
+
+        public void SetDefaults(Colossal.Serialization.Entities.Context context)
+        {
+            ClearTotals();
+            m_TotalsFromSave = false;
+        }
+
+        public void Serialize<TWriter>(TWriter writer) where TWriter : Colossal.Serialization.Entities.IWriter
+        {
+            writer.Write(kSaveVersion);
+            writer.Write(m_Lodging);
+            writer.Write(m_Goods);
+            writer.Write(m_Fares);
+            writer.Write(m_Leisure);
+            writer.Write(m_Other);
+            writer.Write(m_LastLodging);
+            writer.Write(m_LastGoods);
+            writer.Write(m_LastFares);
+            writer.Write(m_LastLeisure);
+            writer.Write(m_LastOther);
+            writer.Write(m_HasCompleteMonth);
+            writer.Write(m_TrackedMonth);
+        }
+
+        public void Deserialize<TReader>(TReader reader) where TReader : Colossal.Serialization.Entities.IReader
+        {
+            reader.Read(out int _);
+            reader.Read(out m_Lodging);
+            reader.Read(out m_Goods);
+            reader.Read(out m_Fares);
+            reader.Read(out m_Leisure);
+            reader.Read(out m_Other);
+            reader.Read(out m_LastLodging);
+            reader.Read(out m_LastGoods);
+            reader.Read(out m_LastFares);
+            reader.Read(out m_LastLeisure);
+            reader.Read(out m_LastOther);
+            reader.Read(out m_HasCompleteMonth);
+            reader.Read(out m_TrackedMonth);
+            m_TotalsFromSave = true;
         }
 
 
@@ -315,8 +376,6 @@ namespace TourismOverhaul.Systems
                 m_Lodging += m_HotelSystem.LodgingChargedSinceReset;
                 m_HotelSystem.LodgingChargedSinceReset = 0;
             }
-
-            StoreTotals();
 
             m_Entities.Update(this);
             m_ExpectsPurchases.Update(this);

@@ -67,7 +67,23 @@ namespace TourismOverhaul.Systems
     ///
     /// The authored figures are held in a map rather than recovered by dividing out the last factor
     /// applied, so repeated changes always scale from the original and never compound a rounding
-    /// error. Prefab data is rebuilt from source on load, so the map is cleared there.
+    /// error.
+    ///
+    /// PREFAB ENTITIES OUTLIVE A SAVE
+    ///
+    /// Up to 2.0.4 the map was cleared on every load, on the belief that prefab data is rebuilt from
+    /// source then. It is not: prefab entities live for the whole game session, so on the second
+    /// load in a session the "authored" figures recorded were the ones this system had already
+    /// scaled, and they were scaled again. Measured by a player across three loads of one save:
+    /// m_MaxService 20,000, 80,000, 320,000 and m_ServiceConsuming 20, 4, 1, while the log said x4
+    /// every time. ServiceCompanySystem refills stock up to that maximum and ResourceAvailabilitySystem
+    /// weights a service source by its stock with no cap, so land value beside every venue climbed
+    /// with it. Only a restart of the game put it back.
+    ///
+    /// So the map is kept for the session, and each entry also holds what this system last wrote.
+    /// A live value equal to that is ours and the recorded original stands; anything else means the
+    /// prefab was rebuilt or changed by someone else, and the live value is taken as the new
+    /// original. That holds whichever way the game treats prefab data on load.
     /// </summary>
     public partial class LeisurePricingSystem : GameSystemBase
     {
@@ -77,12 +93,14 @@ namespace TourismOverhaul.Systems
         private int m_AppliedCostPercent;
 
         /// <summary>
-        /// Authored m_MaxService (x) and m_ServiceConsuming (y) per venue prefab.
+        /// Per venue prefab: authored m_MaxService and m_ServiceConsuming (xy), and the values this
+        /// system last wrote over them (zw).
         ///
         /// Kept outside the component so every write is base x factor rather than a
-        /// read-modify-write, which is what stops repeated setting changes from compounding.
+        /// read-modify-write, which is what stops repeated setting changes from compounding. Kept for
+        /// the whole session, not per save, because the prefab entities are.
         /// </summary>
-        private NativeHashMap<Entity, int2> m_Authored;
+        private NativeHashMap<Entity, int4> m_Authored;
 
         /// <summary>Prefabs adjusted, for diagnostics.</summary>
         public int AdjustedVenues { get; private set; }
@@ -94,7 +112,7 @@ namespace TourismOverhaul.Systems
         {
             base.OnCreate();
 
-            m_Authored = new NativeHashMap<Entity, int2>(64, Allocator.Persistent);
+            m_Authored = new NativeHashMap<Entity, int4>(64, Allocator.Persistent);
 
             m_ServicePrefabQuery = GetEntityQuery(
                 ComponentType.ReadWrite<Game.Companies.ServiceCompanyData>(),
@@ -125,10 +143,9 @@ namespace TourismOverhaul.Systems
         {
             base.OnGameLoadingComplete(purpose, mode);
 
-            // Prefab data is rebuilt from source on load, so the values sitting there are the
-            // authored ones again and anything remembered about them is stale. Forget both the
-            // recorded originals and the factors applied to them, and reapply from scratch.
-            m_Authored.Clear();
+            // Force a pass, so every venue prefab is checked against what was last written to it.
+            // The recorded originals are kept: prefab entities outlive the save, and clearing them
+            // here is what made each load in a session scale the already-scaled values again.
             m_AppliedMultiplier = 0;
             m_AppliedCostPercent = 0;
 
@@ -283,12 +300,14 @@ namespace TourismOverhaul.Systems
                         continue;
                     }
 
-                    // First sight of this prefab since the last load is the authored state, because
-                    // prefab data is rebuilt from source and nothing has been written to it yet.
-                    if (!m_Authored.TryGetValue(prefab, out int2 authored))
+                    // The recorded original stands only while the prefab still holds exactly what
+                    // was last written to it. First sight of a prefab, or a value someone else put
+                    // there, is taken as the authored state.
+                    int2 live = new int2(data.m_MaxService, data.m_ServiceConsuming);
+                    int2 authored = live;
+                    if (m_Authored.TryGetValue(prefab, out int4 record) && math.all(record.zw == live))
                     {
-                        authored = new int2(data.m_MaxService, data.m_ServiceConsuming);
-                        m_Authored[prefab] = authored;
+                        authored = record.xy;
                     }
 
                     data.m_MaxService = (int)math.min((long)authored.x * multiplier, int.MaxValue);
@@ -303,6 +322,7 @@ namespace TourismOverhaul.Systems
                     }
 
                     EntityManager.SetComponentData(prefab, data);
+                    m_Authored[prefab] = new int4(authored, data.m_MaxService, data.m_ServiceConsuming);
                     adjusted++;
                 }
             }

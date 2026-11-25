@@ -4,8 +4,15 @@ using Unity.Entities;
 namespace TourismOverhaul.Components
 {
     /// <summary>
-    /// The spending ledger, in a form the game will save.
+    /// LEGACY, read only. The spending ledger as saves up to 2.0.4 stored it.
     ///
+    /// Nothing creates or writes this any more: the totals are saved with
+    /// TouristSpendingLedgerSystem, which is IDefaultSerializable, because serializing this
+    /// component crashed saves (see that system's summary). The type is kept so older saves still
+    /// deserialize it; the system reads it once on load and destroys the entity, so it is never
+    /// written again. Do not add fields or start using it again.
+    ///
+    /// What follows is the original rationale.
     /// Held on a singleton entity because that is what CS2 serializes: systems are not persisted,
     /// only entities and their components, so figures kept in system fields vanish on reload. The
     /// ledger reports a settled monthly total, and a month is a whole in-game day — long enough
