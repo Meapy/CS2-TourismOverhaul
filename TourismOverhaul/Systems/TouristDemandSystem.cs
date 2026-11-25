@@ -36,7 +36,7 @@ namespace TourismOverhaul.Systems
     /// entirely if none is available, so it can never create the citizen-less zombie households
     /// described in Finding 3.
     /// </summary>
-    public partial class TouristDemandSystem : GameSystemBase
+    public partial class TouristDemandSystem : GameSystemBase, Colossal.Serialization.Entities.IDefaultSerializable
     {
         private EntityQuery m_HouseholdPrefabQuery;
         private EntityQuery m_OutsideConnectionQuery;
@@ -192,7 +192,37 @@ namespace TourismOverhaul.Systems
         /// <summary>Slices in the window. kFramesPerBucket * this == 262144.</summary>
         private const int kBucketCount = 262144 / kFramesPerBucket;
 
-        private EntityQuery m_ArrivalWindowQuery;
+        /// <summary>
+        /// Saves from 2.0.4 and earlier, which kept the window on an entity. Only read on load, to
+        /// remove it. See <see cref="Components.TouristArrivalWindowData"/>.
+        /// </summary>
+        private EntityQuery m_LegacyArrivalWindowQuery;
+
+        /// <summary>
+        /// The trailing month, one slice per element in ring order, by connection type (road,
+        /// train, air, ship). Summing the whole array gives the month.
+        ///
+        /// Saved with this system (IDefaultSerializable), not on an entity. Up to 2.0.4 it lived
+        /// on a singleton entity, and neither half of that worked: the slices were
+        /// IEmptySerializable, which saves that the buffer exists and nothing of what is in it, so
+        /// every load came back with an empty buffer and the window started again from zero; and
+        /// the cursor was an ISerializable component, written by the same managed-fallback job that
+        /// crashed saves in TourismLedgerData. A system's serializer runs on the main thread, with
+        /// no job involved.
+        /// </summary>
+        private NativeArray<int4> m_Buckets;
+
+        /// <summary>
+        /// Absolute slice index last written, i.e. frameIndex / kFramesPerBucket.
+        ///
+        /// Absolute rather than the ring position, because the gap between this and the current
+        /// frame is what says how many slices the window has slid past and must therefore clear.
+        /// Zero is a real slice index on a new city, so "nothing recorded yet" is -1.
+        /// </summary>
+        private long m_LastBucket = -1;
+
+        /// <summary>Layout version of the saved window, written first.</summary>
+        private const int kWindowSaveVersion = 1;
 
         /// <summary>Ring position being written this update, and the counts destined for it.</summary>
         private int m_CurrentBucket;
@@ -275,19 +305,11 @@ namespace TourismOverhaul.Systems
 
             m_DemandParameterQuery = GetEntityQuery(ComponentType.ReadOnly<DemandParameterData>());
 
-            // The saved trailing-month arrival window. Created on first use if the save has none.
-            // Deleted and Temp are excluded, and that is not tidiness.
-            //
-            // SerializerSystem.CreateQuery puts both in its None list, so an entity carrying either
-            // is not written to the save. Without the same exclusions here this system goes on
-            // reading and writing a window entity the game has already given up on — and
-            // GetSingletonEntity throws outright the moment a replacement exists alongside it,
-            // which is one entity going away from happening.
-            m_ArrivalWindowQuery = GetEntityQuery(
-                ComponentType.ReadWrite<Components.TouristArrivalWindowData>(),
-                ComponentType.ReadWrite<Components.TouristArrivalBucket>(),
-                ComponentType.Exclude<Deleted>(),
-                ComponentType.Exclude<Temp>());
+            // The trailing-month arrival window, saved with this system. The query only finds the
+            // entity older saves kept it on, so it can be removed.
+            m_Buckets = new NativeArray<int4>(kBucketCount, Allocator.Persistent);
+            m_LegacyArrivalWindowQuery = GetEntityQuery(
+                ComponentType.ReadOnly<Components.TouristArrivalWindowData>());
 
             // Counting query: only households that actually hold citizens count as tourists.
             //
@@ -352,6 +374,11 @@ namespace TourismOverhaul.Systems
         {
             m_CensusJob.Complete();
             m_Census.Dispose();
+            if (m_Buckets.IsCreated)
+            {
+                m_Buckets.Dispose();
+            }
+
             base.OnDestroy();
         }
 
@@ -717,7 +744,8 @@ namespace TourismOverhaul.Systems
         /// A calendar bucket was the wrong shape here, and so was the smoothed rate that replaced
         /// it. With m_DaysPerYear = 12 a displayed month is one in-game day, over an hour of real
         /// play, so a total climbed for that whole hour before it meant anything; and both forms
-        /// lived in system fields, which CS2 does not save, so both reset on reload.
+        /// lived in system fields that nothing saved, so both reset on reload. The window is saved,
+        /// by this system's Serialize.
         ///
         /// Bucket indices are absolute (frameIndex / kFramesPerBucket) rather than ring positions,
         /// because the distance between two of them is what says how much to clear. Comparing ring
@@ -730,27 +758,14 @@ namespace TourismOverhaul.Systems
                 return;
             }
 
-            Entity window = GetOrCreateArrivalWindow();
-
-            if (window == Entity.Null)
-            {
-                return;
-            }
-
             long bucket = m_SimulationSystem.frameIndex / kFramesPerBucket;
-
-            Components.TouristArrivalWindowData cursor =
-                EntityManager.GetComponentData<Components.TouristArrivalWindowData>(window);
 
             m_CurrentBucket = (int)(bucket % kBucketCount);
 
-            if (cursor.m_LastBucket == bucket)
+            if (m_LastBucket == bucket)
             {
                 return;
             }
-
-            DynamicBuffer<Components.TouristArrivalBucket> buckets =
-                EntityManager.GetBuffer<Components.TouristArrivalBucket>(window);
 
             // How far the window has slid. A lap or more means every slice now predates the
             // window, so they all go; -1 (never written) takes the same path, because starting
@@ -758,139 +773,109 @@ namespace TourismOverhaul.Systems
             //
             // Treating -1 as a distance of zero instead would walk from bucket 0 to the current
             // one, which on a mature save is millions of iterations to clear 128 slices.
-            long elapsed = cursor.m_LastBucket < 0
+            long elapsed = m_LastBucket < 0
                 ? kBucketCount
-                : bucket - cursor.m_LastBucket;
+                : bucket - m_LastBucket;
 
             if (elapsed < 0 || elapsed >= kBucketCount)
             {
-                for (int i = 0; i < buckets.Length; i++)
-                {
-                    buckets[i] = default;
-                }
+                ClearWindow();
             }
             else
             {
                 // Clear only what the window has slid past, oldest first.
-                for (long i = cursor.m_LastBucket + 1; i <= bucket; i++)
+                for (long i = m_LastBucket + 1; i <= bucket; i++)
                 {
-                    buckets[(int)(i % kBucketCount)] = default;
+                    m_Buckets[(int)(i % kBucketCount)] = default;
                 }
             }
 
-            cursor.m_LastBucket = bucket;
-            EntityManager.SetComponentData(window, cursor);
+            m_LastBucket = bucket;
         }
 
         /// <summary>
         /// Writes this update's arrivals into the current slice and re-totals the window.
         ///
         /// Accumulated during the update and written once, rather than written per arrival,
-        /// because CountConvertedArrivals can attribute several hundred in a single pass and each
-        /// write would otherwise be a separate buffer read-modify-write.
+        /// because CountConvertedArrivals can attribute several hundred in a single pass.
         /// </summary>
         private void FlushArrivalWindow()
         {
-            if (m_ArrivalWindowQuery.IsEmptyIgnoreFilter)
-            {
-                return;
-            }
-
-            Entity window = m_ArrivalWindowQuery.GetSingletonEntity();
-
-            DynamicBuffer<Components.TouristArrivalBucket> buckets =
-                EntityManager.GetBuffer<Components.TouristArrivalBucket>(window);
-
-            if (buckets.Length != kBucketCount)
-            {
-                return;
-            }
-
             if (math.any(m_BucketAccumulator != 0))
             {
-                Components.TouristArrivalBucket slice = buckets[m_CurrentBucket];
-
-                slice.m_Road += m_BucketAccumulator.x;
-                slice.m_Train += m_BucketAccumulator.y;
-                slice.m_Air += m_BucketAccumulator.z;
-                slice.m_Ship += m_BucketAccumulator.w;
-
-                buckets[m_CurrentBucket] = slice;
+                m_Buckets[m_CurrentBucket] += m_BucketAccumulator;
                 m_BucketAccumulator = default;
             }
 
-            m_WindowTotal = SumWindow(buckets);
+            m_WindowTotal = SumWindow();
         }
 
-        private static int4 SumWindow(DynamicBuffer<Components.TouristArrivalBucket> buckets)
+        private int4 SumWindow()
         {
             int4 total = default;
 
-            for (int i = 0; i < buckets.Length; i++)
+            for (int i = 0; i < m_Buckets.Length; i++)
             {
-                Components.TouristArrivalBucket slice = buckets[i];
-
-                total.x += slice.m_Road;
-                total.y += slice.m_Train;
-                total.z += slice.m_Air;
-                total.w += slice.m_Ship;
+                total += m_Buckets[i];
             }
 
             return total;
         }
 
-        /// <summary>
-        /// The saved window entity, created with a full set of empty slices if this save has none.
-        ///
-        /// The buffer is sized once and never resized, so every later update can index it directly.
-        /// A save made before this component existed simply starts with an empty window and fills
-        /// it over the following in-game day.
-        /// </summary>
-        private Entity GetOrCreateArrivalWindow()
+        private void ClearWindow()
         {
-            if (!m_ArrivalWindowQuery.IsEmptyIgnoreFilter)
+            for (int i = 0; i < m_Buckets.Length; i++)
             {
-                Entity existing = m_ArrivalWindowQuery.GetSingletonEntity();
+                m_Buckets[i] = default;
+            }
+        }
 
-                DynamicBuffer<Components.TouristArrivalBucket> buffer =
-                    EntityManager.GetBuffer<Components.TouristArrivalBucket>(existing);
+        public void SetDefaults(Colossal.Serialization.Entities.Context context)
+        {
+            // A save from before the window was kept here, or a new city: start empty. -1, not 0,
+            // because 0 is a real slice index — a new city starts at frame 0 — and the two mean
+            // opposite things when the window is first slid.
+            ClearWindow();
+            m_LastBucket = -1;
+        }
 
-                // A save written with a different slice count cannot be reinterpreted, so start
-                // the window again rather than reading it as something it is not.
-                if (buffer.Length != kBucketCount)
+        public void Serialize<TWriter>(TWriter writer) where TWriter : Colossal.Serialization.Entities.IWriter
+        {
+            writer.Write(kWindowSaveVersion);
+            writer.Write(m_LastBucket);
+            writer.Write(m_Buckets.Length);
+
+            for (int i = 0; i < m_Buckets.Length; i++)
+            {
+                writer.Write(m_Buckets[i]);
+            }
+        }
+
+        public void Deserialize<TReader>(TReader reader) where TReader : Colossal.Serialization.Entities.IReader
+        {
+            reader.Read(out int _);
+            reader.Read(out m_LastBucket);
+            reader.Read(out int count);
+
+            // Every saved slice is read, whatever the count, so the reader ends where the block
+            // does. A save written with a different slice count cannot be reinterpreted, so its
+            // slices are discarded and the window starts again rather than being read as
+            // something it is not.
+            bool fits = count == kBucketCount;
+            for (int i = 0; i < count; i++)
+            {
+                reader.Read(out int4 slice);
+                if (fits)
                 {
-                    buffer.Clear();
-
-                    for (int i = 0; i < kBucketCount; i++)
-                    {
-                        buffer.Add(default);
-                    }
-
-                    EntityManager.SetComponentData(
-                        existing, new Components.TouristArrivalWindowData { m_LastBucket = -1L });
+                    m_Buckets[i] = slice;
                 }
-
-                return existing;
             }
 
-            Entity window = EntityManager.CreateEntity(
-                ComponentType.ReadWrite<Components.TouristArrivalWindowData>(),
-                ComponentType.ReadWrite<Components.TouristArrivalBucket>());
-
-            // -1, not the default 0, because 0 is a real bucket index — a new city starts at
-            // frame 0 — and the two mean opposite things when the window is first slid.
-            EntityManager.SetComponentData(
-                window, new Components.TouristArrivalWindowData { m_LastBucket = -1L });
-
-            DynamicBuffer<Components.TouristArrivalBucket> slices =
-                EntityManager.GetBuffer<Components.TouristArrivalBucket>(window);
-
-            for (int i = 0; i < kBucketCount; i++)
+            if (!fits)
             {
-                slices.Add(default);
+                ClearWindow();
+                m_LastBucket = -1;
             }
-
-            return window;
         }
 
         protected override void OnGameLoadingComplete(
@@ -902,19 +887,27 @@ namespace TourismOverhaul.Systems
             m_CensusJob.Complete();
             m_CensusPending = false;
 
-            // The window itself is saved, but the total derived from it is a system field and is
-            // not. Re-derive it here so the row shows the restored figure on the first frame
-            // rather than a zero that lasts until the next update.
-            m_BucketAccumulator = default;
-            m_WindowTotal = default;
-
-            if (m_ArrivalWindowQuery.IsEmptyIgnoreFilter)
+            // A new city starts its window from nothing, whatever the map file carried.
+            if (purpose == Colossal.Serialization.Entities.Purpose.NewGame)
             {
-                return;
+                ClearWindow();
+                m_LastBucket = -1;
             }
 
-            m_WindowTotal = SumWindow(EntityManager.GetBuffer<Components.TouristArrivalBucket>(
-                m_ArrivalWindowQuery.GetSingletonEntity()));
+            // Saves from 2.0.4 and earlier hold the window on an entity. Its slices were never
+            // actually saved (see m_Buckets), so there is nothing to carry over; it is removed so
+            // its cursor component is never written again.
+            if (!m_LegacyArrivalWindowQuery.IsEmptyIgnoreFilter)
+            {
+                EntityManager.DestroyEntity(m_LegacyArrivalWindowQuery);
+                Mod.Log.Info("Arrivals window moved off its saved entity; it is now saved with its system.");
+            }
+
+            // The window is saved, but the total derived from it is not. Re-derive it here so the
+            // row shows the restored figure on the first frame rather than a zero that lasts until
+            // the next update.
+            m_BucketAccumulator = default;
+            m_WindowTotal = SumWindow();
         }
 
         /// <summary>

@@ -4,8 +4,14 @@ using Unity.Entities;
 namespace TourismOverhaul.Components
 {
     /// <summary>
-    /// The trailing-month arrival window, in a form the game will save.
+    /// LEGACY, read only. The arrival window's cursor as saves up to 2.0.4 stored it.
     ///
+    /// The window now lives in TouristDemandSystem and is saved with it (IDefaultSerializable).
+    /// This type and <see cref="TouristArrivalBucket"/> are kept only so older saves still
+    /// deserialize; the system destroys the entity on load. Nothing creates or writes them. Do not
+    /// add fields or start using them again.
+    ///
+    /// What follows is the original rationale.
     /// The "/mo." row is meant to read as distinct visitors who arrived over the last in-game
     /// month — a companion to "Tourists in city", which is who is standing in the city now. That
     /// needs a window that slides, not a counter that resets, and it has to survive a reload: a
@@ -93,8 +99,8 @@ namespace TourismOverhaul.Components
     /// three field widths, Resources maps a resource to a stable index, TripNeeded narrows enums.
     /// This wrote four ints in declaration order, which is precisely what the blittable path writes
     /// by itself — so the custom serializer was never buying anything, and it was the only thing in
-    /// this mod on that path. Every other serialized component here is IComponentData, which goes
-    /// through a different job and has saved cleanly all along.
+    /// this mod on that path. (IComponentData goes through a different job but the same managed
+    /// fallback, and in 2.0.4 TourismLedgerData crashed a save there in exactly the same way.)
     ///
     /// The bytes are unchanged: four int32s per element, in the same order, with the element count
     /// written by the framework either way. Existing saves read back as they did before. If a save

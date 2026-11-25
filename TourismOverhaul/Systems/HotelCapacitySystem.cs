@@ -54,6 +54,16 @@ namespace TourismOverhaul.Systems
 
         private int m_LastWrittenServiceMultiplier = -1;
 
+        /// <summary>
+        /// Per lodging prefab: authored m_MaxService (x) and the value last written over it (y).
+        ///
+        /// Kept for the whole session, because prefab entities are: they are not rebuilt when a save
+        /// is loaded. Up to 2.0.4 the base was recovered by dividing the live value by the last
+        /// multiplier, and that multiplier was forgotten on every load, so the second load in a
+        /// session took the already-scaled value as authored and scaled it again.
+        /// </summary>
+        private NativeHashMap<Entity, int2> m_AuthoredMaxService;
+
         /// <summary>Service capacity per lodging prefab after scaling. For diagnostics.</summary>
         public int ScaledMaxService { get; private set; }
 
@@ -107,6 +117,7 @@ namespace TourismOverhaul.Systems
             m_Resources = GetBufferLookup<Game.Economy.Resources>(isReadOnly: false);
             m_Statistics = GetComponentLookup<CompanyStatisticData>(isReadOnly: false);
             m_Results = new NativeArray<long>(2, Allocator.Persistent);
+            m_AuthoredMaxService = new NativeHashMap<Entity, int2>(16, Allocator.Persistent);
 
             // Mirrors LodgingProviderSystem.m_ProviderQuery (:278).
             m_ProviderQuery = GetEntityQuery(
@@ -134,6 +145,11 @@ namespace TourismOverhaul.Systems
         {
             m_LastJob.Complete();
             m_Results.Dispose();
+            if (m_AuthoredMaxService.IsCreated)
+            {
+                m_AuthoredMaxService.Dispose();
+            }
+
             RestoreNativeSystem();
             base.OnDestroy();
         }
@@ -142,16 +158,17 @@ namespace TourismOverhaul.Systems
         {
             base.OnGameLoadingComplete(purpose, mode);
 
-            // Prefab data is rebuilt from source on load, so forget the scaling we applied — the
-            // value on disk is the authored one again.
+            // Force a pass, so every lodging prefab is checked against what was last written to it.
+            // The authored values themselves are kept: prefab entities outlive the save.
             m_LastWrittenServiceMultiplier = -1;
 
-            // And scale again now, before the first tick, rather than on the first update up to
-            // 512 frames later: in between, a hotel's saved service stock sits over the authored
+            // And scale now, before the first tick, rather than on the first update up to 512
+            // frames later: in between, a hotel's saved service stock sits over the authored
             // maximum, and ServiceCompanySystem flags "not enough customers" until the update.
+            // At a multiplier of 1 this puts back anything an earlier load in the session scaled.
             TourismOverhaulSetting settings = Mod.Settings;
             int multiplier = settings != null ? math.clamp(settings.HotelRoomMultiplier, 1, 10) : 1;
-            if (mode == GameMode.Game && multiplier > 1)
+            if (mode == GameMode.Game)
             {
                 ScaleServiceCapacity(multiplier);
             }
@@ -190,6 +207,7 @@ namespace TourismOverhaul.Systems
             if (!active)
             {
                 RestoreNativeSystem();
+                ScaleServiceCapacity(1);
 
                 // The native system is doing the billing. Watch it rather than replacing it, so
                 // the finance view still has a lodging figure. See ScheduleObservation.
@@ -292,14 +310,18 @@ namespace TourismOverhaul.Systems
 
                     ServiceCompanyData service = EntityManager.GetComponentData<ServiceCompanyData>(prefabs[i]);
 
-                    // Recover the authored value from whatever we last wrote, so repeated changes
-                    // scale from the original rather than compounding.
-                    int baseMaxService = m_LastWrittenServiceMultiplier > 0
-                        ? service.m_MaxService / m_LastWrittenServiceMultiplier
-                        : service.m_MaxService;
+                    // The recorded original stands only while the prefab still holds what was last
+                    // written to it; first sight, or a value someone else put there, is authored.
+                    int baseMaxService = service.m_MaxService;
+                    if (m_AuthoredMaxService.TryGetValue(prefabs[i], out int2 record)
+                        && record.y == service.m_MaxService)
+                    {
+                        baseMaxService = record.x;
+                    }
 
-                    service.m_MaxService = math.max(1, baseMaxService * multiplier);
+                    service.m_MaxService = (int)math.clamp((long)baseMaxService * multiplier, 1L, int.MaxValue);
                     EntityManager.SetComponentData(prefabs[i], service);
+                    m_AuthoredMaxService[prefabs[i]] = new int2(baseMaxService, service.m_MaxService);
 
                     ScaledMaxService = service.m_MaxService;
                 }
